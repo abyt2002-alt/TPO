@@ -12,6 +12,17 @@ import {
 } from 'recharts'
 
 const fmt = (value) => Number(value || 0).toFixed(2)
+const fmtX = (value) => {
+  const n = Number(value)
+  if (!Number.isFinite(n)) return 'NA'
+  return `${n.toFixed(2)}x`
+}
+const fmtXDelta = (value) => {
+  const n = Number(value)
+  if (!Number.isFinite(n)) return 'NA'
+  if (Math.abs(n) < 1e-9) return '0.00x'
+  return n > 0 ? `+${n.toFixed(2)}x` : `${n.toFixed(2)}x`
+}
 
 const formatPctChange = (value) => {
   const n = Number(value)
@@ -19,12 +30,11 @@ const formatPctChange = (value) => {
   if (Math.abs(n) < 1e-9) return 'No Change 0.0%'
   return n > 0 ? `Increase +${n.toFixed(1)}%` : `Decrease ${n.toFixed(1)}%`
 }
-
 const toMonthLabel = (monthKey) => {
   if (!monthKey) return ''
   const d = new Date(`${monthKey}-01`)
   if (Number.isNaN(d.getTime())) return String(monthKey)
-  return d.toLocaleDateString(undefined, { month: 'short', year: 'numeric' })
+  return d.toLocaleDateString(undefined, { month: 'short' })
 }
 
 const Planner12Month = ({
@@ -45,12 +55,10 @@ const Planner12Month = ({
   fixedCogsPerUnit = null,
 }) => {
   const [plannedStruct, setPlannedStruct] = useState([])
-  const [plannedBasePrice, setPlannedBasePrice] = useState([])
   const [cogsPerUnit, setCogsPerUnit] = useState(0)
 
   useEffect(() => {
-    setPlannedStruct(data?.planned_structural_discounts || [])
-    setPlannedBasePrice(data?.planned_base_prices || [])
+    setPlannedStruct([...(data?.planned_structural_discounts || [])])
     setCogsPerUnit(Number(data?.cogs_per_unit || 0))
   }, [data])
 
@@ -62,8 +70,11 @@ const Planner12Month = ({
   }, [fixedCogsPerUnit])
 
   const handleResetInputs = () => {
-    setPlannedStruct(data?.planned_structural_discounts || [])
-    setPlannedBasePrice(data?.planned_base_prices || [])
+    const resetStruct =
+      Array.isArray(data?.current_structural_discounts) && data.current_structural_discounts.length > 0
+        ? data.current_structural_discounts
+        : (data?.planned_structural_discounts || [])
+    setPlannedStruct([...resetStruct])
     const fixed = Number(fixedCogsPerUnit)
     if (Number.isFinite(fixed) && fixed >= 0) {
       setCogsPerUnit(fixed)
@@ -164,7 +175,6 @@ const Planner12Month = ({
                         <th className="text-left px-3 py-2">Month</th>
                         <th className="text-left px-3 py-2">Current %</th>
                         <th className="text-left px-3 py-2">Planned %</th>
-                        <th className="text-left px-3 py-2">Base Price</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -187,20 +197,6 @@ const Planner12Month = ({
                               className="w-24 px-2 py-1 border border-gray-300 rounded"
                             />
                           </td>
-                          <td className="px-3 py-2">
-                            <input
-                              type="number"
-                              min="0"
-                              step="0.5"
-                              value={plannedBasePrice[i] ?? 0}
-                              onChange={(e) => {
-                                const next = [...plannedBasePrice]
-                                next[i] = parseFloat(e.target.value || '0')
-                                setPlannedBasePrice(next)
-                              }}
-                              className="w-24 px-2 py-1 border border-gray-300 rounded"
-                            />
-                          </td>
                         </tr>
                       ))}
                     </tbody>
@@ -211,7 +207,6 @@ const Planner12Month = ({
                   type="button"
                   onClick={() => onRecalculate({
                     planned_structural_discounts: plannedStruct,
-                    planned_base_prices: plannedBasePrice,
                     cogs_per_unit: Number.isFinite(Number(fixedCogsPerUnit))
                       ? Number(fixedCogsPerUnit)
                       : cogsPerUnit,
@@ -240,7 +235,7 @@ const Planner12Month = ({
           {data?.success && months.length > 0 && (
             <>
               <div className="bg-white rounded-lg shadow-md p-4">
-                <div className="grid grid-cols-1 md:grid-cols-3 xl:grid-cols-6 gap-3 text-sm">
+                <div className="grid grid-cols-1 md:grid-cols-4 xl:grid-cols-8 gap-3 text-sm">
                   <div className="bg-accent-light rounded-md p-3">
                     <p className="text-muted">Volume Change</p>
                     <p className="font-bold text-body">{formatPctChange(data?.metrics?.volume_change_pct)}</p>
@@ -254,16 +249,24 @@ const Planner12Month = ({
                     <p className="font-bold text-body">{formatPctChange(data?.metrics?.profit_change_pct)}</p>
                   </div>
                   <div className="bg-accent-light rounded-md p-3">
-                    <p className="text-muted">Promo Change</p>
-                    <p className="font-bold text-body">{formatPctChange(data?.metrics?.promo_change_pct)}</p>
+                    <p className="text-muted">Investment Change</p>
+                    <p className="font-bold text-body">{formatPctChange(data?.metrics?.investment_change_pct)}</p>
                   </div>
                   <div className="bg-accent-light rounded-md p-3">
-                    <p className="text-muted">ROI Change</p>
-                    <p className="font-bold text-body">{formatPctChange(data?.metrics?.roi_change_pct)}</p>
+                    <p className="text-muted">Topline ROI @ Default</p>
+                    <p className="font-bold text-body">{fmtX(data?.metrics?.roi_default_x)}</p>
                   </div>
                   <div className="bg-accent-light rounded-md p-3">
-                    <p className="text-muted">ROI (x)</p>
-                    <p className="font-bold text-body">{fmt(data?.metrics?.roi_revenue_x)}x</p>
+                    <p className="text-muted">Topline ROI @ Planned</p>
+                    <p className="font-bold text-body">{fmtX(data?.metrics?.roi_planned_x)}</p>
+                  </div>
+                  <div className="bg-accent-light rounded-md p-3">
+                    <p className="text-muted">Gross Margin ROI @ Default</p>
+                    <p className="font-bold text-body">{fmtX(data?.metrics?.profit_roi_default_x)}</p>
+                  </div>
+                  <div className="bg-accent-light rounded-md p-3">
+                    <p className="text-muted">Gross Margin ROI @ Planned</p>
+                    <p className="font-bold text-body">{fmtX(data?.metrics?.profit_roi_planned_x)}</p>
                   </div>
                 </div>
               </div>

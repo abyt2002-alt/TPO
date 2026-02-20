@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { useQuery, useMutation } from '@tanstack/react-query'
 import { useSearchParams } from 'react-router-dom'
 import {
@@ -9,6 +9,9 @@ import {
   calculateBaseDepth,
   calculateModeling,
   calculate12MonthPlanner,
+  comparePlannerScenarios,
+  getEDAOptions,
+  getEDAOverview,
   getDiscountOptions,
   createRun,
   getRunState,
@@ -23,13 +26,94 @@ import OutletTable from '../components/rfm/OutletTable'
 import BaseDepthEstimator from '../components/rfm/BaseDepthEstimator'
 import ModelingROI from '../components/rfm/ModelingROI'
 import Planner12Month from '../components/rfm/Planner12Month'
+import ScenarioComparison from '../components/rfm/ScenarioComparison'
+import EDAInsights from '../components/rfm/EDAInsights'
 import DiscountStepFilters from '../components/rfm/DiscountStepFilters'
-import { Loader2, AlertCircle, BarChart3, ChevronDown, ChevronUp, SlidersHorizontal } from 'lucide-react'
+import { Loader2, AlertCircle, BarChart3, ChevronDown, ChevronUp, Search } from 'lucide-react'
 
 const DEFAULT_STEP2_FILTERS = {
   rfm_segments: [],
   outlet_classifications: [],
   slabs: [],
+}
+
+const parseSlabIndex = (value) => {
+  const match = String(value || '').trim().toLowerCase().match(/(\d+)/)
+  if (!match) return null
+  const idx = Number(match[1])
+  if (!Number.isFinite(idx)) return null
+  return idx
+}
+
+const normalizeStep2Slabs = (values = [], allowedOptions = null) => {
+  let slabs = (values || [])
+    .map((v) => String(v))
+    .filter((v) => {
+      const idx = parseSlabIndex(v)
+      return idx !== null && idx >= 1 && idx <= 4
+    })
+
+  slabs = Array.from(new Set(slabs))
+  slabs.sort((a, b) => {
+    const ai = parseSlabIndex(a) ?? Number.MAX_SAFE_INTEGER
+    const bi = parseSlabIndex(b) ?? Number.MAX_SAFE_INTEGER
+    if (ai !== bi) return ai - bi
+    return a.localeCompare(b)
+  })
+
+  if (Array.isArray(allowedOptions) && allowedOptions.length > 0) {
+    const allowed = new Set(allowedOptions.map((v) => String(v)))
+    slabs = slabs.filter((v) => allowed.has(v))
+  }
+
+  return slabs
+}
+
+const normalizeStep2OutletClassifications = (values = []) => {
+  const out = []
+  for (const value of values || []) {
+    const raw = String(value || '').trim().toUpperCase().replace(/\s+/g, '')
+    if (!raw) continue
+    out.push(raw === 'WH' ? 'WH' : 'OtherGT')
+  }
+  return Array.from(new Set(out)).sort((a, b) => {
+    const order = { OtherGT: 0, WH: 1 }
+    return (order[a] ?? 99) - (order[b] ?? 99) || a.localeCompare(b)
+  })
+}
+
+const normalizeStep2Filters = (filters = {}) => ({
+  rfm_segments: Array.isArray(filters?.rfm_segments) ? filters.rfm_segments.map((v) => String(v)) : [],
+  outlet_classifications: normalizeStep2OutletClassifications(filters?.outlet_classifications || []),
+  slabs: normalizeStep2Slabs(filters?.slabs || []),
+})
+
+const normalizeDiscountOptions = (options = {}) => ({
+  ...options,
+  rfm_segments: Array.isArray(options?.rfm_segments) ? options.rfm_segments.map((v) => String(v)) : [],
+  outlet_classifications: normalizeStep2OutletClassifications(options?.outlet_classifications || []),
+  slabs: normalizeStep2Slabs(options?.slabs || []),
+  matching_outlets: Number(options?.matching_outlets || 0),
+})
+
+const DEFAULT_STEP1_FILTERS = {
+  states: [],
+  categories: [],
+  subcategories: ['STX INSTA SHAMPOO', 'STREAX INSTA SHAMPOO'],
+  brands: [],
+  sizes: ['18-ML'],
+  recency_threshold: 90,
+  frequency_threshold: 20,
+}
+
+const DEFAULT_STEP5_FILTERS = {
+  states: [],
+  categories: [],
+  subcategories: [],
+  brands: [],
+  sizes: [],
+  outlet_classifications: [],
+  product_codes: [],
 }
 
 const EMPTY_FILTERS = {
@@ -60,6 +144,7 @@ const resolveStepTabFromQuery = (stepParam) => {
   if (stepParam === '2') return 'step2'
   if (stepParam === '3') return 'step3'
   if (stepParam === '4') return 'step4'
+  if (stepParam === '5') return 'step5'
   return 'step1'
 }
 
@@ -67,6 +152,7 @@ const resolveStepQueryFromTab = (stepTab) => {
   if (stepTab === 'step2') return '2'
   if (stepTab === 'step3') return '3'
   if (stepTab === 'step4') return '4'
+  if (stepTab === 'step5') return '5'
   return null
 }
 
@@ -114,17 +200,135 @@ const splitInsightLabel = (line) => {
   return { label: '', detail: line }
 }
 
+const EdaMultiSelect = ({
+  label,
+  options = [],
+  selectedValues = [],
+  onChange,
+  placeholder = 'All',
+  disabled = false,
+}) => {
+  const [isOpen, setIsOpen] = useState(false)
+  const [search, setSearch] = useState('')
+  const normalizedOptions = useMemo(
+    () =>
+      (options || []).map((opt) =>
+        typeof opt === 'string'
+          ? { value: String(opt), label: String(opt) }
+          : { value: String(opt.value), label: String(opt.label ?? opt.value) }
+      ),
+    [options]
+  )
+
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase()
+    if (!q) return normalizedOptions
+    return normalizedOptions.filter((opt) => opt.label.toLowerCase().includes(q))
+  }, [normalizedOptions, search])
+
+  const selectedSet = useMemo(() => new Set((selectedValues || []).map((v) => String(v))), [selectedValues])
+  const selectedCount = selectedSet.size
+  const displayText =
+    selectedCount === 0
+      ? placeholder
+      : selectedCount === 1
+        ? normalizedOptions.find((opt) => selectedSet.has(opt.value))?.label || '1 selected'
+        : `${selectedCount} selected`
+
+  const toggle = (value) => {
+    if (disabled) return
+    const valueStr = String(value)
+    if (selectedSet.has(valueStr)) {
+      onChange((selectedValues || []).filter((v) => String(v) !== valueStr))
+    } else {
+      onChange([...(selectedValues || []), valueStr])
+    }
+  }
+
+  const handleSelectAllFiltered = () => {
+    if (disabled) return
+    const merged = new Set((selectedValues || []).map((v) => String(v)))
+    filtered.forEach((opt) => merged.add(opt.value))
+    onChange(Array.from(merged))
+  }
+
+  const handleClear = () => {
+    if (disabled) return
+    onChange([])
+  }
+
+  return (
+    <div className="relative">
+      <label className="block text-sm font-medium text-gray-700 mb-1">{label}</label>
+      <button
+        type="button"
+        onClick={() => !disabled && setIsOpen((v) => !v)}
+        className={`w-full px-3 py-2 text-left border border-gray-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-primary flex items-center justify-between text-sm ${
+          disabled ? 'opacity-60 cursor-not-allowed' : 'hover:bg-gray-50'
+        }`}
+      >
+        <span className={selectedCount === 0 ? 'text-gray-400' : 'text-gray-900'}>{displayText}</span>
+        {isOpen ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+      </button>
+      {isOpen && (
+        <>
+          <div className="fixed inset-0 z-40" onClick={() => setIsOpen(false)} />
+          <div className="absolute z-50 w-full mt-1 bg-white border border-gray-300 rounded-lg shadow-lg overflow-hidden">
+            <div className="p-2 border-b border-gray-200 bg-gray-50">
+              <div className="relative">
+                <Search className="absolute left-2 top-2.5 w-4 h-4 text-gray-400" />
+                <input
+                  type="text"
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  placeholder="Search options..."
+                  className="w-full pl-8 pr-3 py-2 text-sm border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-primary"
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-2 mt-2">
+                <button
+                  type="button"
+                  onClick={handleSelectAllFiltered}
+                  className="text-xs px-2 py-1 bg-primary text-white rounded hover:bg-opacity-90"
+                >
+                  Select All
+                </button>
+                <button
+                  type="button"
+                  onClick={handleClear}
+                  className="text-xs px-2 py-1 bg-gray-200 text-gray-700 rounded hover:bg-gray-300"
+                >
+                  Clear
+                </button>
+              </div>
+            </div>
+            <div className="max-h-64 overflow-y-auto">
+              {filtered.length === 0 ? (
+                <div className="px-3 py-2 text-sm text-gray-500">No options found</div>
+              ) : (
+                filtered.map((opt) => (
+                  <label key={opt.value} className="flex items-center px-3 py-2 hover:bg-gray-50 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={selectedSet.has(opt.value)}
+                      onChange={() => toggle(opt.value)}
+                      className="w-4 h-4 text-primary border-gray-300 rounded focus:ring-primary"
+                    />
+                    <span className="ml-2 text-sm text-gray-700">{opt.label}</span>
+                  </label>
+                ))
+              )}
+            </div>
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
+
 const RFMAnalysis = () => {
   const [searchParams, setSearchParams] = useSearchParams()
-  const [filters, setFilters] = useState({
-    states: [],
-    categories: [],
-    subcategories: [],
-    brands: [],
-    sizes: [],
-    recency_threshold: 90,
-    frequency_threshold: 20,
-  })
+  const [filters, setFilters] = useState(DEFAULT_STEP1_FILTERS)
   const [rfmData, setRfmData] = useState(null)
   const [activeStepTab, setActiveStepTab] = useState(resolveStepTabFromQuery(searchParams.get('step')))
   const [baseDepthConfig, setBaseDepthConfig] = useState({
@@ -165,6 +369,18 @@ const RFMAnalysis = () => {
   const [plannerResult, setPlannerResult] = useState(null)
   const [plannerErrorMessage, setPlannerErrorMessage] = useState('')
   const [selectedPlannerSlab, setSelectedPlannerSlab] = useState('')
+  const [scenarioResult, setScenarioResult] = useState(null)
+  const [scenarioErrorMessage, setScenarioErrorMessage] = useState('')
+  const [scenarioFile, setScenarioFile] = useState(null)
+  const [step5Filters, setStep5Filters] = useState(DEFAULT_STEP5_FILTERS)
+  const [edaOptions, setEdaOptions] = useState({
+    product_options: [],
+    outlet_classifications: [],
+    matching_rows: 0,
+  })
+  const [isEdaOptionsLoading, setIsEdaOptionsLoading] = useState(false)
+  const [edaResult, setEdaResult] = useState(null)
+  const [edaErrorMessage, setEdaErrorMessage] = useState('')
   const [modelingSettings, setModelingSettings] = useState({
     include_lag_discount: true,
     cogs_per_unit: 0,
@@ -173,14 +389,15 @@ const RFMAnalysis = () => {
   const [plannerInputs, setPlannerInputs] = useState({
     planned_structural_discounts: [],
     planned_base_prices: [],
-    cogs_per_unit: 0,
   })
 
   // Fetch initial available filters
   const { data: availableFilters, isLoading: filtersLoading } = useQuery({
     queryKey: ['filters'],
-    queryFn: () => withTimeout(getAvailableFilters(), 8000),
-    retry: 1,
+    queryFn: getAvailableFilters,
+    retry: 3,
+    retryDelay: (attempt) => Math.min(1000 * (2 ** attempt), 8000),
+    staleTime: 5 * 60 * 1000,
     placeholderData: EMPTY_FILTERS,
   })
 
@@ -311,6 +528,34 @@ const RFMAnalysis = () => {
     },
   })
 
+  const scenarioMutation = useMutation({
+    mutationFn: comparePlannerScenarios,
+    onSuccess: (data) => {
+      setScenarioResult(data)
+      setScenarioErrorMessage('')
+    },
+    onError: (error) => {
+      setScenarioErrorMessage(error?.message || 'Failed to run Step 5 scenario comparison')
+    },
+  })
+
+  const edaMutation = useMutation({
+    mutationFn: getEDAOverview,
+    onSuccess: (data) => {
+      setEdaResult(data)
+      setEdaErrorMessage('')
+      if (Array.isArray(data?.product_options) && data.product_options.length > 0) {
+        setEdaOptions((prev) => ({
+          ...prev,
+          product_options: data.product_options,
+        }))
+      }
+    },
+    onError: (error) => {
+      setEdaErrorMessage(error?.message || 'Failed to run Step 5 EDA')
+    },
+  })
+
   const setStepTab = useCallback((step) => {
     setActiveStepTab(step)
     const nextParams = new URLSearchParams(searchParams)
@@ -362,33 +607,43 @@ const RFMAnalysis = () => {
 
         const state = restored?.state || {}
         const restoredFilters = state.filters || {}
+        const hasSavedStep1Selection = ['states', 'categories', 'subcategories', 'brands', 'sizes']
+          .some((key) => Array.isArray(restoredFilters[key]) && restoredFilters[key].length > 0)
         const restoredTableQuery = state.table_query || {}
         const restoredStep2 = state.step2_filters || {}
         const restoredConfig = state.base_depth_config || {}
         const restoredUi = state.ui_state || {}
+        const restoredStep5Filters = restoredUi.step5_filters || {}
 
         setFilters((prev) => ({
           ...prev,
           ...restoredFilters,
-          states: restoredFilters.states || [],
-          categories: restoredFilters.categories || [],
-          subcategories: restoredFilters.subcategories || [],
-          brands: restoredFilters.brands || [],
-          sizes: restoredFilters.sizes || [],
+          states: restoredFilters.states || (hasSavedStep1Selection ? [] : DEFAULT_STEP1_FILTERS.states),
+          categories: restoredFilters.categories || (hasSavedStep1Selection ? [] : DEFAULT_STEP1_FILTERS.categories),
+          subcategories: restoredFilters.subcategories || (hasSavedStep1Selection ? [] : DEFAULT_STEP1_FILTERS.subcategories),
+          brands: restoredFilters.brands || (hasSavedStep1Selection ? [] : DEFAULT_STEP1_FILTERS.brands),
+          sizes: restoredFilters.sizes || (hasSavedStep1Selection ? [] : DEFAULT_STEP1_FILTERS.sizes),
+          recency_threshold: Number(restoredFilters.recency_threshold || DEFAULT_STEP1_FILTERS.recency_threshold),
+          frequency_threshold: Number(restoredFilters.frequency_threshold || DEFAULT_STEP1_FILTERS.frequency_threshold),
         }))
         setTableQuery((prev) => ({ ...prev, ...restoredTableQuery }))
-        setStep2Filters((prev) => ({
-          ...prev,
-          ...restoredStep2,
-          rfm_segments: restoredStep2.rfm_segments || [],
-          outlet_classifications: restoredStep2.outlet_classifications || [],
-          slabs: restoredStep2.slabs || [],
-        }))
+        setStep2Filters(normalizeStep2Filters(restoredStep2))
         setBaseDepthConfig((prev) => ({ ...prev, ...restoredConfig }))
         setLastCalculatedFilters(state.last_calculated_filters || null)
         if (typeof restoredUi.is_base_depth_config_expanded === 'boolean') {
           setIsBaseDepthConfigExpanded(restoredUi.is_base_depth_config_expanded)
         }
+        setStep5Filters((prev) => ({
+          ...prev,
+          ...restoredStep5Filters,
+          states: restoredStep5Filters.states || [],
+          categories: restoredStep5Filters.categories || [],
+          subcategories: restoredStep5Filters.subcategories || [],
+          brands: restoredStep5Filters.brands || [],
+          sizes: restoredStep5Filters.sizes || [],
+          outlet_classifications: restoredStep5Filters.outlet_classifications || [],
+          product_codes: restoredStep5Filters.product_codes || [],
+        }))
         if (restored?.step1_result) {
           setRfmData(restored.step1_result)
         }
@@ -414,9 +669,14 @@ const RFMAnalysis = () => {
             setSelectedPlannerSlab(String(state.step4_result.slab))
           }
         }
+        if (restored?.step5_result) {
+          setScenarioResult(restored.step5_result)
+        } else if (state?.step5_result) {
+          setScenarioResult(state.step5_result)
+        }
 
         const stepFromUrl = resolveStepTabFromQuery(initialParams.get('step'))
-        const restoredStep = ['step1', 'step2', 'step3', 'step4'].includes(state.active_step) ? state.active_step : 'step1'
+        const restoredStep = ['step1', 'step2', 'step3', 'step4', 'step5'].includes(state.active_step) ? state.active_step : 'step1'
         const effectiveStep = initialParams.get('step') === null ? restoredStep : stepFromUrl
         setActiveStepTab(effectiveStep)
 
@@ -462,6 +722,7 @@ const RFMAnalysis = () => {
           last_calculated_filters: lastCalculatedFilters,
           ui_state: {
             is_base_depth_config_expanded: isBaseDepthConfigExpanded,
+            step5_filters: step5Filters,
           },
         })
       } catch {
@@ -482,6 +743,7 @@ const RFMAnalysis = () => {
     baseDepthConfig,
     lastCalculatedFilters,
     isBaseDepthConfigExpanded,
+    step5Filters,
   ])
 
   const handleCalculate = () => {
@@ -509,10 +771,12 @@ const RFMAnalysis = () => {
     setPlannerResult(null)
     setPlannerErrorMessage('')
     setSelectedPlannerSlab('')
+    setScenarioResult(null)
+    setScenarioErrorMessage('')
+    setScenarioFile(null)
     setPlannerInputs({
       planned_structural_discounts: [],
       planned_base_prices: [],
-      cogs_per_unit: 0,
     })
     mutateRFM({ run_id: runId || undefined, ...baseFilters, ...initialQuery })
   }
@@ -543,6 +807,8 @@ const RFMAnalysis = () => {
     }))
     setModelingResult(null)
     setPlannerResult(null)
+    setScenarioResult(null)
+    setScenarioErrorMessage('')
   }
 
   const handleRunBaseDepth = () => {
@@ -551,6 +817,8 @@ const RFMAnalysis = () => {
     setModelingErrorMessage('')
     setPlannerResult(null)
     setPlannerErrorMessage('')
+    setScenarioResult(null)
+    setScenarioErrorMessage('')
     const payload = {
       run_id: runId || undefined,
       ...baseFilters,
@@ -596,6 +864,8 @@ const RFMAnalysis = () => {
     }
     setPlannerResult(null)
     setPlannerErrorMessage('')
+    setScenarioResult(null)
+    setScenarioErrorMessage('')
     modelingMutation.mutate(payload)
   }
 
@@ -642,7 +912,7 @@ const RFMAnalysis = () => {
       constraint_structural_non_negative: Boolean(FIXED_STAGE3_SETTINGS.constraint_structural_non_negative),
       constraint_tactical_non_negative: Boolean(FIXED_STAGE3_SETTINGS.constraint_tactical_non_negative),
       constraint_lag_non_positive: Boolean(FIXED_STAGE3_SETTINGS.constraint_lag_non_positive),
-      cogs_per_unit: Number(plannerInputs.cogs_per_unit || modelingSettings.cogs_per_unit || 0),
+      cogs_per_unit: Number(modelingSettings.cogs_per_unit || 0),
       ...step2Filters,
       slab,
       slabs: [slab],
@@ -657,7 +927,6 @@ const RFMAnalysis = () => {
     const fallbackBase = plannerResult?.planned_base_prices || []
     const nextStruct = sanitizeArray(inputs?.planned_structural_discounts, fallbackStruct)
     const nextBase = sanitizeArray(inputs?.planned_base_prices, fallbackBase)
-    const nextCogs = Number(inputs?.cogs_per_unit)
     plannerMutation.mutate({
       run_id: runId || undefined,
       ...baseFilters,
@@ -669,9 +938,7 @@ const RFMAnalysis = () => {
       constraint_structural_non_negative: Boolean(FIXED_STAGE3_SETTINGS.constraint_structural_non_negative),
       constraint_tactical_non_negative: Boolean(FIXED_STAGE3_SETTINGS.constraint_tactical_non_negative),
       constraint_lag_non_positive: Boolean(FIXED_STAGE3_SETTINGS.constraint_lag_non_positive),
-      cogs_per_unit: Number.isFinite(nextCogs)
-        ? nextCogs
-        : Number(plannerResult?.cogs_per_unit || modelingSettings.cogs_per_unit || 0),
+      cogs_per_unit: Number(modelingSettings.cogs_per_unit || 0),
       ...step2Filters,
       slab,
       slabs: [slab],
@@ -680,13 +947,56 @@ const RFMAnalysis = () => {
     })
   }
 
+  const handleRunScenarioComparison = () => {
+    if (!modelingResult?.success) {
+      setScenarioErrorMessage('Run Step 3 modeling before Step 5 scenario comparison.')
+      return
+    }
+    const slab = resolvePlannerSlab()
+    if (!slab) {
+      setScenarioErrorMessage('No valid slab available for scenario comparison.')
+      return
+    }
+    if (!scenarioFile) {
+      setScenarioErrorMessage('Upload a CSV/XLSX file with month-wise scenarios first.')
+      return
+    }
+    const baseFilters = lastCalculatedFilters || filters
+    const payload = {
+      run_id: runId || undefined,
+      ...baseFilters,
+      ...baseDepthConfig,
+      include_lag_discount: Boolean(modelingSettings.include_lag_discount),
+      l2_penalty: Number(FIXED_STAGE3_SETTINGS.l2_penalty),
+      optimize_l2_penalty: Boolean(FIXED_STAGE3_SETTINGS.optimize_l2_penalty),
+      constraint_residual_non_negative: Boolean(FIXED_STAGE3_SETTINGS.constraint_residual_non_negative),
+      constraint_structural_non_negative: Boolean(FIXED_STAGE3_SETTINGS.constraint_structural_non_negative),
+      constraint_tactical_non_negative: Boolean(FIXED_STAGE3_SETTINGS.constraint_tactical_non_negative),
+      constraint_lag_non_positive: Boolean(FIXED_STAGE3_SETTINGS.constraint_lag_non_positive),
+      cogs_per_unit: Number(modelingSettings.cogs_per_unit || 0),
+      ...step2Filters,
+      slab,
+      slabs: [slab],
+      disable_ai_insights: true,
+    }
+    scenarioMutation.mutate({ payload, file: scenarioFile })
+  }
+
   const handleStep2FilterChange = (key, value) => {
     setModelingResult(null)
     setModelingErrorMessage('')
     setPlannerResult(null)
     setPlannerErrorMessage('')
+    setScenarioResult(null)
+    setScenarioErrorMessage('')
     setStep2Filters((prev) => {
-      const next = { ...prev, [key]: value }
+      let normalizedValue = value
+      if (key === 'outlet_classifications') {
+        normalizedValue = normalizeStep2OutletClassifications(value || [])
+      } else if (key === 'slabs') {
+        normalizedValue = normalizeStep2Slabs(value || [], discountOptions?.slabs || [])
+      }
+      const next = { ...prev, [key]: normalizedValue }
       if (key === 'rfm_segments') {
         next.outlet_classifications = []
         next.slabs = []
@@ -695,6 +1005,34 @@ const RFMAnalysis = () => {
       }
       return next
     })
+  }
+
+  const buildStep5Payload = (overrides = {}) => {
+    const merged = {
+      ...step5Filters,
+      ...overrides,
+    }
+    return {
+      run_id: runId || undefined,
+      states: merged.states || [],
+      categories: merged.categories || [],
+      subcategories: merged.subcategories || [],
+      brands: merged.brands || [],
+      sizes: merged.sizes || [],
+      outlet_classifications: merged.outlet_classifications || [],
+      product_codes: merged.product_codes || [],
+      top_n_products: 300,
+    }
+  }
+
+  const handleStep5FilterChange = (key, value) => {
+    setEdaErrorMessage('')
+    setEdaResult(null)
+    setStep5Filters((prev) => ({ ...prev, [key]: value }))
+  }
+
+  const handleRunEDA = () => {
+    edaMutation.mutate(buildStep5Payload())
   }
 
   useEffect(() => {
@@ -710,7 +1048,7 @@ const RFMAnalysis = () => {
           ...step2Filters,
         })
         if (isActive && options?.success) {
-          setDiscountOptions(options)
+          setDiscountOptions(normalizeDiscountOptions(options))
         }
       } catch {
         if (isActive) {
@@ -733,6 +1071,131 @@ const RFMAnalysis = () => {
       clearTimeout(timer)
     }
   }, [lastCalculatedFilters, rfmData?.success, step2Filters, runId])
+
+  useEffect(() => {
+    const validSegments = new Set((discountOptions?.rfm_segments || []).map((x) => String(x)))
+    const validOutletTypes = new Set((discountOptions?.outlet_classifications || []).map((x) => String(x)))
+    const validSlabs = normalizeStep2Slabs(discountOptions?.slabs || [])
+
+    setStep2Filters((prev) => {
+      const nextSegments = (prev?.rfm_segments || []).filter((x) => validSegments.has(String(x)))
+      const nextOutletTypes = normalizeStep2OutletClassifications(prev?.outlet_classifications || [])
+        .filter((x) => validOutletTypes.has(String(x)))
+
+      let nextSlabs = normalizeStep2Slabs(prev?.slabs || [], validSlabs)
+      if (nextSlabs.length === 0 && validSlabs.length > 0) {
+        // Default Step 2 slab selection: slab1-slab4 (slab0 hidden).
+        nextSlabs = [...validSlabs]
+      }
+
+      const sameSegments =
+        nextSegments.length === (prev?.rfm_segments || []).length &&
+        nextSegments.every((v, i) => v === (prev?.rfm_segments || [])[i])
+      const sameOutletTypes =
+        nextOutletTypes.length === (prev?.outlet_classifications || []).length &&
+        nextOutletTypes.every((v, i) => v === (prev?.outlet_classifications || [])[i])
+      const sameSlabs =
+        nextSlabs.length === (prev?.slabs || []).length &&
+        nextSlabs.every((v, i) => v === (prev?.slabs || [])[i])
+
+      if (sameSegments && sameOutletTypes && sameSlabs) return prev
+
+      return {
+        ...prev,
+        rfm_segments: nextSegments,
+        outlet_classifications: nextOutletTypes,
+        slabs: nextSlabs,
+      }
+    })
+  }, [
+    discountOptions?.rfm_segments,
+    discountOptions?.outlet_classifications,
+    discountOptions?.slabs,
+  ])
+
+  useEffect(() => {
+    if (activeStepTab !== 'step_eda') return
+
+    let isActive = true
+    const timer = setTimeout(async () => {
+      try {
+        setIsEdaOptionsLoading(true)
+        const options = await getEDAOptions({
+          run_id: runId || undefined,
+          states: [],
+          categories: [],
+          subcategories: [],
+          brands: [],
+          sizes: [],
+          outlet_classifications: [],
+          product_codes: [],
+          top_n_products: 300,
+        })
+        if (isActive) {
+          setEdaOptions({
+            product_options: options.product_options || [],
+            outlet_classifications: options.outlet_classifications || [],
+            matching_rows: options.matching_rows || 0,
+          })
+        }
+      } catch {
+        // Keep last successful options in UI on transient failures/timeouts.
+      } finally {
+        if (isActive) {
+          setIsEdaOptionsLoading(false)
+        }
+      }
+    }, 300)
+
+    return () => {
+      isActive = false
+      clearTimeout(timer)
+    }
+  }, [
+    activeStepTab,
+    runId,
+  ])
+
+  useEffect(() => {
+    const edaBaseOptions = availableFilters || EMPTY_FILTERS
+    const validStates = new Set((edaBaseOptions.states || []).map((x) => String(x)))
+    const validCategories = new Set((edaBaseOptions.categories || []).map((x) => String(x)))
+    const validSubcategories = new Set((edaBaseOptions.subcategories || []).map((x) => String(x)))
+    const validBrands = new Set((edaBaseOptions.brands || []).map((x) => String(x)))
+    const validSizes = new Set((edaBaseOptions.sizes || []).map((x) => String(x)))
+    const validProducts = new Set((edaOptions.product_options || []).map((p) => String(p.code)))
+    const validClasses = new Set((edaOptions.outlet_classifications || []).map((x) => String(x)))
+    setStep5Filters((prev) => {
+      const nextStates = (prev.states || []).filter((x) => validStates.has(String(x)))
+      const nextCategories = (prev.categories || []).filter((x) => validCategories.has(String(x)))
+      const nextSubcategories = (prev.subcategories || []).filter((x) => validSubcategories.has(String(x)))
+      const nextBrands = (prev.brands || []).filter((x) => validBrands.has(String(x)))
+      const nextSizes = (prev.sizes || []).filter((x) => validSizes.has(String(x)))
+      const nextProducts = (prev.product_codes || []).filter((x) => validProducts.has(String(x)))
+      const nextClasses = (prev.outlet_classifications || []).filter((x) => validClasses.has(String(x)))
+      if (
+        nextStates.length === (prev.states || []).length &&
+        nextCategories.length === (prev.categories || []).length &&
+        nextSubcategories.length === (prev.subcategories || []).length &&
+        nextBrands.length === (prev.brands || []).length &&
+        nextSizes.length === (prev.sizes || []).length &&
+        nextProducts.length === (prev.product_codes || []).length &&
+        nextClasses.length === (prev.outlet_classifications || []).length
+      ) {
+        return prev
+      }
+      return {
+        ...prev,
+        states: nextStates,
+        categories: nextCategories,
+        subcategories: nextSubcategories,
+        brands: nextBrands,
+        sizes: nextSizes,
+        product_codes: nextProducts,
+        outlet_classifications: nextClasses,
+      }
+    })
+  }, [edaOptions, availableFilters])
 
   useEffect(() => {
     const slabs = (modelingResult?.slab_results || []).filter((x) => x?.valid).map((x) => String(x.slab))
@@ -760,7 +1223,6 @@ const RFMAnalysis = () => {
     setPlannerInputs({
       planned_structural_discounts: plannerResult?.planned_structural_discounts || [],
       planned_base_prices: plannerResult?.planned_base_prices || [],
-      cogs_per_unit: Number(plannerResult?.cogs_per_unit || 0),
     })
   }, [plannerResult])
 
@@ -801,6 +1263,7 @@ const RFMAnalysis = () => {
 
   // Use cascaded filters if available, otherwise use initial filters
   const displayFilters = cascadedFilters || availableFilters
+  const edaDisplayFilters = availableFilters || EMPTY_FILTERS
   const trinityStatus = String(plannerResult?.ai_insights_status || 'pending_recalculate')
   const trinityStatusLabel = trinityStatus === 'pending_recalculate'
     ? 'After Recalculate'
@@ -828,81 +1291,15 @@ const RFMAnalysis = () => {
           loadingLabel="Updating Step 2 options..."
           matchingLabel="Matching outlets after Step 2 filters"
         />
-        <div className="bg-white rounded-lg shadow-md overflow-visible">
-          <div
-            className="bg-primary text-white p-4 flex items-center justify-between cursor-pointer"
-            onClick={() => setIsBaseDepthConfigExpanded((prev) => !prev)}
+        <div className="bg-white rounded-lg shadow-md p-4">
+          <button
+            type="button"
+            onClick={handleRunBaseDepth}
+            disabled={baseDepthMutation.isPending}
+            className="w-full px-4 py-2 rounded-md bg-white border border-primary text-body text-sm font-semibold disabled:opacity-50"
           >
-            <div className="flex items-center space-x-3">
-              <SlidersHorizontal size={20} />
-              <h3 className="text-lg font-semibold">Step 2: Base Depth Configuration</h3>
-            </div>
-            {isBaseDepthConfigExpanded ? <ChevronUp size={18} /> : <ChevronDown size={18} />}
-          </div>
-
-          {isBaseDepthConfigExpanded && (
-            <div className="p-4 space-y-3">
-              <p className="text-sm text-muted">
-                Configure estimator parameters, then run base discount estimation.
-              </p>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Time Aggregation</label>
-                <select
-                  value={baseDepthConfig.time_aggregation}
-                  onChange={(e) => handleBaseDepthConfigChange('time_aggregation', e.target.value)}
-                  className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg"
-                >
-                  <option value="D">Daily</option>
-                  <option value="W">Weekly</option>
-                  <option value="M">Monthly</option>
-                </select>
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Min Monthly Step-Up (pp)</label>
-                <input
-                  type="number"
-                  min="0"
-                  max="5"
-                  step="0.1"
-                  value={baseDepthConfig.min_upward_jump_pp}
-                  onChange={(e) => handleBaseDepthConfigChange('min_upward_jump_pp', parseFloat(e.target.value || '0'))}
-                  className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg"
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Min Monthly Step-Down (pp)</label>
-                <input
-                  type="number"
-                  min="0"
-                  max="5"
-                  step="0.1"
-                  value={baseDepthConfig.min_downward_drop_pp}
-                  onChange={(e) => handleBaseDepthConfigChange('min_downward_drop_pp', parseFloat(e.target.value || '0'))}
-                  className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg"
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Round Step</label>
-                <input
-                  type="number"
-                  min="0.1"
-                  max="10"
-                  step="0.1"
-                  value={baseDepthConfig.round_step}
-                  onChange={(e) => handleBaseDepthConfigChange('round_step', parseFloat(e.target.value || '0.5'))}
-                  className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg"
-                />
-              </div>
-              <button
-                type="button"
-                onClick={handleRunBaseDepth}
-                disabled={baseDepthMutation.isPending}
-                className="w-full px-4 py-2 rounded-md bg-white border border-primary text-body text-sm font-semibold disabled:opacity-50"
-              >
-                {baseDepthMutation.isPending ? 'Estimating...' : 'Run Base Depth Estimator'}
-              </button>
-            </div>
-          )}
+            {baseDepthMutation.isPending ? 'Estimating...' : 'Run Base Depth Estimator'}
+          </button>
         </div>
       </div>
     )
@@ -963,7 +1360,6 @@ const RFMAnalysis = () => {
                 setPlannerInputs({
                   planned_structural_discounts: [],
                   planned_base_prices: [],
-                  cogs_per_unit: Number(modelingSettings.cogs_per_unit || 0),
                 })
               }}
               className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg"
@@ -973,20 +1369,6 @@ const RFMAnalysis = () => {
                 <option key={s} value={s}>{s}</option>
               ))}
             </select>
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">COGS Per Unit</label>
-            <input
-              type="number"
-              min="0"
-              step="0.5"
-              value={plannerInputs.cogs_per_unit}
-              onChange={(e) => setPlannerInputs((prev) => ({
-                ...prev,
-                cogs_per_unit: parseFloat(e.target.value || '0'),
-              }))}
-              className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg"
-            />
           </div>
 
           <button
@@ -1032,6 +1414,63 @@ const RFMAnalysis = () => {
               </p>
             )}
           </div>
+        </div>
+      </div>
+    )
+  } else if (activeStepTab === 'step5') {
+    rightSidebarContent = (
+      <div className="bg-white rounded-lg shadow-md overflow-visible">
+        <div className="bg-primary text-white p-4">
+          <h3 className="text-lg font-semibold">Step 5: Scenario Settings</h3>
+        </div>
+        <div className="p-4 space-y-3">
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Selected Slab</label>
+            <select
+              value={resolvePlannerSlab()}
+              onChange={(e) => {
+                setSelectedPlannerSlab(e.target.value)
+                setScenarioResult(null)
+                setScenarioErrorMessage('')
+              }}
+              className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg"
+            >
+              <option value="">Select slab</option>
+              {availablePlannerSlabs.map((s) => (
+                <option key={s} value={s}>{s}</option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Scenario File (CSV/XLSX)</label>
+            <input
+              type="file"
+              accept=".csv,.xlsx,.xls"
+              onChange={(e) => {
+                const file = e.target.files?.[0] || null
+                setScenarioFile(file)
+                setScenarioResult(null)
+                setScenarioErrorMessage('')
+              }}
+              className="w-full text-sm"
+            />
+          </div>
+          <p className="text-xs text-muted">
+            Format: first column = Month (April to March), other columns = Scenario 1..N with % values.
+          </p>
+          <button
+            type="button"
+            onClick={handleRunScenarioComparison}
+            disabled={scenarioMutation.isPending || !resolvePlannerSlab() || !scenarioFile}
+            className="w-full px-4 py-2 rounded-md bg-white border border-primary text-body text-sm font-semibold disabled:opacity-50"
+          >
+            {scenarioMutation.isPending ? 'Running Comparison...' : 'Run Comparison'}
+          </button>
+          {scenarioFile && (
+            <p className="text-xs text-muted">
+              Uploaded: <span className="font-semibold text-body">{scenarioFile.name}</span>
+            </p>
+          )}
         </div>
       </div>
     )
@@ -1110,6 +1549,17 @@ const RFMAnalysis = () => {
               }`}
             >
               Step 4: 12-Month Planner
+            </button>
+            <button
+              type="button"
+              onClick={() => setStepTab('step5')}
+              className={`px-4 py-2 rounded-md text-sm font-semibold border ${
+                activeStepTab === 'step5'
+                  ? 'bg-white text-body border-primary'
+                  : 'bg-white text-muted border-gray-300'
+              }`}
+            >
+              Step 5: Scenario Comparison
             </button>
           </div>
         </div>
@@ -1261,7 +1711,49 @@ const RFMAnalysis = () => {
               showCogsInput={false}
               showMonthEditor
               showResetButton
-              fixedCogsPerUnit={Number(plannerInputs.cogs_per_unit || 0)}
+              fixedCogsPerUnit={Number(modelingSettings.cogs_per_unit || 0)}
+            />
+
+            {plannerResult?.success && (
+              <div className="bg-white rounded-lg shadow-md p-4 flex items-center justify-between">
+                <div>
+                  <h4 className="text-base font-semibold text-body">Step 4 Completed</h4>
+                  <p className="text-sm text-muted">Proceed to Step 5 for scenario upload and comparison.</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setStepTab('step5')}
+                  className="px-4 py-2 rounded-md bg-white text-body border border-primary text-sm font-semibold"
+                >
+                  Open Step 5
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+
+        {activeStepTab === 'step5' && (
+          <div className="space-y-6">
+            {!modelingResult?.success && (
+              <div className="bg-white rounded-lg shadow-md p-8">
+                <h3 className="text-xl font-semibold text-body mb-2">Step 5 Requires Step 3 Output</h3>
+                <p className="text-muted mb-4">
+                  Run Modeling and ROI first, then upload scenarios for comparison.
+                </p>
+                <button
+                  type="button"
+                  onClick={() => setStepTab('step3')}
+                  className="px-4 py-2 rounded-md bg-white text-body border border-primary text-sm font-semibold"
+                >
+                  Go To Step 3
+                </button>
+              </div>
+            )}
+            <ScenarioComparison
+              data={scenarioResult}
+              isLoading={scenarioMutation.isPending}
+              isError={scenarioMutation.isError || Boolean(scenarioErrorMessage)}
+              errorMessage={scenarioErrorMessage || scenarioMutation.error?.message}
             />
           </div>
         )}
@@ -1329,6 +1821,23 @@ const RFMAnalysis = () => {
             </button>
           </div>
         )}
+
+        {activeStepTab === 'step5' && !rfmData && !calculateMutation.isPending && (
+          <div className="bg-white rounded-lg shadow-md p-8">
+            <h3 className="text-xl font-semibold text-body mb-2">Step 5 Requires Step 1 Output</h3>
+            <p className="text-muted mb-4">
+              Run Store Segmentation first, then complete Steps 2-4 before scenario comparison.
+            </p>
+            <button
+              type="button"
+              onClick={() => setStepTab('step1')}
+              className="px-4 py-2 rounded-md bg-white text-body border border-primary text-sm font-semibold"
+            >
+              Go To Step 1
+            </button>
+          </div>
+        )}
+
       </div>
     </Layout>
   )

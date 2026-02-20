@@ -1,5 +1,5 @@
 import { Link, useLocation } from 'react-router-dom'
-import { BarChart3, Home, Menu, X, Settings, Percent, LineChart, CalendarDays } from 'lucide-react'
+import { BarChart3, Home, Menu, X, Settings, Percent, LineChart, CalendarDays, Upload } from 'lucide-react'
 import { useState } from 'react'
 
 const Layout = ({ children, rightSidebar }) => {
@@ -14,6 +14,7 @@ const Layout = ({ children, rightSidebar }) => {
     { name: 'Base Discount Estimator', href: '/rfm?step=2', icon: Percent, step: '2' },
     { name: 'Modeling & ROI', href: '/rfm?step=3', icon: LineChart, step: '3' },
     { name: '12-Month Planner', href: '/rfm?step=4', icon: CalendarDays, step: '4' },
+    { name: 'Scenario Comparison', href: '/rfm?step=5', icon: Upload, step: '5' },
   ]
 
   const isNavActive = (item) => {
@@ -29,8 +30,11 @@ const Layout = ({ children, rightSidebar }) => {
     if (item.step === '4') {
       return location.pathname === '/rfm' && stepParam === '4'
     }
+    if (item.step === '5') {
+      return location.pathname === '/rfm' && stepParam === '5'
+    }
     if (item.step === '1') {
-      return location.pathname === '/rfm' && stepParam !== '2' && stepParam !== '3' && stepParam !== '4'
+      return location.pathname === '/rfm' && stepParam !== '2' && stepParam !== '3' && stepParam !== '4' && stepParam !== '5'
     }
     return location.pathname === item.href
   }

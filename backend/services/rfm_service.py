@@ -1,7 +1,7 @@
 import pandas as pd
 import numpy as np
 from pathlib import Path
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Optional
 from sklearn.cluster import KMeans
 from sklearn.preprocessing import StandardScaler
 from sklearn.linear_model import LinearRegression
@@ -12,6 +12,7 @@ import json
 import uuid
 import copy
 import re
+from io import BytesIO
 from datetime import datetime, date
 import urllib.request
 import urllib.error
@@ -22,7 +23,10 @@ from models.rfm_models import (
     BaseDepthRequest, BaseDepthResponse, BaseDepthPoint,
     DiscountOptionsRequest, DiscountOptionsResponse,
     ModelingRequest, ModelingResponse, ModelingSlabResult, ModelingPoint,
-    PlannerRequest, PlannerResponse, PlannerMonthPoint
+    PlannerRequest, PlannerResponse, PlannerMonthPoint,
+    PlannerScenarioComparisonResponse, PlannerScenarioComparisonRow,
+    EDARequest, EDAResponse, EDAProductOption, EDAProductContribution,
+    EDAContributionRow, EDAOptionsResponse
 )
 
 
@@ -152,9 +156,9 @@ class RFMService:
             "filters": {
                 "states": [],
                 "categories": [],
-                "subcategories": [],
+                "subcategories": ["STX INSTA SHAMPOO", "STREAX INSTA SHAMPOO"],
                 "brands": [],
-                "sizes": [],
+                "sizes": ["18-ML"],
                 "recency_threshold": 90,
                 "frequency_threshold": 20,
             },
@@ -181,6 +185,15 @@ class RFMService:
             "last_calculated_filters": None,
             "ui_state": {
                 "is_base_depth_config_expanded": True,
+                "step5_filters": {
+                    "states": [],
+                    "categories": [],
+                    "subcategories": [],
+                    "brands": [],
+                    "sizes": [],
+                    "outlet_classifications": [],
+                    "product_codes": [],
+                },
             },
         }
 
@@ -508,8 +521,12 @@ class RFMService:
         rfm = dataset['rfm']
 
         selected_segments = list(getattr(request, 'rfm_segments', []) or [])
-        selected_classifications = list(getattr(request, 'outlet_classifications', []) or [])
-        selected_slabs = [str(x) for x in (getattr(request, 'slabs', []) or [])]
+        selected_classifications = self._normalize_step2_outlet_classifications(
+            list(getattr(request, 'outlet_classifications', []) or [])
+        )
+        selected_slabs = self._normalize_step2_slab_values(
+            [str(x) for x in (getattr(request, 'slabs', []) or [])]
+        )
         selected_outlets = [str(x) for x in (getattr(request, 'outlet_ids', []) or [])]
 
         rfm_scope = rfm.copy()
@@ -521,22 +538,175 @@ class RFMService:
         outlet_ids = set(rfm_scope['Outlet_ID'].astype(str).tolist())
 
         if selected_classifications and 'Final_Outlet_Classification' in df.columns:
+            class_groups = self._to_step2_outlet_group_series(df['Final_Outlet_Classification'])
             class_outlets = set(
-                df[df['Final_Outlet_Classification'].isin(selected_classifications)]['Outlet_ID'].astype(str).tolist()
+                df[class_groups.isin(selected_classifications)]['Outlet_ID'].astype(str).tolist()
             )
             outlet_ids = outlet_ids.intersection(class_outlets)
 
         df_scope = df[df['Outlet_ID'].astype(str).isin(outlet_ids)].copy()
-        if selected_slabs and 'Slab' in df_scope.columns:
-            df_scope = df_scope[df_scope['Slab'].astype(str).isin(selected_slabs)]
+        df_scope_all_slabs = df_scope.copy()
+        if 'Slab' in df_scope.columns:
+            df_scope = df_scope[df_scope['Slab'].astype(str).map(self._is_step2_allowed_slab)]
+            if selected_slabs:
+                df_scope = df_scope[df_scope['Slab'].astype(str).isin(selected_slabs)]
 
         rfm_scope = rfm[rfm['Outlet_ID'].astype(str).isin(set(df_scope['Outlet_ID'].astype(str).tolist()))].copy()
 
         return {
             'dataset': dataset,
             'df_scope': df_scope,
+            'df_scope_all_slabs': df_scope_all_slabs,
             'rfm_scope': rfm_scope,
         }
+
+    def _to_step2_outlet_group_label(self, value: Any) -> str:
+        raw = str(value or '').strip().upper().replace(' ', '')
+        if not raw:
+            return ''
+        if raw == 'WH':
+            return 'WH'
+        # Business rule for Step 2: merge SS + OtherGT (and any non-WH) under OtherGT.
+        return 'OtherGT'
+
+    def _to_step2_outlet_group_series(self, series: pd.Series) -> pd.Series:
+        if series is None:
+            return pd.Series(dtype=str)
+        normalized = (
+            series.fillna('')
+            .astype(str)
+            .str.upper()
+            .str.replace(' ', '', regex=False)
+            .str.strip()
+        )
+        out = pd.Series(np.where(normalized.eq('WH'), 'WH', np.where(normalized.eq(''), '', 'OtherGT')), index=series.index)
+        return out.astype(str)
+
+    def _normalize_step2_outlet_classifications(self, values: List[Any]) -> List[str]:
+        normalized = []
+        for value in (values or []):
+            label = self._to_step2_outlet_group_label(value)
+            if label:
+                normalized.append(label)
+        # Preserve consistent display order.
+        order = {'OtherGT': 0, 'WH': 1}
+        unique = list(dict.fromkeys(normalized))
+        return sorted(unique, key=lambda x: (order.get(x, 99), x))
+
+    def _build_summary_by_slab(self, df_scope: pd.DataFrame) -> List[Dict[str, Any]]:
+        if df_scope is None or df_scope.empty or 'Slab' not in df_scope.columns:
+            return []
+
+        required_numeric = ['Quantity', 'SalesValue_atBasicRate', 'TotalDiscount']
+        if any(col not in df_scope.columns for col in required_numeric):
+            return []
+
+        work = df_scope.copy()
+        outlet_col = 'Outlet_ID' if 'Outlet_ID' in work.columns else ('Store_ID' if 'Store_ID' in work.columns else None)
+        if outlet_col is None:
+            return []
+
+        invoice_col = None
+        for candidate in ['Invoice_No', 'Bill_No', 'Sales_Order_No']:
+            if candidate in work.columns:
+                invoice_col = candidate
+                break
+        if invoice_col is None:
+            return []
+
+        work['Slab'] = work['Slab'].astype(str)
+        work['Quantity'] = pd.to_numeric(work['Quantity'], errors='coerce').fillna(0.0)
+        work['SalesValue_atBasicRate'] = pd.to_numeric(work['SalesValue_atBasicRate'], errors='coerce').fillna(0.0)
+        work['TotalDiscount'] = pd.to_numeric(work['TotalDiscount'], errors='coerce').fillna(0.0)
+
+        date_part = pd.to_datetime(work.get('Date'), errors='coerce').dt.strftime('%Y-%m-%d').fillna('')
+        work['Invoice_Key'] = (
+            work[outlet_col].astype(str).fillna('')
+            + '|'
+            + work[invoice_col].astype(str).fillna('')
+            + '|'
+            + date_part
+        )
+
+        slab_summary = (
+            work.groupby('Slab', as_index=False)
+            .agg(
+                Outlets=(outlet_col, 'nunique'),
+                Invoices=('Invoice_Key', 'nunique'),
+                Quantity=('Quantity', 'sum'),
+                AOQ=('Quantity', 'mean'),
+                Sales_Value=('SalesValue_atBasicRate', 'sum'),
+                Total_Discount=('TotalDiscount', 'sum'),
+            )
+        )
+        slab_summary['AOV'] = (
+            slab_summary['Sales_Value'] / slab_summary['Invoices'].replace(0, np.nan)
+        ).replace([np.inf, -np.inf], np.nan)
+        slab_summary['AOQ'] = pd.to_numeric(slab_summary['AOQ'], errors='coerce')
+        slab_summary['Discount_Pct'] = (
+            slab_summary['Total_Discount'] / slab_summary['Sales_Value'].replace(0, np.nan) * 100.0
+        ).replace([np.inf, -np.inf], np.nan)
+
+        slab_criteria = (
+            work.groupby('Slab', as_index=False)
+            .agg(
+                Min_Qty=('Quantity', 'min'),
+                Max_Qty=('Quantity', 'max'),
+            )
+        )
+        slab_summary = slab_summary.merge(slab_criteria, on='Slab', how='left')
+
+        def _label_with_criteria(row):
+            slab_name = str(row.get('Slab', '') or '')
+            qmin = pd.to_numeric(row.get('Min_Qty', np.nan), errors='coerce')
+            qmax = pd.to_numeric(row.get('Max_Qty', np.nan), errors='coerce')
+            if pd.isna(qmin) or pd.isna(qmax):
+                return slab_name
+            if abs(float(qmax) - float(qmin)) < 1e-9:
+                criteria = f"Qty={float(qmin):g}"
+            else:
+                criteria = f"Qty {float(qmin):g}-{float(qmax):g}"
+            return f"{slab_name} ({criteria})"
+
+        slab_summary['Slab_Raw'] = slab_summary['Slab'].astype(str)
+        slab_summary['Slab'] = slab_summary.apply(_label_with_criteria, axis=1)
+
+        total_invoices = float(pd.to_numeric(slab_summary['Invoices'], errors='coerce').fillna(0.0).sum())
+        total_sales = float(pd.to_numeric(slab_summary['Sales_Value'], errors='coerce').fillna(0.0).sum())
+        slab_summary['Invoice_Contribution_%'] = (
+            slab_summary['Invoices'] / total_invoices * 100.0
+        ) if total_invoices > 0 else 0.0
+        slab_summary['Sales_Contribution_%'] = (
+            slab_summary['Sales_Value'] / total_sales * 100.0
+        ) if total_sales > 0 else 0.0
+
+        slab_summary = slab_summary.sort_values(
+            by='Slab_Raw',
+            key=lambda s: s.map(self._slab_sort_key),
+            kind='mergesort'
+        )
+
+        for col in ['AOQ', 'AOV', 'Discount_Pct', 'Invoice_Contribution_%', 'Sales_Contribution_%']:
+            slab_summary[col] = pd.to_numeric(slab_summary[col], errors='coerce').fillna(0.0).round(2)
+        for col in ['Quantity', 'Sales_Value', 'Total_Discount']:
+            slab_summary[col] = pd.to_numeric(slab_summary[col], errors='coerce').fillna(0.0)
+        for col in ['Outlets', 'Invoices']:
+            slab_summary[col] = pd.to_numeric(slab_summary[col], errors='coerce').fillna(0).astype(int)
+
+        cols = [
+            'Slab',
+            'Outlets',
+            'Invoices',
+            'Invoice_Contribution_%',
+            'Quantity',
+            'AOQ',
+            'AOV',
+            'Sales_Value',
+            'Sales_Contribution_%',
+            'Total_Discount',
+            'Discount_Pct',
+        ]
+        return slab_summary[cols].to_dict(orient='records')
     
     async def get_available_filters(self) -> Dict[str, List[str]]:
         """Get available filter options"""
@@ -611,7 +781,9 @@ class RFMService:
         rfm = dataset['rfm']
 
         selected_segments = list(request.rfm_segments or [])
-        selected_classifications = list(request.outlet_classifications or [])
+        selected_classifications = self._normalize_step2_outlet_classifications(
+            list(request.outlet_classifications or [])
+        )
 
         rfm_for_class = rfm.copy()
         if selected_segments:
@@ -622,13 +794,19 @@ class RFMService:
 
         df_for_slab = df_for_class.copy()
         if selected_classifications and 'Final_Outlet_Classification' in df_for_slab.columns:
-            df_for_slab = df_for_slab[df_for_slab['Final_Outlet_Classification'].isin(selected_classifications)]
+            slab_groups = self._to_step2_outlet_group_series(df_for_slab['Final_Outlet_Classification'])
+            df_for_slab = df_for_slab[slab_groups.isin(selected_classifications)]
 
         rfm_segments = sorted(rfm['RFM_Segment'].dropna().astype(str).unique().tolist())
-        classifications = sorted(
-            df_for_class['Final_Outlet_Classification'].dropna().astype(str).unique().tolist()
-        ) if 'Final_Outlet_Classification' in df_for_class.columns else []
-        slabs = sorted(df_for_slab['Slab'].dropna().astype(str).unique().tolist()) if 'Slab' in df_for_slab.columns else []
+        if 'Final_Outlet_Classification' in df_for_class.columns:
+            class_groups = self._to_step2_outlet_group_series(df_for_class['Final_Outlet_Classification'])
+            raw_classifications = [x for x in class_groups.dropna().astype(str).unique().tolist() if x]
+            classifications = self._normalize_step2_outlet_classifications(raw_classifications)
+        else:
+            classifications = []
+        slabs = self._normalize_step2_slab_values(
+            df_for_slab['Slab'].dropna().astype(str).unique().tolist()
+        ) if 'Slab' in df_for_slab.columns else []
 
         matching_outlets = scope['df_scope']['Outlet_ID'].nunique() if not scope['df_scope'].empty else 0
 
@@ -639,6 +817,419 @@ class RFMService:
             outlet_classifications=classifications,
             slabs=slabs,
             matching_outlets=int(matching_outlets)
+        )
+
+    def _build_eda_product_options(self, df: pd.DataFrame, top_n: int) -> List[EDAProductOption]:
+        if df.empty or 'Sku_Code' not in df.columns:
+            return []
+
+        work = df.copy()
+        if 'Sku_Name' not in work.columns:
+            work['Sku_Name'] = work['Sku_Code'].astype(str)
+        if 'Brand' not in work.columns:
+            work['Brand'] = 'Unknown'
+        if 'Sizes' not in work.columns:
+            work['Sizes'] = 'NA'
+
+        grouped = (
+            work.groupby(['Sku_Code', 'Sku_Name', 'Brand', 'Sizes'], as_index=False)
+            .agg(
+                sales_value=('SalesValue_atBasicRate', 'sum'),
+                quantity=('Quantity', 'sum'),
+            )
+            .sort_values(['sales_value', 'quantity'], ascending=[False, False], kind='mergesort')
+            .head(max(20, int(top_n)))
+        )
+
+        options: List[EDAProductOption] = []
+        for _, row in grouped.iterrows():
+            code = str(row.get('Sku_Code', '') or '').strip()
+            if not code:
+                continue
+            name = str(row.get('Sku_Name', code) or code).strip()
+            brand = str(row.get('Brand', 'Unknown') or 'Unknown').strip()
+            size = str(row.get('Sizes', 'NA') or 'NA').strip()
+            label = f"{name} | {size} | {brand} ({code})"
+            options.append(
+                EDAProductOption(
+                    code=code,
+                    name=name,
+                    brand=brand,
+                    size=size,
+                    label=label,
+                )
+            )
+        return options
+
+    def _build_eda_mix_rows(
+        self,
+        df: pd.DataFrame,
+        group_col: str,
+        total_sales_value: float,
+        total_quantity: float,
+        max_rows: int = 12,
+    ) -> List[EDAContributionRow]:
+        if df.empty or group_col not in df.columns:
+            return []
+
+        grouped = (
+            df.groupby(group_col, dropna=False, as_index=False)
+            .agg(
+                sales_value=('SalesValue_atBasicRate', 'sum'),
+                quantity=('Quantity', 'sum'),
+            )
+            .sort_values('sales_value', ascending=False, kind='mergesort')
+            .head(max_rows)
+        )
+
+        rows: List[EDAContributionRow] = []
+        for _, row in grouped.iterrows():
+            label = str(row.get(group_col, 'Unknown') or 'Unknown')
+            sales_value = float(row.get('sales_value', 0.0) or 0.0)
+            quantity = float(row.get('quantity', 0.0) or 0.0)
+            value_pct = (sales_value / total_sales_value * 100.0) if total_sales_value > 0 else 0.0
+            volume_pct = (quantity / total_quantity * 100.0) if total_quantity > 0 else 0.0
+            rows.append(
+                EDAContributionRow(
+                    key=label,
+                    label=label,
+                    sales_value=sales_value,
+                    quantity=quantity,
+                    value_pct=value_pct,
+                    volume_pct=volume_pct,
+                )
+            )
+        return rows
+
+    def _apply_eda_scope(self, request: EDARequest) -> Optional[pd.DataFrame]:
+        if self.data_cache is None:
+            return None
+        # Avoid copying full dataset on every EDA request; filters create new frames.
+        df = self._apply_base_filters(self.data_cache, request)
+        selected_classes = [str(x) for x in (request.outlet_classifications or []) if str(x).strip()]
+        if selected_classes and 'Final_Outlet_Classification' in df.columns:
+            df = df[df['Final_Outlet_Classification'].astype(str).isin(selected_classes)]
+        return df
+
+    async def get_eda_options(self, request: EDARequest) -> EDAOptionsResponse:
+        df = self._apply_eda_scope(request)
+        if df is None:
+            return EDAOptionsResponse(
+                success=False,
+                message="Data not loaded",
+                product_options=[],
+                outlet_classifications=[],
+                matching_rows=0,
+            )
+        if df.empty:
+            return EDAOptionsResponse(
+                success=False,
+                message="No data matches selected EDA filters",
+                product_options=[],
+                outlet_classifications=[],
+                matching_rows=0,
+            )
+
+        options = self._build_eda_product_options(df, request.top_n_products)
+        classifications = []
+        if 'Final_Outlet_Classification' in df.columns:
+            classifications = sorted(df['Final_Outlet_Classification'].dropna().astype(str).unique().tolist())
+
+        return EDAOptionsResponse(
+            success=True,
+            message="EDA options loaded successfully",
+            product_options=options,
+            outlet_classifications=classifications,
+            matching_rows=int(len(df)),
+        )
+
+    async def get_eda_overview(self, request: EDARequest) -> EDAResponse:
+        df_base = self._apply_eda_scope(request)
+        if df_base is None:
+            return EDAResponse(
+                success=False,
+                message="Data not loaded",
+                summary={},
+                product_options=[],
+                product_contributions=[],
+                state_mix=[],
+                outlet_class_mix=[],
+                brand_mix=[],
+                category_mix=[],
+            )
+        if df_base.empty:
+            return EDAResponse(
+                success=False,
+                message="No data matches selected EDA filters",
+                summary={},
+                product_options=[],
+                product_contributions=[],
+                state_mix=[],
+                outlet_class_mix=[],
+                brand_mix=[],
+                category_mix=[],
+            )
+
+        product_options = self._build_eda_product_options(df_base, request.top_n_products)
+        selected_codes = [str(x) for x in (request.product_codes or []) if str(x).strip()]
+        if selected_codes and 'Sku_Code' in df_base.columns:
+            df_scope = df_base[df_base['Sku_Code'].astype(str).isin(selected_codes)].copy()
+        else:
+            df_scope = df_base.copy()
+
+        if df_scope.empty:
+            return EDAResponse(
+                success=False,
+                message="No rows found for selected product(s)",
+                summary={},
+                product_options=product_options,
+                product_contributions=[],
+                state_mix=[],
+                outlet_class_mix=[],
+                brand_mix=[],
+                category_mix=[],
+            )
+
+        if 'Sku_Name' not in df_scope.columns:
+            df_scope['Sku_Name'] = df_scope['Sku_Code'].astype(str)
+        if 'Brand' not in df_scope.columns:
+            df_scope['Brand'] = 'Unknown'
+            df_base['Brand'] = 'Unknown'
+        if 'Category' not in df_scope.columns:
+            df_scope['Category'] = 'Unknown'
+        if 'Subcategory' not in df_scope.columns:
+            df_scope['Subcategory'] = 'Unknown'
+        if 'Sizes' not in df_scope.columns:
+            df_scope['Sizes'] = 'NA'
+
+        product_grouped = (
+            df_scope.groupby(['Sku_Code', 'Sku_Name', 'Brand', 'Category', 'Subcategory', 'Sizes'], as_index=False)
+            .agg(
+                sales_value=('SalesValue_atBasicRate', 'sum'),
+                quantity=('Quantity', 'sum'),
+            )
+            .sort_values(['sales_value', 'quantity'], ascending=[False, False], kind='mergesort')
+        )
+        if not selected_codes:
+            product_grouped = product_grouped.head(max(50, int(request.top_n_products)))
+
+        brand_totals = (
+            df_base.groupby('Brand', as_index=False)
+            .agg(
+                brand_sales_value=('SalesValue_atBasicRate', 'sum'),
+                brand_quantity=('Quantity', 'sum'),
+            )
+        )
+        product_joined = product_grouped.merge(brand_totals, on='Brand', how='left')
+
+        product_contributions: List[EDAProductContribution] = []
+        for _, row in product_joined.iterrows():
+            sales_value = float(row.get('sales_value', 0.0) or 0.0)
+            quantity = float(row.get('quantity', 0.0) or 0.0)
+            brand_sales = float(row.get('brand_sales_value', 0.0) or 0.0)
+            brand_qty = float(row.get('brand_quantity', 0.0) or 0.0)
+            product_contributions.append(
+                EDAProductContribution(
+                    code=str(row.get('Sku_Code', '') or ''),
+                    name=str(row.get('Sku_Name', '') or ''),
+                    brand=str(row.get('Brand', '') or ''),
+                    category=str(row.get('Category', '') or ''),
+                    subcategory=str(row.get('Subcategory', '') or ''),
+                    size=str(row.get('Sizes', '') or ''),
+                    sales_value=sales_value,
+                    quantity=quantity,
+                    brand_sales_value=brand_sales,
+                    brand_quantity=brand_qty,
+                    value_contribution_pct=(sales_value / brand_sales * 100.0) if brand_sales > 0 else 0.0,
+                    volume_contribution_pct=(quantity / brand_qty * 100.0) if brand_qty > 0 else 0.0,
+                )
+            )
+
+        total_sales_value = float(df_scope['SalesValue_atBasicRate'].sum())
+        total_quantity = float(df_scope['Quantity'].sum())
+        summary = {
+            "total_sales_value": total_sales_value,
+            "total_quantity": total_quantity,
+            "total_outlets": float(df_scope['Outlet_ID'].nunique()) if 'Outlet_ID' in df_scope.columns else 0.0,
+            "total_rows": float(len(df_scope)),
+            "distinct_products": float(df_scope['Sku_Code'].nunique()) if 'Sku_Code' in df_scope.columns else 0.0,
+            "distinct_brands": float(df_scope['Brand'].nunique()) if 'Brand' in df_scope.columns else 0.0,
+            "selected_products": float(len(selected_codes)),
+        }
+
+        state_mix = self._build_eda_mix_rows(df_scope, 'Final_State', total_sales_value, total_quantity, max_rows=10)
+        outlet_class_mix = self._build_eda_mix_rows(df_scope, 'Final_Outlet_Classification', total_sales_value, total_quantity, max_rows=10)
+        brand_mix = self._build_eda_mix_rows(df_scope, 'Brand', total_sales_value, total_quantity, max_rows=12)
+
+        category_level_mix: List[EDAContributionRow] = []
+        subcategory_within_category_mix: List[EDAContributionRow] = []
+        selected_categories = [str(x) for x in (request.categories or []) if str(x).strip()]
+        selected_subcategories = [str(x) for x in (request.subcategories or []) if str(x).strip()]
+
+        # Level 1: selected category contribution vs all categories (same base scope except category/subcategory).
+        if selected_categories:
+            category_universe_request = EDARequest(
+                run_id=request.run_id,
+                states=request.states,
+                categories=[],
+                subcategories=[],
+                brands=request.brands,
+                sizes=request.sizes,
+                outlet_classifications=request.outlet_classifications,
+                product_codes=[],
+                top_n_products=request.top_n_products,
+            )
+            selected_category_request = EDARequest(
+                run_id=request.run_id,
+                states=request.states,
+                categories=selected_categories,
+                subcategories=[],
+                brands=request.brands,
+                sizes=request.sizes,
+                outlet_classifications=request.outlet_classifications,
+                product_codes=[],
+                top_n_products=request.top_n_products,
+            )
+            df_category_universe = self._apply_eda_scope(category_universe_request)
+            df_selected_category = self._apply_eda_scope(selected_category_request)
+
+            if df_category_universe is not None and not df_category_universe.empty and df_selected_category is not None:
+                universe_sales = float(df_category_universe['SalesValue_atBasicRate'].sum())
+                universe_qty = float(df_category_universe['Quantity'].sum())
+                selected_cat_sales = float(df_selected_category['SalesValue_atBasicRate'].sum())
+                selected_cat_qty = float(df_selected_category['Quantity'].sum())
+                other_cat_sales = max(0.0, universe_sales - selected_cat_sales)
+                other_cat_qty = max(0.0, universe_qty - selected_cat_qty)
+                category_level_mix.extend([
+                    EDAContributionRow(
+                        key='selected_categories',
+                        label='Selected Category(ies)',
+                        sales_value=selected_cat_sales,
+                        quantity=selected_cat_qty,
+                        value_pct=(selected_cat_sales / universe_sales * 100.0) if universe_sales > 0 else 0.0,
+                        volume_pct=(selected_cat_qty / universe_qty * 100.0) if universe_qty > 0 else 0.0,
+                    ),
+                    EDAContributionRow(
+                        key='other_categories',
+                        label='Other Categories',
+                        sales_value=other_cat_sales,
+                        quantity=other_cat_qty,
+                        value_pct=(other_cat_sales / universe_sales * 100.0) if universe_sales > 0 else 0.0,
+                        volume_pct=(other_cat_qty / universe_qty * 100.0) if universe_qty > 0 else 0.0,
+                    ),
+                ])
+        else:
+            category_level_mix = self._build_eda_mix_rows(df_scope, 'Category', total_sales_value, total_quantity, max_rows=12)
+
+        # Level 2: subcategory contribution within selected category scope.
+        subcategory_base_request = EDARequest(
+            run_id=request.run_id,
+            states=request.states,
+            categories=selected_categories if selected_categories else request.categories,
+            subcategories=[],
+            brands=request.brands,
+            sizes=request.sizes,
+            outlet_classifications=request.outlet_classifications,
+            product_codes=[],
+            top_n_products=request.top_n_products,
+        )
+        df_subcategory_base = self._apply_eda_scope(subcategory_base_request)
+        if df_subcategory_base is not None and not df_subcategory_base.empty:
+            sub_total_sales = float(df_subcategory_base['SalesValue_atBasicRate'].sum())
+            sub_total_qty = float(df_subcategory_base['Quantity'].sum())
+            if selected_subcategories:
+                selected_sub_sales = float(df_scope['SalesValue_atBasicRate'].sum())
+                selected_sub_qty = float(df_scope['Quantity'].sum())
+                other_sub_sales = max(0.0, sub_total_sales - selected_sub_sales)
+                other_sub_qty = max(0.0, sub_total_qty - selected_sub_qty)
+                subcategory_within_category_mix = [
+                    EDAContributionRow(
+                        key='selected_subcategories',
+                        label='Selected Subcategory(ies) in Selected Category',
+                        sales_value=selected_sub_sales,
+                        quantity=selected_sub_qty,
+                        value_pct=(selected_sub_sales / sub_total_sales * 100.0) if sub_total_sales > 0 else 0.0,
+                        volume_pct=(selected_sub_qty / sub_total_qty * 100.0) if sub_total_qty > 0 else 0.0,
+                    ),
+                    EDAContributionRow(
+                        key='other_subcategories',
+                        label='Other Subcategories in Selected Category',
+                        sales_value=other_sub_sales,
+                        quantity=other_sub_qty,
+                        value_pct=(other_sub_sales / sub_total_sales * 100.0) if sub_total_sales > 0 else 0.0,
+                        volume_pct=(other_sub_qty / sub_total_qty * 100.0) if sub_total_qty > 0 else 0.0,
+                    ),
+                ]
+            else:
+                subcategory_within_category_mix = self._build_eda_mix_rows(
+                    df_subcategory_base,
+                    'Subcategory',
+                    sub_total_sales,
+                    sub_total_qty,
+                    max_rows=12
+                )
+
+        # Per-category subcategory split (for multiple selected categories, show separate sections).
+        subcategory_within_category_sections: List[Dict[str, Any]] = []
+        category_for_within_request = EDARequest(
+            run_id=request.run_id,
+            states=request.states,
+            categories=selected_categories if selected_categories else request.categories,
+            subcategories=[],
+            brands=request.brands,
+            sizes=request.sizes,
+            outlet_classifications=request.outlet_classifications,
+            product_codes=[],
+            top_n_products=request.top_n_products,
+        )
+        df_for_within = self._apply_eda_scope(category_for_within_request)
+        if df_for_within is not None and not df_for_within.empty and 'Category' in df_for_within.columns and 'Subcategory' in df_for_within.columns:
+            grouped_within = (
+                df_for_within.groupby(['Category', 'Subcategory'], as_index=False)
+                .agg(
+                    sales_value=('SalesValue_atBasicRate', 'sum'),
+                    quantity=('Quantity', 'sum'),
+                )
+            )
+            for category_value, cat_df in grouped_within.groupby('Category', sort=True):
+                cat_sales_total = float(cat_df['sales_value'].sum())
+                cat_qty_total = float(cat_df['quantity'].sum())
+                rows = []
+                for _, row in cat_df.sort_values('sales_value', ascending=False, kind='mergesort').head(12).iterrows():
+                    sales_value = float(row.get('sales_value', 0.0) or 0.0)
+                    quantity = float(row.get('quantity', 0.0) or 0.0)
+                    label = str(row.get('Subcategory', 'Unknown') or 'Unknown')
+                    rows.append({
+                        "key": label,
+                        "label": label,
+                        "sales_value": sales_value,
+                        "quantity": quantity,
+                        "value_pct": (sales_value / cat_sales_total * 100.0) if cat_sales_total > 0 else 0.0,
+                        "volume_pct": (quantity / cat_qty_total * 100.0) if cat_qty_total > 0 else 0.0,
+                    })
+                subcategory_within_category_sections.append({
+                    "category": str(category_value),
+                    "rows": rows,
+                })
+
+        # Backward-compatible alias used by current frontend section.
+        category_mix = category_level_mix if category_level_mix else self._build_eda_mix_rows(
+            df_scope, 'Category', total_sales_value, total_quantity, max_rows=12
+        )
+
+        return EDAResponse(
+            success=True,
+            message="EDA overview loaded successfully",
+            summary=summary,
+            product_options=product_options,
+            product_contributions=product_contributions,
+            state_mix=state_mix,
+            outlet_class_mix=outlet_class_mix,
+            brand_mix=brand_mix,
+            category_level_mix=category_level_mix,
+            subcategory_within_category_mix=subcategory_within_category_mix,
+            subcategory_within_category_sections=subcategory_within_category_sections,
+            category_mix=category_mix,
         )
 
     def _round_discount_series(self, series, step: float = 0.5) -> pd.Series:
@@ -652,6 +1243,150 @@ class RFMService:
         if m:
             return (0, int(m.group(1)), text)
         return (1, text)
+
+    def _is_step2_allowed_slab(self, slab_value) -> bool:
+        text = str(slab_value or "").strip().lower()
+        m = re.search(r"(\d+)", text)
+        if not m:
+            return False
+        try:
+            idx = int(m.group(1))
+        except Exception:
+            return False
+        return 1 <= idx <= 4
+
+    def _normalize_step2_slab_values(self, values: List[Any]) -> List[str]:
+        normalized = [str(v) for v in (values or []) if self._is_step2_allowed_slab(v)]
+        unique = list(dict.fromkeys(normalized))
+        return sorted(unique, key=self._slab_sort_key)
+
+    def _extract_slab_index(self, slab_value) -> Optional[int]:
+        text = str(slab_value or "").strip().lower()
+        m = re.search(r"(\d+)", text)
+        if not m:
+            return None
+        try:
+            idx = int(m.group(1))
+        except Exception:
+            return None
+        return idx if 1 <= idx <= 4 else None
+
+    def _build_insta_fixed_base_discount(self, size_key: str, slab_index: int, plan_months: List[pd.Period]) -> Optional[np.ndarray]:
+        # User-provided fixed baseline grid for planner (month x slab) for Insta Shampoo.
+        fixed_grid = {
+            "18-ML": {
+                1: [12, 15, 17, 17],  # Apr
+                2: [13, 17, 19, 19],  # May
+                3: [12, 15, 17, 17],  # Jun
+                4: [12, 15, 17, 17],  # Jul
+                5: [12, 15, 17, 17],  # Aug
+                6: [13, 17, 19, 19],  # Sep
+                7: [12, 15, 17, 17],  # Oct
+                8: [13, 17, 19, 19],  # Nov
+                9: [12, 15, 17, 17],  # Dec
+                10: [12, 15, 17, 17], # Jan
+                11: [12, 15, 17, 17], # Feb
+                12: [12, 15, 17, 17], # Mar
+            },
+            "12-ML": {
+                1: [18, 24, 25, 25],  # Apr
+                2: [14, 17, 18, 18],  # May
+                3: [14, 17, 18, 18],  # Jun
+                4: [17, 21, 18, 22],  # Jul
+                5: [14, 17, 18, 18],  # Aug
+                6: [18, 24, 24, 25],  # Sep
+                7: [14, 17, 18, 18],  # Oct
+                8: [14, 17, 18, 18],  # Nov
+                9: [14, 17, 18, 18],  # Dec
+                10: [14, 17, 18, 18], # Jan
+                11: [14, 17, 18, 18], # Feb
+                12: [14, 17, 18, 18], # Mar
+            },
+        }
+        size_map = fixed_grid.get(size_key)
+        if not size_map or slab_index < 1 or slab_index > 4:
+            return None
+
+        month_to_apr_index = {
+            1: 10,  # Jan
+            2: 11,  # Feb
+            3: 12,  # Mar
+            4: 1,   # Apr
+            5: 2,   # May
+            6: 3,   # Jun
+            7: 4,   # Jul
+            8: 5,   # Aug
+            9: 6,   # Sep
+            10: 7,  # Oct
+            11: 8,  # Nov
+            12: 9,  # Dec
+        }
+        values = []
+        for m in plan_months:
+            cal_month = int(getattr(m, "month", 0))
+            apr_index = month_to_apr_index.get(cal_month)
+            if apr_index is None or apr_index not in size_map:
+                return None
+            values.append(float(size_map[apr_index][slab_index - 1]))
+        return np.asarray(values, dtype=float)
+
+    def _planner_fixed_discount_override(self, request, slab_df: pd.DataFrame, selected_slab: str, plan_months: List[pd.Period]) -> Optional[np.ndarray]:
+        if slab_df is None or slab_df.empty:
+            return None
+        if 'Subcategory' not in slab_df.columns or 'Sizes' not in slab_df.columns:
+            return None
+
+        valid_subcats = {"STX INSTA SHAMPOO", "STREAX INSTA SHAMPOO"}
+        valid_sizes = {"12-ML", "18-ML"}
+
+        req_sizes = [str(x).upper().replace(' ', '').strip() for x in (getattr(request, "sizes", None) or [])]
+        req_sizes = [x for x in req_sizes if x in valid_sizes]
+        req_subcats = [str(x).upper().strip() for x in (getattr(request, "subcategories", None) or [])]
+        req_subcats = [re.sub(r"\s+", " ", x) for x in req_subcats if x]
+
+        # Candidate rows for fixed override decision.
+        cand = slab_df.copy()
+        cand['__subcat'] = (
+            cand['Subcategory']
+            .astype(str)
+            .str.upper()
+            .str.replace(r"\s+", " ", regex=True)
+            .str.strip()
+        )
+        cand['__size'] = (
+            cand['Sizes']
+            .astype(str)
+            .str.upper()
+            .str.replace(' ', '', regex=False)
+            .str.strip()
+        )
+
+        if req_subcats:
+            if not all(s in valid_subcats for s in req_subcats):
+                return None
+            cand = cand[cand['__subcat'].isin(req_subcats)]
+        else:
+            cand = cand[cand['__subcat'].isin(valid_subcats)]
+
+        if req_sizes:
+            if len(set(req_sizes)) != 1:
+                return None
+            size_key = list(set(req_sizes))[0]
+            cand = cand[cand['__size'] == size_key]
+        else:
+            cand_sizes = [x for x in cand['__size'].dropna().unique().tolist() if x in valid_sizes]
+            if len(cand_sizes) != 1:
+                return None
+            size_key = cand_sizes[0]
+
+        if cand.empty:
+            return None
+
+        slab_index = self._extract_slab_index(selected_slab)
+        if slab_index is None:
+            return None
+
+        return self._build_insta_fixed_base_discount(size_key=size_key, slab_index=slab_index, plan_months=plan_months)
 
     def _estimate_base_discount_daily_blocks(
         self,
@@ -1557,11 +2292,26 @@ class RFMService:
         try:
             scope = self._build_step2_scope(request)
             if scope is None:
-                return ModelingResponse(success=False, message="No data matches selected filters", slab_results=[], combined_summary={})
+                return ModelingResponse(
+                    success=False,
+                    message="No data matches selected filters",
+                    slab_results=[],
+                    combined_summary={},
+                    summary_by_slab=[],
+                )
 
             df_scope = scope['df_scope']
             if df_scope.empty:
-                return ModelingResponse(success=False, message="No data for modeling", slab_results=[], combined_summary={})
+                return ModelingResponse(
+                    success=False,
+                    message="No data for modeling",
+                    slab_results=[],
+                    combined_summary={},
+                    summary_by_slab=[],
+                )
+
+            summary_source = scope.get('df_scope_all_slabs', df_scope)
+            summary_by_slab = self._build_summary_by_slab(summary_source)
 
             if 'Slab' in df_scope.columns:
                 slab_list = [str(s) for s in (request.slabs or [])]
@@ -1683,6 +2433,7 @@ class RFMService:
                 message="Modeling completed successfully",
                 slab_results=slab_results,
                 combined_summary=combined_summary,
+                summary_by_slab=summary_by_slab,
             )
         except Exception as e:
             return ModelingResponse(
@@ -1690,7 +2441,266 @@ class RFMService:
                 message=f"Error in modeling: {str(e)}",
                 slab_results=[],
                 combined_summary={},
+                summary_by_slab=[],
             )
+
+    def _parse_planner_scenarios_upload(self, filename: str, file_bytes: bytes) -> Dict[str, List[float]]:
+        if not file_bytes:
+            raise ValueError("Uploaded file is empty.")
+
+        suffix = Path(str(filename or "")).suffix.lower()
+        try:
+            if suffix == ".csv":
+                df = pd.read_csv(BytesIO(file_bytes))
+            elif suffix in {".xlsx", ".xls"}:
+                df = pd.read_excel(BytesIO(file_bytes))
+            else:
+                # Fallback: try CSV first, then Excel.
+                try:
+                    df = pd.read_csv(BytesIO(file_bytes))
+                except Exception:
+                    df = pd.read_excel(BytesIO(file_bytes))
+        except Exception as exc:
+            raise ValueError(f"Could not parse uploaded file: {str(exc)}")
+
+        if df is None or df.empty:
+            raise ValueError("Uploaded file has no rows.")
+
+        df = df.dropna(how="all").copy()
+        if df.empty:
+            raise ValueError("Uploaded file has no usable rows.")
+
+        df.columns = [str(c).strip() for c in df.columns]
+        if len(df.columns) < 2:
+            raise ValueError("File must have 'Month' column and at least one scenario column.")
+
+        month_col = df.columns[0]
+        scenario_cols = [c for c in df.columns[1:] if str(c).strip()]
+        if not scenario_cols:
+            raise ValueError("No scenario columns found. Add columns like Scenario 1, Scenario 2, ...")
+
+        month_name_to_num = {
+            "jan": 1, "january": 1,
+            "feb": 2, "february": 2,
+            "mar": 3, "march": 3,
+            "apr": 4, "april": 4,
+            "may": 5,
+            "jun": 6, "june": 6,
+            "jul": 7, "july": 7,
+            "aug": 8, "august": 8,
+            "sep": 9, "sept": 9, "september": 9,
+            "oct": 10, "october": 10,
+            "nov": 11, "november": 11,
+            "dec": 12, "december": 12,
+        }
+
+        def _month_to_num(value) -> Optional[int]:
+            if value is None or (isinstance(value, float) and np.isnan(value)):
+                return None
+            if isinstance(value, (datetime, date, pd.Timestamp)):
+                return int(pd.to_datetime(value).month)
+            text = str(value).strip()
+            if not text:
+                return None
+            if re.fullmatch(r"\d{1,2}", text):
+                m = int(text)
+                return m if 1 <= m <= 12 else None
+            dt = pd.to_datetime(text, errors="coerce")
+            if not pd.isna(dt):
+                return int(dt.month)
+            token = re.sub(r"[^a-z]", "", text.lower())
+            if token in month_name_to_num:
+                return month_name_to_num[token]
+            token3 = token[:3]
+            return month_name_to_num.get(token3)
+
+        month_to_row: Dict[int, int] = {}
+        for idx, value in enumerate(df[month_col].tolist()):
+            m = _month_to_num(value)
+            if m is None:
+                continue
+            month_to_row[m] = idx
+
+        fy_months = [4, 5, 6, 7, 8, 9, 10, 11, 12, 1, 2, 3]
+        month_label = {
+            1: "January", 2: "February", 3: "March", 4: "April",
+            5: "May", 6: "June", 7: "July", 8: "August",
+            9: "September", 10: "October", 11: "November", 12: "December",
+        }
+
+        missing_months = [month_label[m] for m in fy_months if m not in month_to_row]
+        if missing_months:
+            raise ValueError(f"Missing month rows in upload: {', '.join(missing_months)}")
+
+        def _parse_pct(value) -> Optional[float]:
+            if value is None or (isinstance(value, float) and np.isnan(value)):
+                return None
+            if isinstance(value, (int, float, np.number)):
+                v = float(value)
+            else:
+                text = str(value).strip()
+                if not text:
+                    return None
+                text = text.replace("%", "").strip()
+                try:
+                    v = float(text)
+                except Exception:
+                    return None
+            if not np.isfinite(v):
+                return None
+            return float(v)
+
+        scenarios: Dict[str, List[float]] = {}
+        used_names: Dict[str, int] = {}
+        for idx, col in enumerate(scenario_cols):
+            raw_name = str(col).strip() or f"Scenario {idx + 1}"
+            count = used_names.get(raw_name, 0) + 1
+            used_names[raw_name] = count
+            scenario_name = raw_name if count == 1 else f"{raw_name} ({count})"
+
+            values: List[float] = []
+            for m in fy_months:
+                row_idx = month_to_row[m]
+                pct = _parse_pct(df.iloc[row_idx][col])
+                if pct is None:
+                    raise ValueError(f"Invalid discount value for '{scenario_name}' in {month_label[m]}.")
+                if pct < 0 or pct > 60:
+                    raise ValueError(
+                        f"Discount value out of range for '{scenario_name}' in {month_label[m]}: {pct}. Use 0 to 60."
+                    )
+                values.append(float(pct))
+            scenarios[scenario_name] = values
+
+        if not scenarios:
+            raise ValueError("No valid scenario columns found in upload.")
+        return scenarios
+
+    async def compare_planner_scenarios_from_upload(
+        self,
+        request: PlannerRequest,
+        filename: str,
+        file_bytes: bytes,
+    ) -> PlannerScenarioComparisonResponse:
+        try:
+            scenarios = self._parse_planner_scenarios_upload(filename=filename, file_bytes=file_bytes)
+        except Exception as exc:
+            return PlannerScenarioComparisonResponse(
+                success=False,
+                message=f"Scenario upload parse failed: {str(exc)}",
+                slab=str(request.slab or ""),
+                months=[],
+                default_structural_discounts=[],
+                default_metrics={},
+                scenarios=[],
+            )
+
+        base_payload = request.model_dump(exclude_none=False)
+        base_payload["planned_structural_discounts"] = None
+        base_payload["planned_base_prices"] = None
+        base_payload["disable_ai_insights"] = True
+        base_request = PlannerRequest(**base_payload)
+        base_result = await self.calculate_12_month_planner(base_request)
+        if not base_result.success:
+            return PlannerScenarioComparisonResponse(
+                success=False,
+                message=base_result.message or "Failed to run default planner baseline",
+                slab=str(request.slab or ""),
+                months=[],
+                default_structural_discounts=[],
+                default_metrics={},
+                scenarios=[],
+            )
+
+        selected_slab = str(
+            base_result.slab
+            or request.slab
+            or (request.slabs[0] if request.slabs else "")
+        )
+        default_base_prices = list(base_result.planned_base_prices or [])
+        rows: List[PlannerScenarioComparisonRow] = []
+
+        for scenario_name, planned_struct in scenarios.items():
+            payload = request.model_dump(exclude_none=False)
+            payload["slab"] = selected_slab
+            payload["slabs"] = [selected_slab] if selected_slab else payload.get("slabs")
+            payload["planned_structural_discounts"] = [float(x) for x in planned_struct]
+            payload["planned_base_prices"] = default_base_prices
+            payload["disable_ai_insights"] = True
+            scenario_request = PlannerRequest(**payload)
+            scenario_result = await self.calculate_12_month_planner(scenario_request)
+
+            if not scenario_result.success:
+                rows.append(
+                    PlannerScenarioComparisonRow(
+                        scenario=scenario_name,
+                        success=False,
+                        message=scenario_result.message or "Planner failed for scenario",
+                        planned_structural_discounts=[float(x) for x in planned_struct],
+                    )
+                )
+                continue
+
+            metrics = scenario_result.metrics or {}
+            roi_default_x = float(metrics.get("roi_default_x", 0.0))
+            roi_planned_x = float(metrics.get("roi_planned_x", 0.0))
+            roi_revenue_x = float(metrics.get("roi_revenue_x", 0.0))
+            gross_margin_roi_default_x = float(metrics.get("profit_roi_default_x", 0.0))
+            gross_margin_roi_planned_x = float(metrics.get("profit_roi_planned_x", 0.0))
+            gross_margin_roi_revenue_x = float(metrics.get("profit_roi_revenue_x", 0.0))
+            investment_change = float(metrics.get("investment_change", 0.0))
+
+            # Scenario comparison expectation:
+            # if scenario has no internal step-up episodes (flat path), use plan-vs-default ROI
+            # so ROI is still visible when planned path differs from default baseline.
+            if abs(roi_planned_x) <= 1e-12 and abs(roi_revenue_x) > 1e-12 and abs(investment_change) > 1e-12:
+                roi_planned_x = roi_revenue_x
+            if (
+                abs(gross_margin_roi_planned_x) <= 1e-12
+                and abs(gross_margin_roi_revenue_x) > 1e-12
+                and abs(investment_change) > 1e-12
+            ):
+                gross_margin_roi_planned_x = gross_margin_roi_revenue_x
+
+            roi_abs_change_x = (
+                float(roi_planned_x - roi_default_x)
+                if np.isfinite(roi_default_x) and np.isfinite(roi_planned_x)
+                else float(metrics.get("roi_abs_change_x", 0.0))
+            )
+            gross_margin_roi_abs_change_x = (
+                float(gross_margin_roi_planned_x - gross_margin_roi_default_x)
+                if np.isfinite(gross_margin_roi_default_x) and np.isfinite(gross_margin_roi_planned_x)
+                else float(metrics.get("profit_roi_abs_change_x", 0.0))
+            )
+            rows.append(
+                PlannerScenarioComparisonRow(
+                    scenario=scenario_name,
+                    success=True,
+                    message=None,
+                    planned_structural_discounts=[float(x) for x in planned_struct],
+                    volume_change_pct=float(metrics.get("volume_change_pct", 0.0)),
+                    revenue_change_pct=float(metrics.get("revenue_change_pct", 0.0)),
+                    profit_change_pct=float(metrics.get("profit_change_pct", 0.0)),
+                    promo_change_pct=float(metrics.get("promo_change_pct", 0.0)),
+                    investment_change_pct=float(metrics.get("investment_change_pct", 0.0)),
+                    roi_default_x=roi_default_x,
+                    roi_planned_x=roi_planned_x,
+                    roi_abs_change_x=roi_abs_change_x,
+                    gross_margin_roi_default_x=gross_margin_roi_default_x,
+                    gross_margin_roi_planned_x=gross_margin_roi_planned_x,
+                    gross_margin_roi_abs_change_x=gross_margin_roi_abs_change_x,
+                )
+            )
+
+        success_count = len([r for r in rows if r.success])
+        return PlannerScenarioComparisonResponse(
+            success=success_count > 0,
+            message=f"Processed {len(rows)} scenario(s); successful: {success_count}.",
+            slab=selected_slab,
+            months=list(base_result.months or []),
+            default_structural_discounts=[float(x) for x in (base_result.default_structural_discounts or [])],
+            default_metrics={k: float(v) for k, v in (base_result.metrics or {}).items() if isinstance(v, (int, float, np.number))},
+            scenarios=rows,
+        )
 
     async def calculate_12_month_planner(self, request: PlannerRequest) -> PlannerResponse:
         try:
@@ -1864,16 +2874,25 @@ class RFMService:
                 if pd.notna(v)
             }
             default_struct = np.empty(len(plan_months), dtype=float)
-            valid_ref_count = sum(1 for m in plan_months if (m - 12) in ref_map)
-            if valid_ref_count >= 12:
-                default_struct = np.asarray(
-                    [float(ref_map.get(m - 12, observed_struct[i])) for i, m in enumerate(plan_months)],
-                    dtype=float
-                )
+            fixed_override = self._planner_fixed_discount_override(
+                request=request,
+                slab_df=slab_df,
+                selected_slab=selected_slab,
+                plan_months=plan_months,
+            )
+            if fixed_override is not None and len(fixed_override) == len(plan_months):
+                default_struct = fixed_override
             else:
-                default_struct[0] = prev_struct
-                if len(default_struct) > 1:
-                    default_struct[1:] = observed_struct[:-1]
+                valid_ref_count = sum(1 for m in plan_months if (m - 12) in ref_map)
+                if valid_ref_count >= 12:
+                    default_struct = np.asarray(
+                        [float(ref_map.get(m - 12, observed_struct[i])) for i, m in enumerate(plan_months)],
+                        dtype=float
+                    )
+                else:
+                    default_struct[0] = prev_struct
+                    if len(default_struct) > 1:
+                        default_struct[1:] = observed_struct[:-1]
             default_struct = np.clip(default_struct, 0.0, 60.0)
             default_struct = self._round_discount_series(default_struct, step=float(request.round_step)).to_numpy(dtype=float)
 
@@ -1909,11 +2928,16 @@ class RFMService:
             qty_new = self._predict_stage2_quantity(stage2_model, residual_arr, planned_struct_arr, zeros_arr, lag_new)
             qty_old = np.maximum(qty_old, 0.0)
             qty_new = np.maximum(qty_new, 0.0)
+            qty_zero = self._predict_stage2_quantity(stage2_model, residual_arr, zeros_arr, zeros_arr, zeros_arr)
+            qty_zero = np.maximum(qty_zero, 0.0)
 
             price_old = planned_base_arr * (1.0 - default_struct / 100.0)
             price_new = planned_base_arr * (1.0 - planned_struct_arr / 100.0)
+            # Keep zero-structural comparison on the same default effective price basis.
+            price_zero = price_old.copy()
             rev_old = qty_old * price_old
             rev_new = qty_new * price_new
+            rev_zero = qty_zero * price_zero
 
             cogs_default = float(np.round(default_bp * 0.5))
             cogs_per_unit = float(request.cogs_per_unit) if request.cogs_per_unit is not None else cogs_default
@@ -1945,7 +2969,106 @@ class RFMService:
             spend_monthly = planned_base_arr * (step_up_pp / 100.0) * qty_new
             total_spend_plan = float(np.nansum(spend_monthly))
             roi_revenue = float(rev_delta / total_spend_plan) if total_spend_plan > 1e-12 else np.nan
+            profit_roi_revenue = float(prof_delta / total_spend_plan) if total_spend_plan > 1e-12 else np.nan
             roi_revenue_pct = float(roi_revenue * 100.0) if np.isfinite(roi_revenue) else np.nan
+
+            # Absolute structural ROI for baseline/default and user-planned scenarios.
+            spend_default_monthly = planned_base_arr * (default_struct / 100.0) * qty_old
+            spend_planned_monthly = planned_base_arr * (planned_struct_arr / 100.0) * qty_new
+            total_spend_default = float(np.nansum(spend_default_monthly))
+            total_spend_planned = float(np.nansum(spend_planned_monthly))
+            investment_change = float(total_spend_planned - total_spend_default)
+            investment_change_pct = float((investment_change / total_spend_default) * 100.0) if total_spend_default > 1e-12 else np.nan
+
+            # ROI @ Default / Planned should follow Step 3 structural episode logic:
+            # For each positive step-up, include the full hold window at the increased level.
+            # Compare against counterfactual of previous structural level held constant.
+            def _planner_structural_episode_totals(struct_arr: np.ndarray) -> tuple[float, float, float]:
+                struct = np.asarray(struct_arr, dtype=float)
+                if struct.size == 0:
+                    return 0.0, 0.0, 0.0
+
+                regime_break = np.abs(np.diff(struct, prepend=struct[0])) > 1e-9
+                regime_id = np.cumsum(regime_break)
+                row_idx = np.arange(struct.size, dtype=int)
+                regime_df = pd.DataFrame(
+                    {
+                        'regime_id': regime_id,
+                        'row_idx': row_idx,
+                        'base_discount_pct': struct,
+                    }
+                )
+                regimes = (
+                    regime_df.groupby('regime_id', as_index=False)
+                    .agg(
+                        start_idx=('row_idx', 'min'),
+                        end_idx=('row_idx', 'max'),
+                        base_discount_pct=('base_discount_pct', 'first'),
+                    )
+                    .sort_values('start_idx')
+                    .reset_index(drop=True)
+                )
+
+                total_inc = 0.0
+                total_inc_profit = 0.0
+                total_spend_step = 0.0
+
+                for r in range(1, len(regimes)):
+                    prev_base = float(regimes.loc[r - 1, 'base_discount_pct'])
+                    curr_base = float(regimes.loc[r, 'base_discount_pct'])
+                    step_up = curr_base - prev_base
+                    if step_up <= 0:
+                        continue
+
+                    s_idx = int(regimes.loc[r, 'start_idx'])
+                    e_idx = int(regimes.loc[r, 'end_idx'])
+                    if e_idx < s_idx:
+                        continue
+
+                    hold_slice = slice(s_idx, e_idx + 1)
+                    n_hold = e_idx - s_idx + 1
+                    if n_hold <= 0:
+                        continue
+
+                    resid_hold = residual_arr[hold_slice]
+                    base_hold = planned_base_arr[hold_slice]
+                    zeros_hold = np.zeros(n_hold, dtype=float)
+
+                    prev_struct = np.full(n_hold, prev_base, dtype=float)
+                    curr_struct = np.full(n_hold, curr_base, dtype=float)
+                    lag_prev = np.full(n_hold, prev_base, dtype=float)
+                    lag_curr = np.full(n_hold, curr_base, dtype=float)
+                    lag_curr[0] = prev_base
+
+                    qty_prev = self._predict_stage2_quantity(stage2_model, resid_hold, prev_struct, zeros_hold, lag_prev)
+                    qty_curr = self._predict_stage2_quantity(stage2_model, resid_hold, curr_struct, zeros_hold, lag_curr)
+                    qty_prev = np.maximum(qty_prev, 0.0)
+                    qty_curr = np.maximum(qty_curr, 0.0)
+
+                    prev_price = base_hold * (1.0 - prev_base / 100.0)
+                    inc_rev = (qty_curr - qty_prev) * prev_price
+                    inc_profit = (qty_curr * (prev_price - cogs_per_unit)) - (qty_prev * (prev_price - cogs_per_unit))
+                    spend_step = base_hold * (step_up / 100.0) * qty_curr
+
+                    total_inc += float(np.nansum(inc_rev))
+                    total_inc_profit += float(np.nansum(inc_profit))
+                    total_spend_step += float(np.nansum(spend_step))
+
+                return total_inc, total_inc_profit, total_spend_step
+
+            inc_rev_default, inc_profit_default, spend_default_step = _planner_structural_episode_totals(default_struct)
+            inc_rev_planned, inc_profit_planned, spend_planned_step = _planner_structural_episode_totals(planned_struct_arr)
+
+            roi_default_x = float(inc_rev_default / spend_default_step) if spend_default_step > 1e-12 else np.nan
+            roi_planned_x = float(inc_rev_planned / spend_planned_step) if spend_planned_step > 1e-12 else np.nan
+            roi_abs_change_x = float(roi_planned_x - roi_default_x) if np.isfinite(roi_default_x) and np.isfinite(roi_planned_x) else np.nan
+            profit_roi_default_x = float(inc_profit_default / spend_default_step) if spend_default_step > 1e-12 else np.nan
+            profit_roi_planned_x = float(inc_profit_planned / spend_planned_step) if spend_planned_step > 1e-12 else np.nan
+            profit_roi_abs_change_x = (
+                float(profit_roi_planned_x - profit_roi_default_x)
+                if np.isfinite(profit_roi_default_x) and np.isfinite(profit_roi_planned_x)
+                else np.nan
+            )
 
             metrics = {
                 'volume_change_pct': _safe_num(qty_pct, 0.0),
@@ -1954,6 +3077,7 @@ class RFMService:
                 'promo_change_pct': _safe_num(promo_pct, 0.0),
                 'roi_change_pct': _safe_num(roi_revenue_pct, 0.0),
                 'roi_revenue_x': _safe_num(roi_revenue, 0.0),
+                'profit_roi_revenue_x': _safe_num(profit_roi_revenue, 0.0),
                 'total_spend_plan': _safe_num(total_spend_plan, 0.0),
                 'total_revenue_current': _safe_num(total_rev_old, 0.0),
                 'total_revenue_planned': _safe_num(total_rev_new, 0.0),
@@ -1964,6 +3088,16 @@ class RFMService:
                 'revenue_delta': _safe_num(rev_delta, 0.0),
                 'profit_delta': _safe_num(prof_delta, 0.0),
                 'quantity_delta': _safe_num(qty_delta, 0.0),
+                'investment_default': _safe_num(total_spend_default, 0.0),
+                'investment_planned': _safe_num(total_spend_planned, 0.0),
+                'investment_change': _safe_num(investment_change, 0.0),
+                'investment_change_pct': _safe_num(investment_change_pct, 0.0),
+                'roi_default_x': _safe_num(roi_default_x, 0.0),
+                'roi_planned_x': _safe_num(roi_planned_x, 0.0),
+                'roi_abs_change_x': _safe_num(roi_abs_change_x, 0.0),
+                'profit_roi_default_x': _safe_num(profit_roi_default_x, 0.0),
+                'profit_roi_planned_x': _safe_num(profit_roi_planned_x, 0.0),
+                'profit_roi_abs_change_x': _safe_num(profit_roi_abs_change_x, 0.0),
             }
 
             series = [
@@ -1998,7 +3132,7 @@ class RFMService:
                 request.planned_structural_discounts is not None
                 or request.planned_base_prices is not None
             )
-            if recalculate_requested:
+            if recalculate_requested and not bool(getattr(request, "disable_ai_insights", False)):
                 ai_payload = self._generate_planner_ai_insights(
                     slab=selected_slab,
                     months=[str(m) for m in plan_months],
@@ -2262,13 +3396,17 @@ class RFMService:
                 )
 
             points, summary = self._compute_base_depth_result(df, request)
+            summary_source = scope.get('df_scope_all_slabs', df)
+            summary_by_slab = self._build_summary_by_slab(summary_source)
 
             slab_results = []
             if 'Slab' in df.columns:
                 if request.slabs:
-                    slab_scope = [str(s) for s in request.slabs]
+                    slab_scope = self._normalize_step2_slab_values([str(s) for s in request.slabs])
                 else:
-                    slab_scope = sorted(df['Slab'].dropna().astype(str).unique().tolist())
+                    slab_scope = self._normalize_step2_slab_values(
+                        df['Slab'].dropna().astype(str).unique().tolist()
+                    )
 
                 if len(slab_scope) > 1:
                     for slab in slab_scope:
@@ -2298,6 +3436,7 @@ class RFMService:
                 points=points,
                 summary=summary,
                 slab_results=slab_results,
+                summary_by_slab=summary_by_slab,
             )
         except Exception as e:
             return BaseDepthResponse(
@@ -2306,4 +3445,5 @@ class RFMService:
                 points=[],
                 summary={},
                 slab_results=[],
+                summary_by_slab=[],
             )

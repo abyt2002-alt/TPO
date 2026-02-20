@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { AlertCircle, Loader2, Play, X } from 'lucide-react'
 import {
   Bar,
+  LabelList,
   CartesianGrid,
   ComposedChart,
   Legend,
@@ -21,7 +22,25 @@ const formatDate = (value) => {
   }
 }
 
+const formatMonth = (value) => {
+  try {
+    return new Date(value).toLocaleDateString(undefined, { month: 'short' })
+  } catch {
+    return String(value)
+  }
+}
+
 const fmt = (value) => Number(value || 0).toFixed(2)
+const formatWhole = (value) => Number(value || 0).toLocaleString(undefined, { maximumFractionDigits: 0 })
+const formatMetric = (value) => Number(value || 0).toLocaleString(undefined, { maximumFractionDigits: 2 })
+const formatRoiAxisTick = (value) => {
+  const n = Number(value)
+  if (!Number.isFinite(n)) return ''
+  if (Math.abs(n) >= 1000) {
+    return n.toLocaleString(undefined, { maximumFractionDigits: 0 })
+  }
+  return n.toFixed(2).replace(/\.?0+$/, '')
+}
 const toDayKey = (value) => {
   const raw = String(value || '')
   const match = raw.match(/^(\d{4})-(\d{2})-(\d{2})/)
@@ -88,6 +107,34 @@ const ModelingROI = ({
   }, [validSlabs, activeSlab])
 
   const slabData = validSlabs.find((s) => s.slab === activeSlab) || validSlabs[0]
+  const summaryBySlab = useMemo(
+    () => (Array.isArray(data?.summary_by_slab) ? data.summary_by_slab : []),
+    [data]
+  )
+  const step3SummaryRows = useMemo(() => {
+    const rows = (summaryBySlab || [])
+      .map((row) => {
+        const raw = String(row?.Slab || '').trim()
+        const m = raw.toLowerCase().match(/^slab\d+/)
+        const slabKey = m ? m[0] : raw
+        return {
+          ...row,
+          Slab: slabKey || raw,
+        }
+      })
+      .filter((row) => {
+        const slab = String(row?.Slab || '').toLowerCase()
+        return slab !== 'slab0'
+      })
+
+    return rows.sort((a, b) => {
+      const ai = slabSortKey(a?.Slab)
+      const bi = slabSortKey(b?.Slab)
+      if (ai[0] !== bi[0]) return ai[0] - bi[0]
+      if (ai[1] !== bi[1]) return ai[1] - bi[1]
+      return ai[2].localeCompare(bi[2])
+    })
+  }, [summaryBySlab])
 
   useEffect(() => {
     const fromModel = Number(slabData?.summary?.cogs_per_unit)
@@ -215,7 +262,7 @@ const ModelingROI = ({
               <ResponsiveContainer>
                 <LineChart data={slabData.predicted_vs_actual || []}>
                   <CartesianGrid strokeDasharray="4 4" stroke="#cfd8e3" />
-                  <XAxis dataKey="period" tickFormatter={formatDate} minTickGap={28} />
+                  <XAxis dataKey="period" tickFormatter={formatMonth} minTickGap={28} />
                   <YAxis />
                   <Tooltip labelFormatter={formatDate} formatter={(value) => [fmt(value), '']} />
                   <Legend />
@@ -286,8 +333,8 @@ const ModelingROI = ({
                 onChange={(e) => setRoiMode(e.target.value)}
                 className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg bg-white"
               >
-                <option value="structural">Structural ROI</option>
-                <option value="profit">Profit ROI</option>
+                <option value="structural">Topline ROI</option>
+                <option value="profit">Gross Margin ROI</option>
                 <option value="both">Both</option>
               </select>
             </div>
@@ -336,10 +383,56 @@ const ModelingROI = ({
             </div>
           )}
 
+          <details className="bg-white rounded-lg shadow-md p-4">
+            <summary className="cursor-pointer text-base font-semibold text-body">
+              Summary by Slab
+            </summary>
+            <div className="mt-4">
+              {step3SummaryRows.length > 0 ? (
+                <div className="overflow-x-auto border border-gray-200 rounded-lg">
+                  <table className="w-full text-sm">
+                    <thead className="bg-gray-50">
+                      <tr>
+                        <th className="text-left px-3 py-2">Slab</th>
+                        <th className="text-right px-3 py-2">Invoices</th>
+                        <th className="text-right px-3 py-2">Invoice Contribution %</th>
+                        <th className="text-right px-3 py-2">Quantity</th>
+                        <th className="text-right px-3 py-2">AOQ</th>
+                        <th className="text-right px-3 py-2">AOV</th>
+                        <th className="text-right px-3 py-2">Sales Value</th>
+                        <th className="text-right px-3 py-2">Sales Contribution %</th>
+                        <th className="text-right px-3 py-2">Total Discount</th>
+                        <th className="text-right px-3 py-2">Discount %</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {step3SummaryRows.map((row, idx) => (
+                        <tr key={`${row?.Slab || 'slab'}-${idx}`} className="border-t border-gray-100">
+                          <td className="px-3 py-2">{row?.Slab || '-'}</td>
+                          <td className="px-3 py-2 text-right">{formatWhole(row?.Invoices)}</td>
+                          <td className="px-3 py-2 text-right">{fmt(row?.['Invoice_Contribution_%'])}%</td>
+                          <td className="px-3 py-2 text-right">{formatWhole(row?.Quantity)}</td>
+                          <td className="px-3 py-2 text-right">{fmt(row?.AOQ)}</td>
+                          <td className="px-3 py-2 text-right">{formatMetric(row?.AOV)}</td>
+                          <td className="px-3 py-2 text-right">{formatMetric(row?.Sales_Value)}</td>
+                          <td className="px-3 py-2 text-right">{fmt(row?.['Sales_Contribution_%'])}%</td>
+                          <td className="px-3 py-2 text-right">{formatMetric(row?.Total_Discount)}</td>
+                          <td className="px-3 py-2 text-right">{fmt(row?.Discount_Pct)}%</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <p className="text-sm text-muted">No slab summary data available for current filters.</p>
+              )}
+            </div>
+          </details>
+
           {slabData && (
             <div className="bg-white rounded-lg shadow-md p-6">
               <div className="flex items-center justify-between mb-4">
-                <h4 className="text-lg font-semibold text-body">Structural ROI View - {slabData.slab}</h4>
+                <h4 className="text-lg font-semibold text-body">Topline ROI View - {slabData.slab}</h4>
                 <button
                   type="button"
                   onClick={() => setIsModelModalOpen(true)}
@@ -348,39 +441,70 @@ const ModelingROI = ({
                   View Model
                 </button>
               </div>
-              <div className="grid grid-cols-1 md:grid-cols-4 gap-3 text-sm mb-4">
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-sm mb-4">
                 <div className="bg-accent-light rounded-md p-3">
-                  <p className="text-muted">Structural ROI (Sum Num / Sum Den)</p>
+                  <p className="text-muted">Topline ROI (Sum Num / Sum Den)</p>
                   <p className="font-bold text-body">{fmt(slabData?.summary?.structural_roi_1mo)}x</p>
                 </div>
                 <div className="bg-accent-light rounded-md p-3">
-                  <p className="text-muted">Profit ROI (Sum Num / Sum Den)</p>
+                  <p className="text-muted">Gross Margin ROI (Sum Num / Sum Den)</p>
                   <p className="font-bold text-body">{fmt(slabData?.summary?.structural_profit_roi_1mo)}x</p>
                 </div>
                 <div className="bg-accent-light rounded-md p-3">
-                  <p className="text-muted">Structural Episodes</p>
+                  <p className="text-muted">Instances of discount depth increase</p>
                   <p className="font-bold text-body">{Math.round(Number(slabData?.summary?.structural_episodes || 0))}</p>
-                </div>
-                <div className="bg-accent-light rounded-md p-3">
-                  <p className="text-muted">Total Spend</p>
-                  <p className="font-bold text-body">{fmt(slabData?.summary?.total_spend)}</p>
                 </div>
               </div>
               <div className="rounded-lg border border-slate-200 bg-gradient-to-br from-amber-50 via-white to-sky-50 p-3">
                 <div style={{ width: '100%', height: 430 }}>
                   <ResponsiveContainer>
-                    <ComposedChart data={roiChartData}>
+                    <ComposedChart
+                      data={roiChartData}
+                      margin={{ top: 24, right: 8, left: 0, bottom: 0 }}
+                    >
                       <CartesianGrid strokeDasharray="4 4" stroke="#d8dde6" />
-                      <XAxis dataKey="period" tickFormatter={formatDate} minTickGap={24} />
-                      <YAxis yAxisId="left" />
+                      <XAxis dataKey="period" tickFormatter={formatMonth} minTickGap={24} />
+                      <YAxis
+                        yAxisId="left"
+                        domain={[
+                          (dataMin) => {
+                            const n = Number(dataMin)
+                            if (!Number.isFinite(n)) return 0
+                            const padded = Math.min(0, n - Math.abs(n) * 0.1)
+                            return Math.floor(padded * 10) / 10
+                          },
+                          (dataMax) => {
+                            const n = Number(dataMax)
+                            if (!Number.isFinite(n)) return 1
+                            if (Math.abs(n) < 1e-9) return 1
+                            const padded = n > 0 ? n * 1.2 : n * 0.8
+                            return Math.ceil(padded * 10) / 10
+                          },
+                        ]}
+                        tickFormatter={formatRoiAxisTick}
+                      />
                       <YAxis yAxisId="right" orientation="right" />
                       <Tooltip labelFormatter={formatDate} formatter={(value) => [fmt(value), '']} />
                       <Legend />
                       {(roiMode === 'structural' || roiMode === 'both') && (
-                        <Bar yAxisId="left" dataKey="roi_1mo" name="Structural ROI (1mo)" fill="#3B82F6" />
+                        <Bar yAxisId="left" dataKey="roi_1mo" name="Topline ROI" fill="#3B82F6">
+                          <LabelList
+                            dataKey="roi_1mo"
+                            position="top"
+                            formatter={(value) => (value == null || Number.isNaN(Number(value)) ? '' : Number(value).toFixed(2))}
+                            style={{ fill: '#1F2937', fontSize: 11, fontWeight: 600 }}
+                          />
+                        </Bar>
                       )}
                       {(roiMode === 'profit' || roiMode === 'both') && (
-                        <Bar yAxisId="left" dataKey="profit_roi_1mo" name="Profit ROI (1mo)" fill="#F59E0B" />
+                        <Bar yAxisId="left" dataKey="profit_roi_1mo" name="Gross Margin ROI" fill="#F59E0B">
+                          <LabelList
+                            dataKey="profit_roi_1mo"
+                            position="top"
+                            formatter={(value) => (value == null || Number.isNaN(Number(value)) ? '' : Number(value).toFixed(2))}
+                            style={{ fill: '#1F2937', fontSize: 11, fontWeight: 600 }}
+                          />
+                        </Bar>
                       )}
                       <Line
                         yAxisId="right"

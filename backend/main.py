@@ -1,7 +1,8 @@
-from fastapi import FastAPI, HTTPException, Response
+from fastapi import FastAPI, HTTPException, Response, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.encoders import jsonable_encoder
 from typing import List, Dict
+import json
 
 from services.rfm_service import RFMService
 from models.rfm_models import (
@@ -11,7 +12,8 @@ from models.rfm_models import (
     RunCreateRequest, RunCreateResponse,
     RunStateUpdateRequest, RunStateResponse,
     ModelingRequest, ModelingResponse,
-    PlannerRequest, PlannerResponse
+    PlannerRequest, PlannerResponse, PlannerScenarioComparisonResponse,
+    EDARequest, EDAResponse, EDAOptionsResponse
 )
 
 app = FastAPI(title="Trade Promo Optimization API", version="1.0.0")
@@ -19,8 +21,8 @@ app = FastAPI(title="Trade Promo Optimization API", version="1.0.0")
 # CORS middleware for React frontend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://localhost:5173"],  # React dev servers
-    allow_credentials=True,
+    allow_origins=["*"],  # Allow local-network frontend hosts
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -183,6 +185,63 @@ async def run_12_month_planner(request: PlannerRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.post("/api/planner/scenario-compare", response_model=PlannerScenarioComparisonResponse)
+async def compare_planner_scenarios(
+    payload_json: str = Form(...),
+    file: UploadFile = File(...),
+):
+    """Run Step 5: scenario comparison by uploading CSV/XLSX structural plans."""
+    try:
+        payload = json.loads(payload_json)
+        request = PlannerRequest(**(payload or {}))
+        file_bytes = await file.read()
+        result = await rfm_service.compare_planner_scenarios_from_upload(
+            request=request,
+            filename=str(file.filename or ""),
+            file_bytes=file_bytes,
+        )
+        if request.run_id:
+            rfm_service.save_run_state(
+                run_id=request.run_id,
+                state_update={
+                    "active_step": "step5",
+                    "step5_result": jsonable_encoder(result),
+                },
+            )
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/eda/options", response_model=EDAOptionsResponse)
+async def get_eda_options(request: EDARequest):
+    """Get Step 5 EDA dropdown options for products/outlet classes."""
+    try:
+        return await rfm_service.get_eda_options(request)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/eda/overview", response_model=EDAResponse)
+async def get_eda_overview(request: EDARequest):
+    """Run Step 5 EDA aggregation views."""
+    try:
+        result = await rfm_service.get_eda_overview(request)
+        if request.run_id:
+            rfm_service.save_run_state(
+                run_id=request.run_id,
+                state_update={
+                    "active_step": "step5",
+                    "step5_result": jsonable_encoder(result),
+                },
+            )
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.post("/api/runs/create", response_model=RunCreateResponse)
 async def create_run(request: RunCreateRequest = RunCreateRequest()):
     try:
@@ -207,6 +266,7 @@ async def get_run_state(run_id: str):
             step2_result=state.get("step2_result"),
             step3_result=(state.get("state") or {}).get("step3_result"),
             step4_result=(state.get("state") or {}).get("step4_result"),
+            step5_result=(state.get("state") or {}).get("step5_result"),
         )
     except HTTPException:
         raise
@@ -229,6 +289,7 @@ async def save_run_state(run_id: str, request: RunStateUpdateRequest):
             step2_result=state.get("step2_result") if state else None,
             step3_result=((state.get("state") or {}).get("step3_result") if state else None),
             step4_result=((state.get("state") or {}).get("step4_result") if state else None),
+            step5_result=((state.get("state") or {}).get("step5_result") if state else None),
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

@@ -1,6 +1,13 @@
 import axios from 'axios'
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+const resolveDefaultApiBaseUrl = () => {
+  if (import.meta.env.DEV) return ''
+  if (typeof window === 'undefined') return ''
+  // For preview/static network sharing, fall back to backend on same host:8000.
+  return `${window.location.protocol}//${window.location.hostname}:8000`
+}
+
+const API_BASE_URL = (import.meta.env.VITE_API_URL || '').trim() || resolveDefaultApiBaseUrl()
 
 const api = axios.create({
   baseURL: API_BASE_URL,
@@ -51,6 +58,33 @@ export const calculateModeling = async (payload) => {
 export const calculate12MonthPlanner = async (payload) => {
   const response = await api.post('/api/planner/12-month', payload, {
     timeout: 180000,
+  })
+  return response.data
+}
+
+export const comparePlannerScenarios = async ({ payload, file }) => {
+  const formData = new FormData()
+  formData.append('payload_json', JSON.stringify(payload || {}))
+  formData.append('file', file)
+  const response = await api.post('/api/planner/scenario-compare', formData, {
+    timeout: 600000,
+    headers: {
+      'Content-Type': 'multipart/form-data',
+    },
+  })
+  return response.data
+}
+
+export const getEDAOptions = async (payload) => {
+  const response = await api.post('/api/eda/options', payload, {
+    timeout: 120000,
+  })
+  return response.data
+}
+
+export const getEDAOverview = async (payload) => {
+  const response = await api.post('/api/eda/overview', payload, {
+    timeout: 120000,
   })
   return response.data
 }

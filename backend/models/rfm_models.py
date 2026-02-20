@@ -140,6 +140,7 @@ class BaseDepthResponse(BaseModel):
     points: List[BaseDepthPoint] = []
     summary: Dict[str, float] = {}
     slab_results: List[Dict[str, Any]] = []
+    summary_by_slab: List[Dict[str, Any]] = []
 
 
 class DiscountOptionsRequest(BaseModel):
@@ -177,7 +178,7 @@ class RunCreateResponse(BaseModel):
 
 
 class RunStateUpdateRequest(BaseModel):
-    active_step: Optional[str] = Field(default=None, pattern="^(step1|step2|step3|step4)$")
+    active_step: Optional[str] = Field(default=None, pattern="^(step1|step2|step3|step4|step5)$")
     filters: Optional[Dict[str, Any]] = None
     table_query: Optional[Dict[str, Any]] = None
     step2_filters: Optional[Dict[str, Any]] = None
@@ -195,6 +196,7 @@ class RunStateResponse(BaseModel):
     step2_result: Optional[Dict[str, Any]] = None
     step3_result: Optional[Dict[str, Any]] = None
     step4_result: Optional[Dict[str, Any]] = None
+    step5_result: Optional[Dict[str, Any]] = None
 
 
 class ModelingRequest(BaseModel):
@@ -254,6 +256,7 @@ class ModelingResponse(BaseModel):
     message: str
     slab_results: List[ModelingSlabResult] = []
     combined_summary: Dict[str, float] = {}
+    summary_by_slab: List[Dict[str, Any]] = []
 
 
 class PlannerRequest(BaseModel):
@@ -284,6 +287,7 @@ class PlannerRequest(BaseModel):
     planned_structural_discounts: Optional[List[float]] = None
     planned_base_prices: Optional[List[float]] = None
     cogs_per_unit: Optional[float] = Field(default=None, ge=0.0)
+    disable_ai_insights: bool = False
 
 
 class PlannerMonthPoint(BaseModel):
@@ -313,3 +317,98 @@ class PlannerResponse(BaseModel):
     series: List[PlannerMonthPoint] = []
     ai_insights_status: Optional[str] = None
     ai_insights: Optional[str] = None
+
+
+class PlannerScenarioComparisonRow(BaseModel):
+    scenario: str
+    success: bool = True
+    message: Optional[str] = None
+    planned_structural_discounts: List[float] = []
+    volume_change_pct: Optional[float] = None
+    revenue_change_pct: Optional[float] = None
+    profit_change_pct: Optional[float] = None
+    promo_change_pct: Optional[float] = None
+    investment_change_pct: Optional[float] = None
+    roi_default_x: Optional[float] = None
+    roi_planned_x: Optional[float] = None
+    roi_abs_change_x: Optional[float] = None
+    gross_margin_roi_default_x: Optional[float] = None
+    gross_margin_roi_planned_x: Optional[float] = None
+    gross_margin_roi_abs_change_x: Optional[float] = None
+
+
+class PlannerScenarioComparisonResponse(BaseModel):
+    success: bool
+    message: str
+    slab: Optional[str] = None
+    months: List[str] = []
+    default_structural_discounts: List[float] = []
+    default_metrics: Dict[str, float] = {}
+    scenarios: List[PlannerScenarioComparisonRow] = []
+
+
+class EDARequest(BaseModel):
+    run_id: Optional[str] = None
+    states: Optional[List[str]] = None
+    categories: Optional[List[str]] = None
+    subcategories: Optional[List[str]] = None
+    brands: Optional[List[str]] = None
+    sizes: Optional[List[str]] = None
+    outlet_classifications: Optional[List[str]] = None
+    product_codes: Optional[List[str]] = None
+    top_n_products: int = Field(default=200, ge=20, le=1000)
+
+
+class EDAProductOption(BaseModel):
+    code: str
+    name: str
+    brand: str
+    size: str
+    label: str
+
+
+class EDAContributionRow(BaseModel):
+    key: str
+    label: str
+    sales_value: float
+    quantity: float
+    value_pct: float
+    volume_pct: float
+
+
+class EDAProductContribution(BaseModel):
+    code: str
+    name: str
+    brand: str
+    category: Optional[str] = None
+    subcategory: Optional[str] = None
+    size: str
+    sales_value: float
+    quantity: float
+    brand_sales_value: float
+    brand_quantity: float
+    value_contribution_pct: float
+    volume_contribution_pct: float
+
+
+class EDAResponse(BaseModel):
+    success: bool
+    message: str
+    summary: Dict[str, float] = {}
+    product_options: List[EDAProductOption] = []
+    product_contributions: List[EDAProductContribution] = []
+    state_mix: List[EDAContributionRow] = []
+    outlet_class_mix: List[EDAContributionRow] = []
+    brand_mix: List[EDAContributionRow] = []
+    category_level_mix: List[EDAContributionRow] = []
+    subcategory_within_category_mix: List[EDAContributionRow] = []
+    subcategory_within_category_sections: List[Dict[str, Any]] = []
+    category_mix: List[EDAContributionRow] = []
+
+
+class EDAOptionsResponse(BaseModel):
+    success: bool
+    message: str
+    product_options: List[EDAProductOption] = []
+    outlet_classifications: List[str] = []
+    matching_rows: int = 0
