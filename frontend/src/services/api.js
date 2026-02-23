@@ -19,17 +19,23 @@ const api = axios.create({
 
 // RFM API calls
 export const getAvailableFilters = async () => {
-  const response = await api.get('/api/rfm/filters')
+  const response = await api.get('/api/rfm/filters', {
+    timeout: 120000,
+  })
   return response.data
 }
 
 export const getCascadingFilters = async (currentFilters) => {
-  const response = await api.post('/api/rfm/filters/cascade', currentFilters)
+  const response = await api.post('/api/rfm/filters/cascade', currentFilters, {
+    timeout: 120000,
+  })
   return response.data
 }
 
 export const calculateRFM = async (filters) => {
-  const response = await api.post('/api/rfm/calculate', filters)
+  const response = await api.post('/api/rfm/calculate', filters, {
+    timeout: 300000,
+  })
   return response.data
 }
 

@@ -37,7 +37,7 @@ const SegmentGrid = ({ segments }) => {
                 </p>
                 <p className={`text-lg ${colors.text}`}>{seg.percentage.toFixed(1)}%</p>
                 <p className="text-xs text-muted font-semibold mt-1">
-                  Market Share: {seg.market_share.toFixed(1)}%
+                  Contribution: {seg.market_share.toFixed(1)}%
                 </p>
               </div>
               
