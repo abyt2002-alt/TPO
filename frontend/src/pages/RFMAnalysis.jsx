@@ -8,8 +8,8 @@ import {
   exportRFMOutlets,
   calculateBaseDepth,
   calculateModeling,
-  calculate12MonthPlanner,
-  comparePlannerScenarios,
+  calculateCrossSizePlanner,
+  calculateBaselineForecast,
   getEDAOptions,
   getEDAOverview,
   getDiscountOptions,
@@ -25,16 +25,33 @@ import ClusterSummary from '../components/rfm/ClusterSummary'
 import OutletTable from '../components/rfm/OutletTable'
 import BaseDepthEstimator from '../components/rfm/BaseDepthEstimator'
 import ModelingROI from '../components/rfm/ModelingROI'
-import Planner12Month from '../components/rfm/Planner12Month'
+import CrossSizePlanner from '../components/rfm/CrossSizePlanner'
+import BaselineForecast from '../components/rfm/BaselineForecast'
 import ScenarioComparison from '../components/rfm/ScenarioComparison'
 import EDAInsights from '../components/rfm/EDAInsights'
 import DiscountStepFilters from '../components/rfm/DiscountStepFilters'
+import { Step2SlabDefinitionPanel } from '../components/rfm/DiscountStepFilters'
 import { Loader2, AlertCircle, BarChart3, ChevronDown, ChevronUp, Search } from 'lucide-react'
+import { computeCrossSizePlannerData, normalizePlannerPeriodsFromData } from '../utils/crossSizePlannerCompute'
 
 const DEFAULT_STEP2_FILTERS = {
   rfm_segments: [],
   outlet_classifications: [],
   slabs: [],
+  slab_definition_mode: 'define',
+  defined_slab_level: 'monthly_outlet',
+  defined_slab_count: 5,
+  defined_slab_thresholds: [8, 32, 576, 960],
+  defined_slab_profiles: {
+    '12-ML': {
+      defined_slab_count: 3,
+      defined_slab_thresholds: [8, 144],
+    },
+    '18-ML': {
+      defined_slab_count: 5,
+      defined_slab_thresholds: [8, 32, 576, 960],
+    },
+  },
 }
 
 const parseSlabIndex = (value) => {
@@ -50,7 +67,7 @@ const normalizeStep2Slabs = (values = [], allowedOptions = null) => {
     .map((v) => String(v))
     .filter((v) => {
       const idx = parseSlabIndex(v)
-      return idx !== null && idx >= 1 && idx <= 4
+      return idx !== null && idx >= 1
     })
 
   slabs = Array.from(new Set(slabs))
@@ -69,6 +86,48 @@ const normalizeStep2Slabs = (values = [], allowedOptions = null) => {
   return slabs
 }
 
+const normalizeStep2SizeKey = (value) => String(value || '').toUpperCase().replace(/\s+/g, '').trim()
+
+const normalizeDefinedSlabCount = (value) => {
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed)) return DEFAULT_STEP2_FILTERS.defined_slab_count
+  return Math.min(20, Math.max(2, Math.round(parsed)))
+}
+
+const normalizeDefinedSlabThresholds = (values = [], slabCount = DEFAULT_STEP2_FILTERS.defined_slab_count) => {
+  const expected = Math.max(1, Number(slabCount || DEFAULT_STEP2_FILTERS.defined_slab_count) - 1)
+  const fallback = [...DEFAULT_STEP2_FILTERS.defined_slab_thresholds]
+  while (fallback.length < expected) {
+    const last = fallback[fallback.length - 1] ?? 1
+    fallback.push(last + Math.max(1, Math.abs(last) * 0.1))
+  }
+  const parsed = (values || [])
+    .map((v) => Number(v))
+    .filter((v) => Number.isFinite(v))
+    .slice(0, expected)
+  const merged = [...parsed]
+  for (let i = merged.length; i < expected; i += 1) {
+    merged.push(fallback[i])
+  }
+  return merged
+}
+
+const normalizeDefinedSlabProfiles = (profiles = {}) => {
+  if (!profiles || typeof profiles !== 'object' || Array.isArray(profiles)) return {}
+  const out = {}
+  Object.entries(profiles).forEach(([rawSize, rawConfig]) => {
+    const sizeKey = normalizeStep2SizeKey(rawSize)
+    if (!sizeKey) return
+    const cfg = rawConfig && typeof rawConfig === 'object' ? rawConfig : {}
+    const count = normalizeDefinedSlabCount(cfg.defined_slab_count)
+    out[sizeKey] = {
+      defined_slab_count: count,
+      defined_slab_thresholds: normalizeDefinedSlabThresholds(cfg.defined_slab_thresholds || [], count),
+    }
+  })
+  return out
+}
+
 const normalizeStep2OutletClassifications = (values = []) => {
   const out = []
   for (const value of values || []) {
@@ -85,7 +144,15 @@ const normalizeStep2OutletClassifications = (values = []) => {
 const normalizeStep2Filters = (filters = {}) => ({
   rfm_segments: Array.isArray(filters?.rfm_segments) ? filters.rfm_segments.map((v) => String(v)) : [],
   outlet_classifications: normalizeStep2OutletClassifications(filters?.outlet_classifications || []),
-  slabs: normalizeStep2Slabs(filters?.slabs || []),
+  slabs: [],
+  slab_definition_mode: 'define',
+  defined_slab_level: 'monthly_outlet',
+  defined_slab_count: normalizeDefinedSlabCount(filters?.defined_slab_count),
+  defined_slab_thresholds: normalizeDefinedSlabThresholds(
+    filters?.defined_slab_thresholds || [],
+    normalizeDefinedSlabCount(filters?.defined_slab_count)
+  ),
+  defined_slab_profiles: normalizeDefinedSlabProfiles(filters?.defined_slab_profiles || {}),
 })
 
 const normalizeDiscountOptions = (options = {}) => ({
@@ -101,7 +168,7 @@ const DEFAULT_STEP1_FILTERS = {
   categories: [],
   subcategories: ['STX INSTA SHAMPOO', 'STREAX INSTA SHAMPOO'],
   brands: [],
-  sizes: ['18-ML'],
+  sizes: ['12-ML', '18-ML'],
   recency_threshold: 90,
   frequency_threshold: 20,
 }
@@ -124,6 +191,48 @@ const EMPTY_FILTERS = {
   sizes: [],
 }
 
+const arraysEqualAsStrings = (left = [], right = []) => {
+  if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) return false
+  return left.every((value, index) => String(value) === String(right[index]))
+}
+
+const isStaleForecastResult = (result) => {
+  if (!result || typeof result !== 'object') return true
+  const points = Array.isArray(result.points) ? result.points : []
+  if (points.length === 0) return true
+  const hasMissingFields = points.some((point) => (
+    point == null ||
+    !Object.prototype.hasOwnProperty.call(point, 'discount_component_12_ml') ||
+    !Object.prototype.hasOwnProperty.call(point, 'discount_component_18_ml')
+  ))
+  if (hasMissingFields) return true
+
+  const allComponentsZero = points.every((point) => {
+    const d12 = Number(point?.discount_component_12_ml || 0)
+    const d18 = Number(point?.discount_component_18_ml || 0)
+    return Math.abs(d12) < 1e-9 && Math.abs(d18) < 1e-9
+  })
+  return allComponentsZero
+}
+
+const isLegacyDefaultScope = (restoredFilters = {}, state = {}, restored = {}) => {
+  const states = Array.isArray(restoredFilters.states) ? restoredFilters.states : []
+  const categories = Array.isArray(restoredFilters.categories) ? restoredFilters.categories : []
+  const brands = Array.isArray(restoredFilters.brands) ? restoredFilters.brands : []
+  const subcategories = Array.isArray(restoredFilters.subcategories) ? restoredFilters.subcategories : []
+  const sizes = Array.isArray(restoredFilters.sizes) ? restoredFilters.sizes : []
+  const hasCalculatedOutput = Boolean(restored?.step1_result || state?.last_calculated_filters)
+
+  return (
+    !hasCalculatedOutput &&
+    states.length === 0 &&
+    categories.length === 0 &&
+    brands.length === 0 &&
+    arraysEqualAsStrings(subcategories, DEFAULT_STEP1_FILTERS.subcategories) &&
+    arraysEqualAsStrings(sizes, ['18-ML'])
+  )
+}
+
 const RUN_STORAGE_KEY = 'rfm_analysis_run_id'
 const BOOTSTRAP_TIMEOUT_MS = 8000
 
@@ -140,11 +249,29 @@ const withTimeout = async (promise, timeoutMs = BOOTSTRAP_TIMEOUT_MS) => {
   }
 }
 
+const getRequestErrorMessage = (error, fallbackMessage) => {
+  const raw = String(error?.message || '').trim()
+  const text = raw.toLowerCase()
+  if (
+    text.includes('aborted') ||
+    text.includes('canceled') ||
+    text.includes('cancelled') ||
+    text.includes('network error')
+  ) {
+    return 'Request interrupted. Run Step 2 again.'
+  }
+  if (text.includes('timeout')) {
+    return 'Step 2 took too long. Run it again.'
+  }
+  return raw || fallbackMessage
+}
+
 const resolveStepTabFromQuery = (stepParam) => {
   if (stepParam === '2') return 'step2'
   if (stepParam === '3') return 'step3'
   if (stepParam === '4') return 'step4'
   if (stepParam === '5') return 'step5'
+  if (stepParam === '6') return 'step5'
   return 'step1'
 }
 
@@ -166,39 +293,70 @@ const FIXED_STAGE3_SETTINGS = {
   constraint_lag_non_positive: true,
 }
 
-const parseTrinityInsightBullets = (insightText) => {
-  const lines = String(insightText || '')
-    .split('\n')
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .filter((line) => !line.startsWith('###'))
-
-  const bulletLines = lines
-    .filter((line) => line.startsWith('-'))
-    .map((line) => line.replace(/^-+\s*/, '').trim())
-
-  if (bulletLines.length > 0) return bulletLines.slice(0, 6)
-  if (lines.length > 0) return lines.slice(0, 6)
-  return []
+const DEFAULT_MODELING_COGS_BY_SIZE = {
+  '12-ML': 0,
+  '18-ML': 0,
 }
 
-const splitInsightLabel = (line) => {
-  const boldMatch = line.match(/^\*\*(.+?)\*\*\s*:?\s*(.*)$/)
-  if (boldMatch) {
-    return {
-      label: String(boldMatch[1] || '').trim(),
-      detail: String(boldMatch[2] || '').trim(),
-    }
-  }
-  const idx = line.indexOf(':')
-  if (idx > 0 && idx < 42) {
-    return {
-      label: line.slice(0, idx).trim(),
-      detail: line.slice(idx + 1).trim(),
-    }
-  }
-  return { label: '', detail: line }
+const DEFAULT_STEP5_SCENARIO_BUILDER = {
+  mode: 'fixed_historical_ladders_v2',
 }
+
+const STEP5_ANCHOR_SCENARIOS = [
+  { key: 'anchor_last_3m_exact', id: 'last_3m_exact', name: 'Last 3 Months Exact' },
+  { key: 'anchor_same_season_last_year', id: 'same_season_last_year', name: 'Same Season Last Year' },
+  { key: 'anchor_most_common_historical_ladder', id: 'most_common_historical_ladder', name: 'Most Common Historical Ladder' },
+  { key: 'anchor_highest_historical_promo_ladder', id: 'highest_historical_promo_ladder', name: 'Deep Discount' },
+  { key: 'anchor_lowest_historical_promo_ladder', id: 'lowest_historical_promo_ladder', name: 'Shallow Discount' },
+]
+
+const normalizeStep5ScenarioBuilder = (builder = {}) => ({
+  ...DEFAULT_STEP5_SCENARIO_BUILDER,
+  ...(builder || {}),
+})
+
+const buildStep5ScenarioDefinitions = (rawBuilder = {}) => {
+  const builder = normalizeStep5ScenarioBuilder(rawBuilder)
+  const anchors = STEP5_ANCHOR_SCENARIOS.map((row) => ({ ...row, type: 'anchor' }))
+  if (builder.mode !== DEFAULT_STEP5_SCENARIO_BUILDER.mode) return anchors
+  return anchors
+}
+
+const toPeriodKey = (value) => {
+  if (!value) return null
+  if (typeof value === 'string') {
+    const raw = value.trim()
+    const m = raw.match(/^(\d{4})-(\d{2})/)
+    if (m) return `${m[1]}-${m[2]}`
+    const dt = new Date(raw)
+    if (!Number.isNaN(dt.getTime())) {
+      const y = dt.getFullYear()
+      const mm = String(dt.getMonth() + 1).padStart(2, '0')
+      return `${y}-${mm}`
+    }
+    return null
+  }
+  const dt = new Date(value)
+  if (Number.isNaN(dt.getTime())) return null
+  const y = dt.getFullYear()
+  const mm = String(dt.getMonth() + 1).padStart(2, '0')
+  return `${y}-${mm}`
+}
+
+const shiftPeriodKey = (periodKey, deltaMonths) => {
+  const m = String(periodKey || '').match(/^(\d{4})-(\d{2})$/)
+  if (!m) return null
+  const year = Number(m[1])
+  const month = Number(m[2]) - 1
+  const dt = new Date(year, month, 1)
+  dt.setMonth(dt.getMonth() + Number(deltaMonths || 0))
+  const y = dt.getFullYear()
+  const mm = String(dt.getMonth() + 1).padStart(2, '0')
+  return `${y}-${mm}`
+}
+
+const sortPeriodKeys = (keys = []) =>
+  [...keys].sort((a, b) => String(a).localeCompare(String(b)))
 
 const EdaMultiSelect = ({
   label,
@@ -368,11 +526,15 @@ const RFMAnalysis = () => {
   const [modelingErrorMessage, setModelingErrorMessage] = useState('')
   const [plannerResult, setPlannerResult] = useState(null)
   const [plannerErrorMessage, setPlannerErrorMessage] = useState('')
-  const [selectedPlannerSlab, setSelectedPlannerSlab] = useState('')
+  const [plannerDefaultByReference, setPlannerDefaultByReference] = useState({})
+  const [forecastResult, setForecastResult] = useState(null)
+  const [forecastErrorMessage, setForecastErrorMessage] = useState('')
   const [scenarioResult, setScenarioResult] = useState(null)
   const [scenarioErrorMessage, setScenarioErrorMessage] = useState('')
-  const [scenarioFile, setScenarioFile] = useState(null)
   const [step5Filters, setStep5Filters] = useState(DEFAULT_STEP5_FILTERS)
+  const [step5ScenarioBuilder] = useState(DEFAULT_STEP5_SCENARIO_BUILDER)
+  const [step5CreateScenarioRequestId, setStep5CreateScenarioRequestId] = useState(0)
+  const step5AutoScenarioInitRef = useRef(false)
   const [edaOptions, setEdaOptions] = useState({
     product_options: [],
     outlet_classifications: [],
@@ -384,17 +546,21 @@ const RFMAnalysis = () => {
   const [modelingSettings, setModelingSettings] = useState({
     include_lag_discount: true,
     cogs_per_unit: 0,
+    cogs_per_size: { ...DEFAULT_MODELING_COGS_BY_SIZE },
     ...FIXED_STAGE3_SETTINGS,
   })
-  const [plannerInputs, setPlannerInputs] = useState({
-    planned_structural_discounts: [],
-    planned_base_prices: [],
-  })
+  const [step4DisplayReferenceMode, setStep4DisplayReferenceMode] = useState('last_3m_before_projection')
+  const step5ScenarioDefs = useMemo(() => buildStep5ScenarioDefinitions(step5ScenarioBuilder), [step5ScenarioBuilder])
 
   // Fetch initial available filters
   const { data: availableFilters, isLoading: filtersLoading } = useQuery({
-    queryKey: ['filters'],
-    queryFn: getAvailableFilters,
+    queryKey: ['filters', 'default_scope'],
+    queryFn: () => getCascadingFilters({
+      states: DEFAULT_STEP1_FILTERS.states,
+      categories: DEFAULT_STEP1_FILTERS.categories,
+      subcategories: DEFAULT_STEP1_FILTERS.subcategories,
+      brands: DEFAULT_STEP1_FILTERS.brands,
+    }),
     retry: 3,
     retryDelay: (attempt) => Math.min(1000 * (2 ** attempt), 8000),
     staleTime: 5 * 60 * 1000,
@@ -499,7 +665,7 @@ const RFMAnalysis = () => {
       setBaseDepthErrorMessage('')
     },
     onError: (error) => {
-      setBaseDepthErrorMessage(error?.message || 'Failed to estimate base depth')
+      setBaseDepthErrorMessage(getRequestErrorMessage(error, 'Failed to estimate base depth'))
     },
   })
 
@@ -515,12 +681,26 @@ const RFMAnalysis = () => {
   })
 
   const plannerMutation = useMutation({
-    mutationFn: calculate12MonthPlanner,
-    onSuccess: (data) => {
-      setPlannerResult(data)
-      setPlannerErrorMessage('')
-      if (data?.slab) {
-        setSelectedPlannerSlab(String(data.slab))
+    mutationFn: calculateCrossSizePlanner,
+    onSuccess: (data, variables) => {
+      const isCacheOnly = Boolean(variables?.cache_only)
+      if (!isCacheOnly) {
+        setPlannerResult(data)
+        setPlannerErrorMessage('')
+      }
+      const scenarioByPeriod = variables?.scenario_discounts_by_period
+      const hasScenarioOverride =
+        scenarioByPeriod &&
+        typeof scenarioByPeriod === 'object' &&
+        Object.keys(scenarioByPeriod).length > 0
+      if (!hasScenarioOverride) {
+        const referenceKey = String(
+          variables?.reference_mode || data?.reference_mode || 'last_3m_before_projection'
+        )
+        setPlannerDefaultByReference((prev) => ({
+          ...prev,
+          [referenceKey]: data,
+        }))
       }
     },
     onError: (error) => {
@@ -528,14 +708,141 @@ const RFMAnalysis = () => {
     },
   })
 
-  const scenarioMutation = useMutation({
-    mutationFn: comparePlannerScenarios,
+  const forecastMutation = useMutation({
+    mutationFn: calculateBaselineForecast,
     onSuccess: (data) => {
-      setScenarioResult(data)
+      setForecastResult(data)
+      setForecastErrorMessage('')
+    },
+    onError: (error) => {
+      setForecastErrorMessage(error?.message || 'Failed to run Step 5 baseline forecast')
+    },
+  })
+
+  const scenarioMutation = useMutation({
+    mutationFn: async (variables = {}) => {
+      if (!modelingResult?.success) {
+        throw new Error('Run Step 3 modeling before Step 5 scenario comparison.')
+      }
+
+      const basePayload = buildPlannerPayload({
+        reference_mode: step4DisplayReferenceMode || 'last_3m_before_projection',
+      })
+
+      const defaultResponse = plannerResult?.success
+        ? plannerResult
+        : await calculateCrossSizePlanner(basePayload)
+
+      if (!defaultResponse?.success) {
+        throw new Error(defaultResponse?.message || 'Failed to initialize Step 5 scenarios from Step 4 planner.')
+      }
+      const periods = normalizePlannerPeriodsFromData(defaultResponse)
+
+      const readMetric = (summaryBlock = {}) => ({
+        volume: Number(summaryBlock?.final_qty ?? summaryBlock?.scenario_qty_additive ?? 0),
+        revenue: Number(summaryBlock?.scenario_revenue ?? 0),
+        profit: Number(summaryBlock?.scenario_profit ?? 0),
+        volume_pct: Number(summaryBlock?.vs_reference_volume_pct ?? 0),
+        revenue_pct: Number(summaryBlock?.vs_reference_revenue_pct ?? 0),
+        profit_pct: Number(summaryBlock?.vs_reference_profit_pct ?? 0),
+      })
+
+      const historicalContext = buildStep5HistoricalDiscountContext(defaultResponse)
+      const scenarioInputs = step5ScenarioDefs.map((scenarioDef) => ({
+        key: scenarioDef.key,
+        id: scenarioDef.id,
+        name: scenarioDef.name,
+        scenarioByPeriod: buildStep5GeneratedScenarioMap(defaultResponse, scenarioDef, historicalContext),
+      }))
+
+      const scenarios = scenarioInputs.map((scenarioDef) => {
+        const scenarioByPeriod = scenarioDef.scenarioByPeriod
+        try {
+          const response = computeCrossSizePlannerData({
+            data: defaultResponse,
+            periods,
+            scenarioDiscountsByPeriod: scenarioByPeriod,
+          })
+          const summary = response?.summary_3m || {}
+          return {
+            key: scenarioDef.key,
+            scenario: scenarioDef.name,
+            scenario_id: scenarioDef.id,
+            success: Boolean(response?.success),
+            message: response?.message || '',
+            scenario_discounts_by_period: scenarioByPeriod,
+            summary: {
+              '12-ML': readMetric(summary?.['12-ML']),
+              '18-ML': readMetric(summary?.['18-ML']),
+              TOTAL: {
+                ...readMetric(summary?.TOTAL),
+                volume_ml: Number(summary?.TOTAL?.final_volume_ml ?? summary?.TOTAL?.scenario_volume_ml_additive ?? 0),
+                volume_ml_pct: Number(summary?.TOTAL?.vs_reference_volume_ml_pct ?? 0),
+              },
+            },
+          }
+        } catch (error) {
+          return {
+            key: scenarioDef.key,
+            scenario: scenarioDef.name,
+            scenario_id: scenarioDef.id,
+            success: false,
+            message: error?.message || 'Failed to compute scenario',
+            scenario_discounts_by_period: scenarioByPeriod,
+            summary: null,
+          }
+        }
+      })
+
+      const successCount = scenarios.filter((row) => row?.success).length
+      return {
+        success: successCount > 0,
+        message: `Generated ${scenarios.length} scenario(s); successful: ${successCount}.`,
+        generation_mode: 'fixed',
+        reference_mode: String(basePayload.reference_mode || defaultResponse?.reference_mode || 'last_3m_before_projection'),
+        periods,
+        planner_base: defaultResponse,
+        scenarios,
+      }
+    },
+    onSuccess: (data) => {
+      const incomingRows = Array.isArray(data?.scenarios) ? data.scenarios : []
+      const scoreRevenue = (row) => Number(row?.summary?.TOTAL?.revenue_pct ?? -1e9)
+      const scoreProfit = (row) => Number(row?.summary?.TOTAL?.profit_pct ?? -1e9)
+      const scoreVolume = (row) => Number(row?.summary?.TOTAL?.volume_ml_pct ?? row?.summary?.TOTAL?.volume_pct ?? -1e9)
+      const sortByRevenue = (rows) =>
+        [...rows].sort((a, b) => {
+          const ar = scoreRevenue(a)
+          const br = scoreRevenue(b)
+          if (br !== ar) return br - ar
+          const ap = scoreProfit(a)
+          const bp = scoreProfit(b)
+          if (bp !== ap) return bp - ap
+          const av = scoreVolume(a)
+          const bv = scoreVolume(b)
+          return bv - av
+        })
+      const keyFor = (row) =>
+        String(
+          row?.key ||
+          row?.scenario_id ||
+          row?.scenario ||
+          `row_${Math.random().toString(36).slice(2)}`
+        )
+
+      const prevRows = Array.isArray(scenarioResult?.scenarios) ? scenarioResult.scenarios : []
+      const mergedMap = new Map()
+      prevRows.forEach((row) => mergedMap.set(keyFor(row), row))
+      incomingRows.forEach((row) => mergedMap.set(keyFor(row), row))
+      const mergedRows = sortByRevenue(Array.from(mergedMap.values()))
+      setScenarioResult({
+        ...data,
+        scenarios: mergedRows,
+      })
       setScenarioErrorMessage('')
     },
     onError: (error) => {
-      setScenarioErrorMessage(error?.message || 'Failed to run Step 5 scenario comparison')
+      setScenarioErrorMessage(error?.message || 'Failed to run Step 5 scenario generation')
     },
   })
 
@@ -607,6 +914,7 @@ const RFMAnalysis = () => {
 
         const state = restored?.state || {}
         const restoredFilters = state.filters || {}
+        const useUpdatedDefaultScope = isLegacyDefaultScope(restoredFilters, state, restored)
         const hasSavedStep1Selection = ['states', 'categories', 'subcategories', 'brands', 'sizes']
           .some((key) => Array.isArray(restoredFilters[key]) && restoredFilters[key].length > 0)
         const restoredTableQuery = state.table_query || {}
@@ -614,15 +922,26 @@ const RFMAnalysis = () => {
         const restoredConfig = state.base_depth_config || {}
         const restoredUi = state.ui_state || {}
         const restoredStep5Filters = restoredUi.step5_filters || {}
+        const restoredStep5Builder = normalizeStep5ScenarioBuilder(restoredUi.step5_builder || {})
 
         setFilters((prev) => ({
           ...prev,
           ...restoredFilters,
-          states: restoredFilters.states || (hasSavedStep1Selection ? [] : DEFAULT_STEP1_FILTERS.states),
-          categories: restoredFilters.categories || (hasSavedStep1Selection ? [] : DEFAULT_STEP1_FILTERS.categories),
-          subcategories: restoredFilters.subcategories || (hasSavedStep1Selection ? [] : DEFAULT_STEP1_FILTERS.subcategories),
-          brands: restoredFilters.brands || (hasSavedStep1Selection ? [] : DEFAULT_STEP1_FILTERS.brands),
-          sizes: restoredFilters.sizes || (hasSavedStep1Selection ? [] : DEFAULT_STEP1_FILTERS.sizes),
+          states: useUpdatedDefaultScope
+            ? DEFAULT_STEP1_FILTERS.states
+            : (restoredFilters.states || (hasSavedStep1Selection ? [] : DEFAULT_STEP1_FILTERS.states)),
+          categories: useUpdatedDefaultScope
+            ? DEFAULT_STEP1_FILTERS.categories
+            : (restoredFilters.categories || (hasSavedStep1Selection ? [] : DEFAULT_STEP1_FILTERS.categories)),
+          subcategories: useUpdatedDefaultScope
+            ? DEFAULT_STEP1_FILTERS.subcategories
+            : (restoredFilters.subcategories || (hasSavedStep1Selection ? [] : DEFAULT_STEP1_FILTERS.subcategories)),
+          brands: useUpdatedDefaultScope
+            ? DEFAULT_STEP1_FILTERS.brands
+            : (restoredFilters.brands || (hasSavedStep1Selection ? [] : DEFAULT_STEP1_FILTERS.brands)),
+          sizes: useUpdatedDefaultScope
+            ? DEFAULT_STEP1_FILTERS.sizes
+            : (restoredFilters.sizes || (hasSavedStep1Selection ? [] : DEFAULT_STEP1_FILTERS.sizes)),
           recency_threshold: Number(restoredFilters.recency_threshold || DEFAULT_STEP1_FILTERS.recency_threshold),
           frequency_threshold: Number(restoredFilters.frequency_threshold || DEFAULT_STEP1_FILTERS.frequency_threshold),
         }))
@@ -644,6 +963,7 @@ const RFMAnalysis = () => {
           outlet_classifications: restoredStep5Filters.outlet_classifications || [],
           product_codes: restoredStep5Filters.product_codes || [],
         }))
+        setStep5ScenarioBuilder(restoredStep5Builder)
         if (restored?.step1_result) {
           setRfmData(restored.step1_result)
         }
@@ -660,23 +980,21 @@ const RFMAnalysis = () => {
         }
         if (restored?.step4_result) {
           setPlannerResult(restored.step4_result)
-          if (restored.step4_result?.slab) {
-            setSelectedPlannerSlab(String(restored.step4_result.slab))
-          }
         } else if (state?.step4_result) {
           setPlannerResult(state.step4_result)
-          if (state.step4_result?.slab) {
-            setSelectedPlannerSlab(String(state.step4_result.slab))
-          }
         }
-        if (restored?.step5_result) {
-          setScenarioResult(restored.step5_result)
-        } else if (state?.step5_result) {
-          setScenarioResult(state.step5_result)
+        const restoredForecast = restored?.step5_result || state?.step5_result || null
+        setForecastResult(isStaleForecastResult(restoredForecast) ? null : restoredForecast)
+        if (restored?.step6_result) {
+          setScenarioResult(restored.step6_result)
+        } else if (state?.step6_result) {
+          setScenarioResult(state.step6_result)
         }
 
         const stepFromUrl = resolveStepTabFromQuery(initialParams.get('step'))
-        const restoredStep = ['step1', 'step2', 'step3', 'step4', 'step5'].includes(state.active_step) ? state.active_step : 'step1'
+        const restoredStep = ['step1', 'step2', 'step3', 'step4', 'step5', 'step6'].includes(state.active_step)
+          ? (state.active_step === 'step6' ? 'step5' : state.active_step)
+          : 'step1'
         const effectiveStep = initialParams.get('step') === null ? restoredStep : stepFromUrl
         setActiveStepTab(effectiveStep)
 
@@ -723,6 +1041,7 @@ const RFMAnalysis = () => {
           ui_state: {
             is_base_depth_config_expanded: isBaseDepthConfigExpanded,
             step5_filters: step5Filters,
+            step5_builder: step5ScenarioBuilder,
           },
         })
       } catch {
@@ -744,6 +1063,7 @@ const RFMAnalysis = () => {
     lastCalculatedFilters,
     isBaseDepthConfigExpanded,
     step5Filters,
+    step5ScenarioBuilder,
   ])
 
   const handleCalculate = () => {
@@ -766,18 +1086,16 @@ const RFMAnalysis = () => {
     setModelingSettings({
       include_lag_discount: true,
       cogs_per_unit: 0,
+      cogs_per_size: { ...DEFAULT_MODELING_COGS_BY_SIZE },
       ...FIXED_STAGE3_SETTINGS,
     })
     setPlannerResult(null)
     setPlannerErrorMessage('')
-    setSelectedPlannerSlab('')
+    setPlannerDefaultByReference({})
+    setForecastResult(null)
+    setForecastErrorMessage('')
     setScenarioResult(null)
     setScenarioErrorMessage('')
-    setScenarioFile(null)
-    setPlannerInputs({
-      planned_structural_discounts: [],
-      planned_base_prices: [],
-    })
     mutateRFM({ run_id: runId || undefined, ...baseFilters, ...initialQuery })
   }
 
@@ -807,22 +1125,31 @@ const RFMAnalysis = () => {
     }))
     setModelingResult(null)
     setPlannerResult(null)
+    setPlannerDefaultByReference({})
+    setForecastResult(null)
     setScenarioResult(null)
+    setForecastErrorMessage('')
     setScenarioErrorMessage('')
   }
 
   const handleRunBaseDepth = () => {
     const baseFilters = lastCalculatedFilters || filters
+    setBaseDepthResult(null)
+    setBaseDepthErrorMessage('')
     setModelingResult(null)
     setModelingErrorMessage('')
     setPlannerResult(null)
     setPlannerErrorMessage('')
+    setPlannerDefaultByReference({})
+    setForecastResult(null)
+    setForecastErrorMessage('')
     setScenarioResult(null)
     setScenarioErrorMessage('')
     const payload = {
       run_id: runId || undefined,
       ...baseFilters,
       ...baseDepthConfig,
+      time_aggregation: step2Filters?.slab_definition_mode === 'define' ? 'M' : 'D',
       ...step2Filters,
     }
     baseDepthMutation.mutate(payload)
@@ -837,12 +1164,18 @@ const RFMAnalysis = () => {
     const effectiveSettings = {
       include_lag_discount: settings.include_lag_discount ?? modelingSettings.include_lag_discount,
       cogs_per_unit: settings.cogs_per_unit ?? modelingSettings.cogs_per_unit,
+      cogs_per_size: settings.cogs_per_size ?? modelingSettings.cogs_per_size,
       ...FIXED_STAGE3_SETTINGS,
     }
     setModelingSettings((prev) => ({
       ...prev,
       include_lag_discount: Boolean(effectiveSettings.include_lag_discount),
       cogs_per_unit: Number(effectiveSettings.cogs_per_unit || 0),
+      cogs_per_size: {
+        ...DEFAULT_MODELING_COGS_BY_SIZE,
+        ...(prev.cogs_per_size || {}),
+        ...(effectiveSettings.cogs_per_size || {}),
+      },
       ...FIXED_STAGE3_SETTINGS,
     }))
 
@@ -860,112 +1193,393 @@ const RFMAnalysis = () => {
       constraint_tactical_non_negative: Boolean(FIXED_STAGE3_SETTINGS.constraint_tactical_non_negative),
       constraint_lag_non_positive: Boolean(FIXED_STAGE3_SETTINGS.constraint_lag_non_positive),
       cogs_per_unit: Number(effectiveSettings.cogs_per_unit || 0),
+      cogs_per_size: {
+        ...DEFAULT_MODELING_COGS_BY_SIZE,
+        ...(effectiveSettings.cogs_per_size || {}),
+      },
       ...step2Filters,
     }
     setPlannerResult(null)
     setPlannerErrorMessage('')
+    setPlannerDefaultByReference({})
+    setForecastResult(null)
+    setForecastErrorMessage('')
     setScenarioResult(null)
     setScenarioErrorMessage('')
     modelingMutation.mutate(payload)
   }
 
-  const availablePlannerSlabs = (modelingResult?.slab_results || [])
-    .filter((x) => x?.valid)
-    .map((x) => String(x.slab))
-
-  const resolvePlannerSlab = () => {
-    if (selectedPlannerSlab && availablePlannerSlabs.includes(selectedPlannerSlab)) {
-      return selectedPlannerSlab
+  const buildPlannerPayload = (overrides = {}) => {
+    const baseFilters = lastCalculatedFilters || filters
+    return {
+      run_id: runId || undefined,
+      ...baseFilters,
+      ...baseDepthConfig,
+      include_lag_discount: Boolean(modelingSettings.include_lag_discount),
+      l2_penalty: Number(FIXED_STAGE3_SETTINGS.l2_penalty),
+      optimize_l2_penalty: Boolean(FIXED_STAGE3_SETTINGS.optimize_l2_penalty),
+      constraint_residual_non_negative: Boolean(FIXED_STAGE3_SETTINGS.constraint_residual_non_negative),
+      constraint_structural_non_negative: Boolean(FIXED_STAGE3_SETTINGS.constraint_structural_non_negative),
+      constraint_tactical_non_negative: Boolean(FIXED_STAGE3_SETTINGS.constraint_tactical_non_negative),
+      constraint_lag_non_positive: Boolean(FIXED_STAGE3_SETTINGS.constraint_lag_non_positive),
+      cogs_per_unit: Number(modelingSettings.cogs_per_unit || 0),
+      cogs_per_size: {
+        ...DEFAULT_MODELING_COGS_BY_SIZE,
+        ...(modelingSettings.cogs_per_size || {}),
+      },
+      forecast_months: 3,
+      planner_mode: 'additive_only',
+      reference_mode: 'last_3m_before_projection',
+      ...step2Filters,
+      ...overrides,
     }
-    return availablePlannerSlabs[0] || ''
   }
 
-  const sanitizeArray = (values, fallback = []) => {
-    const source = Array.isArray(values) ? values : fallback
-    return source.map((value, index) => {
-      const parsed = Number(value)
-      if (Number.isFinite(parsed)) return parsed
-      const fallbackValue = Number((Array.isArray(fallback) ? fallback[index] : 0) || 0)
-      return Number.isFinite(fallbackValue) ? fallbackValue : 0
+  const getStep5SlabOrderBySize = (plannerResponse) => {
+    const defaultsMatrix = plannerResponse?.defaults_matrix || {}
+    const sizeResults = Array.isArray(plannerResponse?.size_results) ? plannerResponse.size_results : []
+    const out = {}
+    ;['12-ML', '18-ML'].forEach((sizeKey) => {
+      const fromResult = sizeResults.find((row) => String(row?.size || '') === sizeKey)
+      const slabs = Array.isArray(fromResult?.slabs)
+        ? fromResult.slabs.map((s) => String(s?.slab || '')).filter(Boolean)
+        : Object.keys(defaultsMatrix?.[sizeKey] || {})
+      out[sizeKey] = [...new Set(slabs)].sort((a, b) => {
+        const ai = parseSlabIndex(a) ?? Number.MAX_SAFE_INTEGER
+        const bi = parseSlabIndex(b) ?? Number.MAX_SAFE_INTEGER
+        if (ai !== bi) return ai - bi
+        return a.localeCompare(b)
+      })
+    })
+    return out
+  }
+
+  const getStep5DefaultValue = (defaultsMatrix, sizeKey, slabKey, monthIdx) => {
+    const defaultSeries = defaultsMatrix?.[sizeKey]?.[slabKey]
+    const raw = Array.isArray(defaultSeries)
+      ? defaultSeries?.[monthIdx] ?? defaultSeries?.[0] ?? 0
+      : defaultSeries ?? 0
+    const n = Number(raw)
+    return Number.isFinite(n) ? Number(n.toFixed(2)) : 0
+  }
+
+  const buildStep5HistoricalDiscountContext = (plannerResponse) => {
+    const defaultsMatrix = plannerResponse?.defaults_matrix || {}
+    const slabOrderBySize = getStep5SlabOrderBySize(plannerResponse)
+    const bySize = {}
+    ;['12-ML', '18-ML'].forEach((sizeKey) => {
+      bySize[sizeKey] = { ladders: {}, fullMonths: [], latestMonth: null }
+    })
+
+    const slabRows = Array.isArray(modelingResult?.slab_results) ? modelingResult.slab_results : []
+    slabRows.forEach((row) => {
+      const sizeKey = String(row?.size || '').trim()
+      const slabKey = String(row?.slab || '').trim()
+      if (!bySize[sizeKey] || !slabOrderBySize[sizeKey]?.includes(slabKey)) return
+      const points = Array.isArray(row?.predicted_vs_actual) ? row.predicted_vs_actual : []
+      points.forEach((pt) => {
+        const periodKey = toPeriodKey(pt?.period)
+        const baseDiscount = Number(pt?.base_discount_pct)
+        if (!periodKey || !Number.isFinite(baseDiscount)) return
+        if (!bySize[sizeKey].ladders[periodKey]) bySize[sizeKey].ladders[periodKey] = {}
+        bySize[sizeKey].ladders[periodKey][slabKey] = Number(baseDiscount.toFixed(2))
+      })
+    })
+
+    ;['12-ML', '18-ML'].forEach((sizeKey) => {
+      const slabOrder = slabOrderBySize[sizeKey] || []
+      const months = sortPeriodKeys(Object.keys(bySize[sizeKey].ladders))
+      bySize[sizeKey].fullMonths = months.filter((periodKey) =>
+        slabOrder.every((slabKey) => Number.isFinite(Number(bySize[sizeKey].ladders?.[periodKey]?.[slabKey])))
+      )
+      bySize[sizeKey].latestMonth = bySize[sizeKey].fullMonths.length
+        ? bySize[sizeKey].fullMonths[bySize[sizeKey].fullMonths.length - 1]
+        : null
+
+      if (!bySize[sizeKey].latestMonth && slabOrder.length > 0) {
+        const fallbackPeriod = String(plannerResponse?.periods?.[0] || 'fallback')
+        bySize[sizeKey].ladders[fallbackPeriod] = {}
+        slabOrder.forEach((slabKey, idx) => {
+          bySize[sizeKey].ladders[fallbackPeriod][slabKey] = getStep5DefaultValue(defaultsMatrix, sizeKey, slabKey, idx)
+        })
+        bySize[sizeKey].fullMonths = [fallbackPeriod]
+        bySize[sizeKey].latestMonth = fallbackPeriod
+      }
+    })
+
+    return { bySize, slabOrderBySize, defaultsMatrix }
+  }
+
+  const pickStep5ScenarioLadder = ({
+    context,
+    sizeKey,
+    scenarioId,
+    periodKey,
+    periodIdx,
+    periods,
+  }) => {
+    const sizeCtx = context?.bySize?.[sizeKey]
+    const slabOrder = context?.slabOrderBySize?.[sizeKey] || []
+    const ladders = sizeCtx?.ladders || {}
+    const fullMonths = sizeCtx?.fullMonths || []
+    const latestMonth = sizeCtx?.latestMonth
+    const firstPeriod = String(periods?.[0] || periodKey || '')
+    const fallbackMonth = latestMonth || fullMonths[fullMonths.length - 1] || null
+    const fallbackLadder = fallbackMonth ? ladders[fallbackMonth] : null
+
+    const readLadder = (sourceMonth) => {
+      const source = String(sourceMonth || '')
+      if (!source || !ladders[source]) return null
+      const out = {}
+      slabOrder.forEach((slabKey) => {
+        const v = Number(ladders[source]?.[slabKey])
+        if (Number.isFinite(v)) out[slabKey] = Number(v.toFixed(2))
+      })
+      return Object.keys(out).length ? out : null
+    }
+
+    if (scenarioId === 'latest_month_discount') {
+      const source = shiftPeriodKey(firstPeriod, -(3 - Number(periodIdx || 0)))
+      return readLadder(source) || readLadder(fallbackMonth) || fallbackLadder || {}
+    }
+
+    if (scenarioId === 'last_3m_exact') {
+      const source = shiftPeriodKey(firstPeriod, -(3 - Number(periodIdx || 0)))
+      return readLadder(source) || readLadder(fallbackMonth) || fallbackLadder || {}
+    }
+
+    if (scenarioId === 'same_season_last_year') {
+      const source = shiftPeriodKey(periodKey, -12)
+      return readLadder(source) || readLadder(fallbackMonth) || fallbackLadder || {}
+    }
+
+    const scoreMonths = fullMonths.map((month) => {
+      const ladder = readLadder(month) || {}
+      const values = slabOrder
+        .map((slabKey) => Number(ladder?.[slabKey]))
+        .filter((v) => Number.isFinite(v))
+      const avg = values.length ? values.reduce((acc, v) => acc + v, 0) / values.length : -Infinity
+      const signature = slabOrder.map((slabKey) => Number(ladder?.[slabKey] || 0).toFixed(2)).join('|')
+      return { month, ladder, avg, signature }
+    })
+
+    if (scenarioId === 'highest_historical_promo_ladder') {
+      const pick = [...scoreMonths].sort((a, b) => (b.avg - a.avg) || String(b.month).localeCompare(String(a.month)))[0]
+      return pick?.ladder || readLadder(fallbackMonth) || fallbackLadder || {}
+    }
+
+    if (scenarioId === 'lowest_historical_promo_ladder') {
+      const pick = [...scoreMonths].sort((a, b) => (a.avg - b.avg) || String(b.month).localeCompare(String(a.month)))[0]
+      return pick?.ladder || readLadder(fallbackMonth) || fallbackLadder || {}
+    }
+
+    if (scenarioId === 'most_common_historical_ladder') {
+      const groups = {}
+      scoreMonths.forEach((row) => {
+        const sig = String(row.signature || '')
+        if (!groups[sig]) groups[sig] = { count: 0, latest: row.month, ladder: row.ladder }
+        groups[sig].count += 1
+        if (String(row.month) > String(groups[sig].latest)) {
+          groups[sig].latest = row.month
+          groups[sig].ladder = row.ladder
+        }
+      })
+      const pick = Object.values(groups).sort((a, b) => (b.count - a.count) || String(b.latest).localeCompare(String(a.latest)))[0]
+      return pick?.ladder || readLadder(fallbackMonth) || fallbackLadder || {}
+    }
+
+    return readLadder(fallbackMonth) || fallbackLadder || {}
+  }
+
+  const clampStep5Discount = (value) => {
+    const n = Number(value)
+    if (!Number.isFinite(n)) return 5
+    return Number(Math.min(30, Math.max(5, n)).toFixed(2))
+  }
+
+  const enforceStep5Ladder = (valuesBySlab = {}, slabOrder = []) => {
+    if (!Array.isArray(slabOrder) || slabOrder.length === 0) return valuesBySlab
+    const out = {}
+    slabOrder.forEach((slabKey, idx) => {
+      const desired = clampStep5Discount(valuesBySlab?.[slabKey])
+      const lowerBound = idx === 0 ? 5 : Number(out[slabOrder[idx - 1]] || 5) + 1
+      const upperBound = 30 - (slabOrder.length - 1 - idx)
+      const next = Math.min(upperBound, Math.max(lowerBound, desired))
+      out[slabKey] = Number(next.toFixed(2))
+    })
+    return out
+  }
+
+  const cloneStep5PeriodMap = (periodMap = {}) => JSON.parse(JSON.stringify(periodMap || {}))
+
+  const applyStep5Movement = ({
+    anchorMap,
+    periods,
+    slabOrderBySize,
+    movementKind,
+    movementMode,
+    shiftPp = 0,
+    shiftDirection = 'high',
+    returnPattern = 'high_base_base',
+  }) => {
+    const out = cloneStep5PeriodMap(anchorMap)
+    const orderedPeriods = Array.isArray(periods) ? periods.map((p) => String(p)) : []
+    if (!orderedPeriods.length) return out
+    const sign = shiftDirection === 'low' ? -1 : 1
+    const shiftValue = Number(shiftPp || 0) * sign
+    const patternFactor = (monthIdx) => {
+      if (movementKind !== 'return_to_normal') return 1
+      if (returnPattern === 'base_high_base') return monthIdx === 1 ? 1 : 0
+      return monthIdx === 0 ? 1 : 0
+    }
+
+    ;['12-ML', '18-ML'].forEach((sizeKey) => {
+      const slabOrder = slabOrderBySize?.[sizeKey] || []
+      if (!slabOrder.length) return
+      const firstPeriod = orderedPeriods[0]
+      const firstLadder = out?.[firstPeriod]?.[sizeKey] || {}
+
+      orderedPeriods.forEach((periodKey, monthIdx) => {
+        if (!out?.[periodKey]?.[sizeKey]) out[periodKey] = { ...(out[periodKey] || {}), [sizeKey]: {} }
+        const anchorLadder = out[periodKey][sizeKey] || {}
+        let nextLadder = {}
+
+        if (movementKind === 'same_all_3m') {
+          slabOrder.forEach((slabKey) => {
+            nextLadder[slabKey] = clampStep5Discount(firstLadder?.[slabKey])
+          })
+        } else if (movementMode === 'preserve_gaps') {
+          const baseSlab = slabOrder[0]
+          const anchorBase = Number(anchorLadder?.[baseSlab] || firstLadder?.[baseSlab] || 5)
+          const factor = patternFactor(monthIdx)
+          const targetBase = clampStep5Discount(anchorBase + shiftValue * factor)
+          slabOrder.forEach((slabKey) => {
+            const anchorVal = Number(anchorLadder?.[slabKey] || firstLadder?.[slabKey] || targetBase)
+            const gap = anchorVal - anchorBase
+            nextLadder[slabKey] = clampStep5Discount(targetBase + gap)
+          })
+        } else {
+          const factor = movementKind === 'return_to_normal' ? patternFactor(monthIdx) : 1
+          slabOrder.forEach((slabKey) => {
+            const anchorVal = Number(anchorLadder?.[slabKey] || firstLadder?.[slabKey] || 5)
+            nextLadder[slabKey] = clampStep5Discount(anchorVal + shiftValue * factor)
+          })
+        }
+
+        out[periodKey][sizeKey] = enforceStep5Ladder(nextLadder, slabOrder)
+      })
+    })
+    return out
+  }
+
+  const buildStep5AnchorScenarioMap = (plannerResponse, scenarioId, historicalContext = null) => {
+    const periods = Array.isArray(plannerResponse?.periods) ? plannerResponse.periods.map((p) => String(p)) : []
+    const defaultsMatrix = plannerResponse?.defaults_matrix || {}
+    const context = historicalContext || buildStep5HistoricalDiscountContext(plannerResponse)
+    const periodMap = {}
+
+    periods.forEach((periodKey, periodIdx) => {
+      periodMap[periodKey] = {}
+      ;['12-ML', '18-ML'].forEach((sizeKey) => {
+        const slabOrder = context?.slabOrderBySize?.[sizeKey] || Object.keys(defaultsMatrix?.[sizeKey] || {})
+        const ladder = pickStep5ScenarioLadder({
+          context,
+          sizeKey,
+          scenarioId,
+          periodKey,
+          periodIdx,
+          periods,
+        })
+        periodMap[periodKey][sizeKey] = {}
+        slabOrder.forEach((slabKey) => {
+          const fallback = getStep5DefaultValue(defaultsMatrix, sizeKey, slabKey, periodIdx)
+          const value = Number(ladder?.[slabKey])
+          periodMap[periodKey][sizeKey][slabKey] = clampStep5Discount(Number.isFinite(value) ? value : fallback)
+        })
+        periodMap[periodKey][sizeKey] = enforceStep5Ladder(periodMap[periodKey][sizeKey], slabOrder)
+      })
+    })
+    return periodMap
+  }
+
+  const buildStep5GeneratedScenarioMap = (plannerResponse, scenarioDef, historicalContext = null) => {
+    const periods = Array.isArray(plannerResponse?.periods) ? plannerResponse.periods.map((p) => String(p)) : []
+    const scenarioId = String(scenarioDef?.id || 'last_3m_exact')
+    const context = historicalContext || buildStep5HistoricalDiscountContext(plannerResponse)
+    const anchorMap = buildStep5AnchorScenarioMap(plannerResponse, scenarioId, context)
+    if (String(scenarioDef?.type || 'anchor') !== 'layer2') return anchorMap
+    return applyStep5Movement({
+      anchorMap,
+      periods,
+      slabOrderBySize: context?.slabOrderBySize || {},
+      movementKind: String(scenarioDef?.movement_kind || 'same_all_3m'),
+      movementMode: String(scenarioDef?.movement_mode || 'all_slabs_together'),
+      shiftPp: Number(scenarioDef?.shift_pp || 0),
+      shiftDirection: String(scenarioDef?.shift_direction || 'high'),
+      returnPattern: String(scenarioDef?.return_pattern || 'high_base_base'),
     })
   }
 
-  const handleGeneratePlanner = () => {
+  const handleGeneratePlanner = (overrides = {}) => {
     if (!modelingResult?.success) {
       setPlannerErrorMessage('Run Step 3 modeling before Step 4 planner.')
       return
     }
-    const slab = resolvePlannerSlab()
-    if (!slab) {
-      setPlannerErrorMessage('No valid slab available for planner.')
-      return
-    }
-    const baseFilters = lastCalculatedFilters || filters
-    plannerMutation.mutate({
-      run_id: runId || undefined,
-      ...baseFilters,
-      ...baseDepthConfig,
-      include_lag_discount: Boolean(modelingSettings.include_lag_discount),
-      l2_penalty: Number(FIXED_STAGE3_SETTINGS.l2_penalty),
-      optimize_l2_penalty: Boolean(FIXED_STAGE3_SETTINGS.optimize_l2_penalty),
-      constraint_residual_non_negative: Boolean(FIXED_STAGE3_SETTINGS.constraint_residual_non_negative),
-      constraint_structural_non_negative: Boolean(FIXED_STAGE3_SETTINGS.constraint_structural_non_negative),
-      constraint_tactical_non_negative: Boolean(FIXED_STAGE3_SETTINGS.constraint_tactical_non_negative),
-      constraint_lag_non_positive: Boolean(FIXED_STAGE3_SETTINGS.constraint_lag_non_positive),
-      cogs_per_unit: Number(modelingSettings.cogs_per_unit || 0),
-      ...step2Filters,
-      slab,
-      slabs: [slab],
-    })
+    setPlannerErrorMessage('')
+    plannerMutation.mutate(buildPlannerPayload(overrides))
   }
 
-  const handleRecalculatePlanner = (inputs) => {
-    const slab = resolvePlannerSlab()
-    if (!slab) return
-    const baseFilters = lastCalculatedFilters || filters
-    const fallbackStruct = plannerResult?.planned_structural_discounts || []
-    const fallbackBase = plannerResult?.planned_base_prices || []
-    const nextStruct = sanitizeArray(inputs?.planned_structural_discounts, fallbackStruct)
-    const nextBase = sanitizeArray(inputs?.planned_base_prices, fallbackBase)
-    plannerMutation.mutate({
-      run_id: runId || undefined,
-      ...baseFilters,
-      ...baseDepthConfig,
-      include_lag_discount: Boolean(modelingSettings.include_lag_discount),
-      l2_penalty: Number(FIXED_STAGE3_SETTINGS.l2_penalty),
-      optimize_l2_penalty: Boolean(FIXED_STAGE3_SETTINGS.optimize_l2_penalty),
-      constraint_residual_non_negative: Boolean(FIXED_STAGE3_SETTINGS.constraint_residual_non_negative),
-      constraint_structural_non_negative: Boolean(FIXED_STAGE3_SETTINGS.constraint_structural_non_negative),
-      constraint_tactical_non_negative: Boolean(FIXED_STAGE3_SETTINGS.constraint_tactical_non_negative),
-      constraint_lag_non_positive: Boolean(FIXED_STAGE3_SETTINGS.constraint_lag_non_positive),
-      cogs_per_unit: Number(modelingSettings.cogs_per_unit || 0),
-      ...step2Filters,
-      slab,
-      slabs: [slab],
-      planned_structural_discounts: nextStruct,
-      planned_base_prices: nextBase,
-    })
+  const handleFetchPlannerReference = async (referenceMode) => {
+    if (!modelingResult?.success) return
+    const mode = String(referenceMode || '').trim()
+    if (!mode) return
+    if (plannerDefaultByReference?.[mode]) return
+    try {
+      const data = await calculateCrossSizePlanner(buildPlannerPayload({ reference_mode: mode }))
+      if (data?.success) {
+        setPlannerDefaultByReference((prev) => ({
+          ...prev,
+          [mode]: data,
+        }))
+      }
+    } catch (_) {
+      // Silent prefetch failure: Step 4 main flow remains unaffected.
+    }
   }
+
+  useEffect(() => {
+    const lyCached = Boolean(plannerDefaultByReference?.ly_same_3m)
+    if (activeStepTab !== 'step4') return
+    if (!modelingResult?.success) return
+    if (lyCached) return
+    handleFetchPlannerReference('ly_same_3m')
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeStepTab, modelingResult?.success, Boolean(plannerDefaultByReference?.ly_same_3m)])
 
   const handleRunScenarioComparison = () => {
     if (!modelingResult?.success) {
-      setScenarioErrorMessage('Run Step 3 modeling before Step 5 scenario comparison.')
+      setScenarioErrorMessage('Run Step 3 modeling before Step 5 scenario generation.')
       return
     }
-    const slab = resolvePlannerSlab()
-    if (!slab) {
-      setScenarioErrorMessage('No valid slab available for scenario comparison.')
-      return
-    }
-    if (!scenarioFile) {
-      setScenarioErrorMessage('Upload a CSV/XLSX file with month-wise scenarios first.')
+    setScenarioErrorMessage('')
+    scenarioMutation.mutate({ mode: 'fixed' })
+  }
+
+  const handleOpenCreateScenario = () => {
+    setStep5CreateScenarioRequestId((prev) => prev + 1)
+  }
+
+  const handleRunBaselineForecast = () => {
+    if (!modelingResult?.success) {
+      setForecastErrorMessage('Run Step 3 modeling before baseline forecast.')
       return
     }
     const baseFilters = lastCalculatedFilters || filters
-    const payload = {
+    forecastMutation.mutate({
       run_id: runId || undefined,
       ...baseFilters,
       ...baseDepthConfig,
+      time_aggregation: 'M',
       include_lag_discount: Boolean(modelingSettings.include_lag_discount),
       l2_penalty: Number(FIXED_STAGE3_SETTINGS.l2_penalty),
       optimize_l2_penalty: Boolean(FIXED_STAGE3_SETTINGS.optimize_l2_penalty),
@@ -974,12 +1588,13 @@ const RFMAnalysis = () => {
       constraint_tactical_non_negative: Boolean(FIXED_STAGE3_SETTINGS.constraint_tactical_non_negative),
       constraint_lag_non_positive: Boolean(FIXED_STAGE3_SETTINGS.constraint_lag_non_positive),
       cogs_per_unit: Number(modelingSettings.cogs_per_unit || 0),
+      cogs_per_size: {
+        ...DEFAULT_MODELING_COGS_BY_SIZE,
+        ...(modelingSettings.cogs_per_size || {}),
+      },
+      forecast_months: 3,
       ...step2Filters,
-      slab,
-      slabs: [slab],
-      disable_ai_insights: true,
-    }
-    scenarioMutation.mutate({ payload, file: scenarioFile })
+    })
   }
 
   const handleStep2FilterChange = (key, value) => {
@@ -987,20 +1602,45 @@ const RFMAnalysis = () => {
     setModelingErrorMessage('')
     setPlannerResult(null)
     setPlannerErrorMessage('')
+    setPlannerDefaultByReference({})
+    setForecastResult(null)
+    setForecastErrorMessage('')
     setScenarioResult(null)
     setScenarioErrorMessage('')
+    setBaseDepthConfig((prev) => ({ ...prev, time_aggregation: 'M' }))
     setStep2Filters((prev) => {
       let normalizedValue = value
       if (key === 'outlet_classifications') {
         normalizedValue = normalizeStep2OutletClassifications(value || [])
       } else if (key === 'slabs') {
         normalizedValue = normalizeStep2Slabs(value || [], discountOptions?.slabs || [])
+      } else if (key === 'defined_slab_count') {
+        normalizedValue = normalizeDefinedSlabCount(value)
+      } else if (key === 'defined_slab_thresholds') {
+        normalizedValue = normalizeDefinedSlabThresholds(value || [], prev?.defined_slab_count)
+      } else if (key === 'defined_slab_level') {
+        normalizedValue = 'monthly_outlet'
+      } else if (key === 'defined_slab_profiles') {
+        normalizedValue = normalizeDefinedSlabProfiles(value || {})
       }
-      const next = { ...prev, [key]: normalizedValue }
+      const next = { ...prev, [key]: normalizedValue, slab_definition_mode: 'define' }
+      if (key === 'defined_slab_count') {
+        next.defined_slab_thresholds = normalizeDefinedSlabThresholds(
+          prev?.defined_slab_thresholds || [],
+          normalizedValue
+        )
+      }
       if (key === 'rfm_segments') {
         next.outlet_classifications = []
         next.slabs = []
       } else if (key === 'outlet_classifications') {
+        next.slabs = []
+      } else if (
+        key === 'defined_slab_count' ||
+        key === 'defined_slab_thresholds' ||
+        key === 'defined_slab_level' ||
+        key === 'defined_slab_profiles'
+      ) {
         next.slabs = []
       }
       return next
@@ -1075,18 +1715,11 @@ const RFMAnalysis = () => {
   useEffect(() => {
     const validSegments = new Set((discountOptions?.rfm_segments || []).map((x) => String(x)))
     const validOutletTypes = new Set((discountOptions?.outlet_classifications || []).map((x) => String(x)))
-    const validSlabs = normalizeStep2Slabs(discountOptions?.slabs || [])
 
     setStep2Filters((prev) => {
       const nextSegments = (prev?.rfm_segments || []).filter((x) => validSegments.has(String(x)))
       const nextOutletTypes = normalizeStep2OutletClassifications(prev?.outlet_classifications || [])
         .filter((x) => validOutletTypes.has(String(x)))
-
-      let nextSlabs = normalizeStep2Slabs(prev?.slabs || [], validSlabs)
-      if (nextSlabs.length === 0 && validSlabs.length > 0) {
-        // Default Step 2 slab selection: slab1-slab4 (slab0 hidden).
-        nextSlabs = [...validSlabs]
-      }
 
       const sameSegments =
         nextSegments.length === (prev?.rfm_segments || []).length &&
@@ -1094,23 +1727,19 @@ const RFMAnalysis = () => {
       const sameOutletTypes =
         nextOutletTypes.length === (prev?.outlet_classifications || []).length &&
         nextOutletTypes.every((v, i) => v === (prev?.outlet_classifications || [])[i])
-      const sameSlabs =
-        nextSlabs.length === (prev?.slabs || []).length &&
-        nextSlabs.every((v, i) => v === (prev?.slabs || [])[i])
 
-      if (sameSegments && sameOutletTypes && sameSlabs) return prev
+      if (sameSegments && sameOutletTypes && (prev?.slabs || []).length === 0) return prev
 
       return {
         ...prev,
         rfm_segments: nextSegments,
         outlet_classifications: nextOutletTypes,
-        slabs: nextSlabs,
+        slabs: [],
       }
     })
   }, [
     discountOptions?.rfm_segments,
     discountOptions?.outlet_classifications,
-    discountOptions?.slabs,
   ])
 
   useEffect(() => {
@@ -1198,33 +1827,70 @@ const RFMAnalysis = () => {
   }, [edaOptions, availableFilters])
 
   useEffect(() => {
-    const slabs = (modelingResult?.slab_results || []).filter((x) => x?.valid).map((x) => String(x.slab))
-    if (!slabs.length) {
-      setSelectedPlannerSlab('')
-      return
-    }
-    setSelectedPlannerSlab((prev) => (prev && slabs.includes(prev) ? prev : slabs[0]))
-  }, [modelingResult])
-
-  useEffect(() => {
-    const firstValid = (modelingResult?.slab_results || []).find((x) => x?.valid)
+    const validResults = (modelingResult?.slab_results || []).filter((x) => x?.valid)
+    const firstValid = validResults[0]
     if (!firstValid) return
     const lagFlag = Number(firstValid?.model_coefficients?.include_lag_discount)
+    const nextCogsBySize = { ...DEFAULT_MODELING_COGS_BY_SIZE }
+    validResults.forEach((item) => {
+      const sizeKey = normalizeStep2SizeKey(item?.size || item?.model_coefficients?.size_key)
+      const cogs = Number(item?.summary?.cogs_per_unit ?? item?.model_coefficients?.cogs_per_unit)
+      if (sizeKey && Number.isFinite(cogs)) {
+        nextCogsBySize[sizeKey] = cogs
+      }
+    })
     const cogs = Number(firstValid?.summary?.cogs_per_unit ?? firstValid?.model_coefficients?.cogs_per_unit)
     setModelingSettings((prev) => ({
       include_lag_discount: Number.isFinite(lagFlag) ? lagFlag > 0 : prev.include_lag_discount,
       cogs_per_unit: Number.isFinite(cogs) ? cogs : prev.cogs_per_unit,
+      cogs_per_size: {
+        ...DEFAULT_MODELING_COGS_BY_SIZE,
+        ...(prev.cogs_per_size || {}),
+        ...nextCogsBySize,
+      },
       ...FIXED_STAGE3_SETTINGS,
     }))
   }, [modelingResult])
 
   useEffect(() => {
-    if (!plannerResult?.success) return
-    setPlannerInputs({
-      planned_structural_discounts: plannerResult?.planned_structural_discounts || [],
-      planned_base_prices: plannerResult?.planned_base_prices || [],
-    })
-  }, [plannerResult])
+    if (activeStepTab !== 'step4') return
+    if (!modelingResult?.success) return
+    if (plannerMutation.isPending) return
+    // Avoid retry loop on stale/mismatched payloads.
+    // Auto-fetch only when Step 4 has no result yet.
+    if (plannerResult !== null) return
+    handleGeneratePlanner()
+  }, [
+    activeStepTab,
+    modelingResult?.success,
+    plannerMutation.isPending,
+    plannerResult,
+  ])
+
+  useEffect(() => {
+    if (activeStepTab !== 'step4') return
+    if (!modelingResult?.success) return
+    if (forecastMutation.isPending) return
+    if (forecastErrorMessage) return
+    if (forecastResult?.success && Array.isArray(forecastResult?.points) && forecastResult.points.length > 0) return
+    handleRunBaselineForecast()
+  }, [activeStepTab, modelingResult?.success, forecastMutation.isPending, forecastResult?.success, forecastResult?.points, forecastErrorMessage])
+
+  useEffect(() => {
+    step5AutoScenarioInitRef.current = false
+  }, [runId, modelingResult, step5ScenarioDefs.length])
+
+  useEffect(() => {
+    if (activeStepTab !== 'step5') return
+    if (!modelingResult?.success) return
+    if (scenarioMutation.isPending) return
+    if (scenarioResult?.success) return
+    if (step5AutoScenarioInitRef.current) return
+    step5AutoScenarioInitRef.current = true
+    setScenarioErrorMessage('')
+    scenarioMutation.mutate({ mode: 'fixed' })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeStepTab, modelingResult?.success, scenarioMutation.isPending, scenarioResult?.success, step5ScenarioDefs.length])
 
   const handleFilterChange = (key, value) => {
     setFilters((prev) => {
@@ -1264,17 +1930,15 @@ const RFMAnalysis = () => {
   // Use cascaded filters if available, otherwise use initial filters
   const displayFilters = cascadedFilters || availableFilters
   const edaDisplayFilters = availableFilters || EMPTY_FILTERS
-  const trinityStatus = String(plannerResult?.ai_insights_status || 'pending_recalculate')
-  const trinityStatusLabel = trinityStatus === 'pending_recalculate'
-    ? 'After Recalculate'
-    : trinityStatus.replace(/_/g, ' ')
-  const trinityBullets = parseTrinityInsightBullets(plannerResult?.ai_insights)
-  const trinityStatusClass = trinityStatus === 'ready'
-    ? 'text-green-700'
-    : trinityStatus === 'disabled' || trinityStatus === 'error'
-      ? 'text-red-600'
-      : 'text-slate-500'
-
+  const step2ActiveSizes = Array.from(
+    new Set(
+      ((lastCalculatedFilters?.sizes && lastCalculatedFilters.sizes.length > 0
+        ? lastCalculatedFilters.sizes
+        : filters.sizes) || [])
+        .map((v) => normalizeStep2SizeKey(v))
+        .filter(Boolean)
+    )
+  )
   // Right Sidebar Content
   let rightSidebarContent
   if (activeStepTab === 'step2' && rfmData?.success) {
@@ -1284,10 +1948,11 @@ const RFMAnalysis = () => {
           filters={step2Filters}
           options={discountOptions}
           onChange={handleStep2FilterChange}
+          activeSizes={step2ActiveSizes}
           matchingOutlets={discountOptions.matching_outlets || 0}
           isLoading={isDiscountOptionsLoading}
           title="Step 2: Discount Analysis Filters"
-          description="Select RFM groups, outlet types, and slabs for base discount estimation."
+          description="Select RFM groups, outlet types, and define direct slab cutoffs for 12-ML and 18-ML."
           loadingLabel="Updating Step 2 options..."
           matchingLabel="Matching outlets after Step 2 filters"
         />
@@ -1320,13 +1985,38 @@ const RFMAnalysis = () => {
               Include lag discount term
             </label>
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">COGS Per Unit</label>
+              <label className="block text-sm font-medium text-gray-700 mb-1">COGS Per Unit - 12-ML</label>
               <input
                 type="number"
                 min="0"
                 step="0.5"
-                value={modelingSettings.cogs_per_unit}
-                onChange={(e) => setModelingSettings((prev) => ({ ...prev, cogs_per_unit: parseFloat(e.target.value || '0') }))}
+                value={modelingSettings.cogs_per_size?.['12-ML'] ?? 0}
+                onChange={(e) => setModelingSettings((prev) => ({
+                  ...prev,
+                  cogs_per_size: {
+                    ...DEFAULT_MODELING_COGS_BY_SIZE,
+                    ...(prev.cogs_per_size || {}),
+                    '12-ML': parseFloat(e.target.value || '0'),
+                  },
+                }))}
+                className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">COGS Per Unit - 18-ML</label>
+              <input
+                type="number"
+                min="0"
+                step="0.5"
+                value={modelingSettings.cogs_per_size?.['18-ML'] ?? 0}
+                onChange={(e) => setModelingSettings((prev) => ({
+                  ...prev,
+                  cogs_per_size: {
+                    ...DEFAULT_MODELING_COGS_BY_SIZE,
+                    ...(prev.cogs_per_size || {}),
+                    '18-ML': parseFloat(e.target.value || '0'),
+                  },
+                }))}
                 className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg"
               />
             </div>
@@ -1343,80 +2033,7 @@ const RFMAnalysis = () => {
       </div>
     )
   } else if (activeStepTab === 'step4' && rfmData?.success) {
-    rightSidebarContent = (
-      <div className="bg-white rounded-lg shadow-md overflow-visible">
-        <div className="bg-primary text-white p-4">
-          <h3 className="text-lg font-semibold">Step 4: Planner Settings</h3>
-        </div>
-        <div className="p-4 space-y-3">
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Selected Slab</label>
-            <select
-              value={resolvePlannerSlab()}
-              onChange={(e) => {
-                setSelectedPlannerSlab(e.target.value)
-                setPlannerResult(null)
-                setPlannerErrorMessage('')
-                setPlannerInputs({
-                  planned_structural_discounts: [],
-                  planned_base_prices: [],
-                })
-              }}
-              className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg"
-            >
-              <option value="">Select slab</option>
-              {availablePlannerSlabs.map((s) => (
-                <option key={s} value={s}>{s}</option>
-              ))}
-            </select>
-          </div>
-
-          <button
-            type="button"
-            onClick={handleGeneratePlanner}
-            disabled={plannerMutation.isPending || !resolvePlannerSlab()}
-            className="w-full px-4 py-2 rounded-md bg-white border border-primary text-body text-sm font-semibold disabled:opacity-50"
-          >
-            {plannerMutation.isPending ? 'Loading Plan...' : 'Generate Step 4 Plan'}
-          </button>
-          {plannerMutation.isPending && (
-            <p className="text-xs text-muted">
-              Planner calculation is running. This can take around 30-60 seconds for large data.
-            </p>
-          )}
-
-          <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
-            <div className="flex items-center justify-between gap-2">
-              <p className="text-sm font-semibold text-body">Trinity Insights</p>
-              <span className={`text-[10px] uppercase tracking-wide font-semibold ${trinityStatusClass}`}>
-                {trinityStatusLabel}
-              </span>
-            </div>
-            {trinityStatus === 'pending_recalculate' ? (
-              <p className="text-xs text-muted mt-2">
-                Trinity insights are generated only after you click Recalculate Plan.
-              </p>
-            ) : trinityBullets.length > 0 ? (
-              <ul className="mt-2 space-y-2">
-                {trinityBullets.map((line, index) => {
-                  const parts = splitInsightLabel(line)
-                  return (
-                    <li key={`${line}-${index}`} className="text-xs text-body leading-5">
-                      <span className="font-semibold">{parts.label ? `${parts.label}:` : 'Insight:'}</span>{' '}
-                      <span className="text-muted">{parts.detail || line}</span>
-                    </li>
-                  )
-                })}
-              </ul>
-            ) : (
-              <p className="text-xs text-muted mt-2">
-                Trinity insights will appear after you click Recalculate Plan.
-              </p>
-            )}
-          </div>
-        </div>
-      </div>
-    )
+    rightSidebarContent = null
   } else if (activeStepTab === 'step5') {
     rightSidebarContent = (
       <div className="bg-white rounded-lg shadow-md overflow-visible">
@@ -1425,52 +2042,33 @@ const RFMAnalysis = () => {
         </div>
         <div className="p-4 space-y-3">
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Selected Slab</label>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Reference For % Comparison</label>
             <select
-              value={resolvePlannerSlab()}
-              onChange={(e) => {
-                setSelectedPlannerSlab(e.target.value)
-                setScenarioResult(null)
-                setScenarioErrorMessage('')
-              }}
+              value={step4DisplayReferenceMode}
+              onChange={(e) => setStep4DisplayReferenceMode(String(e.target.value || 'last_3m_before_projection'))}
               className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg"
             >
-              <option value="">Select slab</option>
-              {availablePlannerSlabs.map((s) => (
-                <option key={s} value={s}>{s}</option>
-              ))}
+              <option value="last_3m_before_projection">Last 3M Before Projection</option>
+              <option value="ly_same_3m">LY Same 3M</option>
             </select>
           </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Scenario File (CSV/XLSX)</label>
-            <input
-              type="file"
-              accept=".csv,.xlsx,.xls"
-              onChange={(e) => {
-                const file = e.target.files?.[0] || null
-                setScenarioFile(file)
-                setScenarioResult(null)
-                setScenarioErrorMessage('')
-              }}
-              className="w-full text-sm"
-            />
+          <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 space-y-2">
+            <div className="text-xs font-semibold text-body">Scenario Engine</div>
+            <div className="text-[11px] text-muted">
+              Anchors: {STEP5_ANCHOR_SCENARIOS.length}
+            </div>
+            <div className="text-[11px] text-muted">
+              Planned scenarios: {step5ScenarioDefs.length}
+            </div>
           </div>
-          <p className="text-xs text-muted">
-            Format: first column = Month (April to March), other columns = Scenario 1..N with % values.
-          </p>
           <button
             type="button"
-            onClick={handleRunScenarioComparison}
-            disabled={scenarioMutation.isPending || !resolvePlannerSlab() || !scenarioFile}
-            className="w-full px-4 py-2 rounded-md bg-white border border-primary text-body text-sm font-semibold disabled:opacity-50"
+            onClick={handleOpenCreateScenario}
+            disabled={!modelingResult?.success}
+            className="w-full px-4 py-2 rounded-md bg-white border border-slate-300 text-body text-sm font-semibold disabled:opacity-50"
           >
-            {scenarioMutation.isPending ? 'Running Comparison...' : 'Run Comparison'}
+            Create Scenario
           </button>
-          {scenarioFile && (
-            <p className="text-xs text-muted">
-              Uploaded: <span className="font-semibold text-body">{scenarioFile.name}</span>
-            </p>
-          )}
         </div>
       </div>
     )
@@ -1490,7 +2088,6 @@ const RFMAnalysis = () => {
   return (
     <Layout rightSidebar={rightSidebarContent}>
       <div className="space-y-6">
-
         {/* Error Message */}
         {calculateMutation.isError && (
           <div className="bg-brand-dangerLight border border-danger rounded-lg p-4 flex items-start space-x-3">
@@ -1548,7 +2145,7 @@ const RFMAnalysis = () => {
                   : 'bg-white text-muted border-gray-300'
               }`}
             >
-              Step 4: 12-Month Planner
+              Step 4: Cross-Size Planner
             </button>
             <button
               type="button"
@@ -1607,6 +2204,12 @@ const RFMAnalysis = () => {
 
         {activeStepTab === 'step2' && rfmData && rfmData.success && (
           <div className="space-y-6">
+            <Step2SlabDefinitionPanel
+              filters={step2Filters}
+              onChange={handleStep2FilterChange}
+              activeSizes={step2ActiveSizes}
+              title="Step 2: Size-wise Slab Definition"
+            />
             <BaseDepthEstimator
               config={baseDepthConfig}
               onConfigChange={handleBaseDepthConfigChange}
@@ -1616,6 +2219,7 @@ const RFMAnalysis = () => {
               isError={baseDepthMutation.isError}
               errorMessage={baseDepthErrorMessage || baseDepthMutation.error?.message}
               showControls={false}
+              definedSlabProfiles={step2Filters?.defined_slab_profiles || {}}
             />
 
             {baseDepthResult?.success && (
@@ -1668,7 +2272,7 @@ const RFMAnalysis = () => {
               <div className="bg-white rounded-lg shadow-md p-4 flex items-center justify-between">
                 <div>
                   <h4 className="text-base font-semibold text-body">Step 3 Completed</h4>
-                  <p className="text-sm text-muted">Proceed to 12-month planner for slab-level promo planning.</p>
+                  <p className="text-sm text-muted">Proceed to the cross-size scenario planner for 12-ML and 18-ML planning.</p>
                 </div>
                 <button
                   type="button"
@@ -1688,7 +2292,7 @@ const RFMAnalysis = () => {
               <div className="bg-white rounded-lg shadow-md p-8">
                 <h3 className="text-xl font-semibold text-body mb-2">Step 4 Requires Step 3 Output</h3>
                 <p className="text-muted mb-4">
-                  Run Modeling and ROI first, then continue to 12-month planner.
+                  Run Modeling and ROI first, then continue to the cross-size scenario planner.
                 </p>
                 <button
                   type="button"
@@ -1700,25 +2304,31 @@ const RFMAnalysis = () => {
               </div>
             )}
 
-            <Planner12Month
+            <CrossSizePlanner
               data={plannerResult}
               isLoading={plannerMutation.isPending}
               isError={plannerMutation.isError || Boolean(plannerErrorMessage)}
               errorMessage={plannerErrorMessage || plannerMutation.error?.message}
-              onRecalculate={handleRecalculatePlanner}
-              showControls
-              showSlabGenerateControls={false}
-              showCogsInput={false}
-              showMonthEditor
-              showResetButton
-              fixedCogsPerUnit={Number(modelingSettings.cogs_per_unit || 0)}
+              displayReferenceMode={step4DisplayReferenceMode}
+              onDisplayReferenceModeChange={setStep4DisplayReferenceMode}
+              referenceByMode={plannerDefaultByReference}
+              onInitialize={() => {
+                handleGeneratePlanner()
+              }}
+            />
+
+            <BaselineForecast
+              data={forecastResult}
+              isLoading={forecastMutation.isPending}
+              isError={forecastMutation.isError || Boolean(forecastErrorMessage)}
+              errorMessage={forecastErrorMessage || forecastMutation.error?.message}
             />
 
             {plannerResult?.success && (
               <div className="bg-white rounded-lg shadow-md p-4 flex items-center justify-between">
                 <div>
                   <h4 className="text-base font-semibold text-body">Step 4 Completed</h4>
-                  <p className="text-sm text-muted">Proceed to Step 5 for scenario upload and comparison.</p>
+                  <p className="text-sm text-muted">Cross-size planner and 3-month baseline forecast are ready. Proceed to scenario comparison next.</p>
                 </div>
                 <button
                   type="button"
@@ -1738,7 +2348,7 @@ const RFMAnalysis = () => {
               <div className="bg-white rounded-lg shadow-md p-8">
                 <h3 className="text-xl font-semibold text-body mb-2">Step 5 Requires Step 3 Output</h3>
                 <p className="text-muted mb-4">
-                  Run Modeling and ROI first, then upload scenarios for comparison.
+                  Run Modeling and ROI first, then generate Step 5 scenarios.
                 </p>
                 <button
                   type="button"
@@ -1751,9 +2361,19 @@ const RFMAnalysis = () => {
             )}
             <ScenarioComparison
               data={scenarioResult}
+              plannerBase={plannerResult}
               isLoading={scenarioMutation.isPending}
               isError={scenarioMutation.isError || Boolean(scenarioErrorMessage)}
               errorMessage={scenarioErrorMessage || scenarioMutation.error?.message}
+              createScenarioRequestId={step5CreateScenarioRequestId}
+              onScenariosChange={(nextRows) => {
+                setScenarioResult((prev) => ({
+                  ...(prev || {}),
+                  success: true,
+                  scenarios: Array.isArray(nextRows) ? nextRows : [],
+                  message: prev?.message || `Generated ${Array.isArray(nextRows) ? nextRows.length : 0} scenario(s).`,
+                }))
+              }}
             />
           </div>
         )}

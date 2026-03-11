@@ -87,12 +87,25 @@ outlet-analysis-tool/
 - `ClusterSummary` - Cluster range model
 
 #### `backend/services/rfm_service.py`
-- `RFMService` class
-- Data loading and caching
-- RFM calculation logic
-- K-means clustering
-- Filter application
-- Segment and cluster summaries
+- `RFMService` compatibility facade (thin orchestrator)
+- Keeps public service method names used by `backend/main.py`
+- Delegates implementation to modular step/core mixins
+
+#### `backend/services/core/`
+- `context.py`: shared runtime context and dependency initialization
+- `state_store.py`: run state DB create/read/write and JSON-safe merge
+- `data_loader.py`: parquet loading and cache bootstrap
+- `scope_builder.py`: common scope/filter/slab normalization utilities
+- `shared_math.py`: reusable math helpers and constrained ridge class
+- `scenario_compare.py`: scenario upload and compare logic
+- `eda_service.py`: EDA options/scope/overview helpers
+
+#### `backend/services/steps/`
+- `step1_segmentation.py`: Step 1 RFM segmentation flow
+- `step2_discount.py`: Step 2 slab/base-depth and summary logic
+- `step3_modeling.py`: Step 3 stage-1/stage-2 modeling and ROI
+- `step4_cross_size_planner.py`: Step 4 cross-size planner logic
+- `step5_baseline_forecast.py`: Step 5 baseline forecast logic
 
 #### `backend/requirements.txt`
 ```
@@ -259,10 +272,9 @@ python-multipart==0.0.6
 
 ### `backend/services/`
 **Purpose**: Business logic layer
-- Data processing
-- Calculations
-- External integrations
-- Reusable business functions
+- Thin facade + modular core/step composition
+- Step-isolated logic for faster changes and lower merge conflicts
+- Reusable shared utilities in `core/`
 
 ### `frontend/src/components/`
 **Purpose**: Reusable UI components
@@ -285,9 +297,9 @@ python-multipart==0.0.6
 ## File Naming Conventions
 
 ### Backend
-- **Snake case**: `rfm_service.py`, `rfm_models.py`
+- **Snake case**: `rfm_service.py`, `rfm_models.py`, `step2_discount.py`
 - **Descriptive**: Names indicate purpose
-- **Grouped**: Related files in same folder
+- **Grouped**: Related files in `services/core` and `services/steps`
 
 ### Frontend
 - **PascalCase**: `RFMAnalysis.jsx`, `FilterPanel.jsx`
@@ -298,7 +310,7 @@ python-multipart==0.0.6
 
 ### Adding a Backend Endpoint
 1. Create model in `backend/models/`
-2. Create service in `backend/services/`
+2. Implement logic in `backend/services/steps/` or `backend/services/core/`
 3. Add endpoint in `backend/main.py`
 
 ### Adding a Frontend Page

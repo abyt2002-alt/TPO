@@ -1,0 +1,221 @@
+{
+  "cases": [
+    {
+      "name": "rfm_default",
+      "method": "POST",
+      "path": "/api/rfm/calculate",
+      "payload": {
+        "states": [],
+        "categories": [],
+        "subcategories": ["STX INSTA SHAMPOO", "STREAX INSTA SHAMPOO"],
+        "brands": [],
+        "sizes": ["12-ML", "18-ML"],
+        "recency_threshold": 90,
+        "frequency_threshold": 20,
+        "page": 1,
+        "page_size": 20,
+        "search": "",
+        "sort_key": "total_net_amt",
+        "sort_direction": "desc"
+      }
+    },
+    {
+      "name": "discount_options_data_mode",
+      "method": "POST",
+      "path": "/api/discount/options",
+      "payload": {
+        "states": [],
+        "categories": [],
+        "subcategories": ["STX INSTA SHAMPOO", "STREAX INSTA SHAMPOO"],
+        "brands": [],
+        "sizes": ["12-ML", "18-ML"],
+        "recency_threshold": 90,
+        "frequency_threshold": 20,
+        "rfm_segments": [],
+        "outlet_classifications": [],
+        "slabs": [],
+        "slab_definition_mode": "data"
+      }
+    },
+    {
+      "name": "base_depth_data_mode",
+      "method": "POST",
+      "path": "/api/discount/base-depth",
+      "payload": {
+        "states": [],
+        "categories": [],
+        "subcategories": ["STX INSTA SHAMPOO", "STREAX INSTA SHAMPOO"],
+        "brands": [],
+        "sizes": ["12-ML", "18-ML"],
+        "recency_threshold": 90,
+        "frequency_threshold": 20,
+        "time_aggregation": "D",
+        "round_step": 0.5,
+        "min_upward_jump_pp": 1.0,
+        "min_downward_drop_pp": 1.0,
+        "slab_definition_mode": "data",
+        "rfm_segments": [],
+        "outlet_classifications": [],
+        "slabs": []
+      }
+    },
+    {
+      "name": "base_depth_define_mode_profiles",
+      "method": "POST",
+      "path": "/api/discount/base-depth",
+      "payload": {
+        "states": [],
+        "categories": [],
+        "subcategories": ["STX INSTA SHAMPOO", "STREAX INSTA SHAMPOO"],
+        "brands": [],
+        "sizes": ["12-ML", "18-ML"],
+        "recency_threshold": 90,
+        "frequency_threshold": 20,
+        "time_aggregation": "M",
+        "round_step": 0.5,
+        "min_upward_jump_pp": 1.0,
+        "min_downward_drop_pp": 1.0,
+        "slab_definition_mode": "define",
+        "defined_slab_level": "monthly_outlet",
+        "defined_slab_count": 5,
+        "defined_slab_thresholds": [8, 32, 576, 960],
+        "defined_slab_profiles": {
+          "12-ML": {
+            "defined_slab_count": 3,
+            "defined_slab_thresholds": [8, 144]
+          },
+          "18-ML": {
+            "defined_slab_count": 5,
+            "defined_slab_thresholds": [8, 32, 576, 960]
+          }
+        },
+        "rfm_segments": [],
+        "outlet_classifications": [],
+        "slabs": []
+      }
+    },
+    {
+      "name": "modeling_lag_on_cogs_per_size",
+      "method": "POST",
+      "path": "/api/discount/modeling",
+      "payload": {
+        "states": [],
+        "categories": [],
+        "subcategories": ["STX INSTA SHAMPOO", "STREAX INSTA SHAMPOO"],
+        "brands": [],
+        "sizes": ["12-ML", "18-ML"],
+        "recency_threshold": 90,
+        "frequency_threshold": 20,
+        "include_lag_discount": true,
+        "l2_penalty": 0.1,
+        "optimize_l2_penalty": true,
+        "round_step": 0.5,
+        "min_upward_jump_pp": 1.0,
+        "min_downward_drop_pp": 1.0,
+        "slab_definition_mode": "define",
+        "defined_slab_level": "monthly_outlet",
+        "defined_slab_count": 5,
+        "defined_slab_thresholds": [8, 32, 576, 960],
+        "defined_slab_profiles": {
+          "12-ML": {
+            "defined_slab_count": 3,
+            "defined_slab_thresholds": [8, 144]
+          },
+          "18-ML": {
+            "defined_slab_count": 5,
+            "defined_slab_thresholds": [8, 32, 576, 960]
+          }
+        },
+        "cogs_per_size": {
+          "12-ML": 8,
+          "18-ML": 8
+        }
+      }
+    },
+    {
+      "name": "cross_size_planner_with_scenario",
+      "method": "POST",
+      "path": "/api/planner/cross-size",
+      "payload": {
+        "states": [],
+        "categories": [],
+        "subcategories": ["STX INSTA SHAMPOO", "STREAX INSTA SHAMPOO"],
+        "brands": [],
+        "sizes": ["12-ML", "18-ML"],
+        "recency_threshold": 90,
+        "frequency_threshold": 20,
+        "include_lag_discount": true,
+        "l2_penalty": 0.1,
+        "optimize_l2_penalty": true,
+        "round_step": 0.5,
+        "min_upward_jump_pp": 1.0,
+        "min_downward_drop_pp": 1.0,
+        "slab_definition_mode": "define",
+        "defined_slab_level": "monthly_outlet",
+        "defined_slab_count": 5,
+        "defined_slab_thresholds": [8, 32, 576, 960],
+        "defined_slab_profiles": {
+          "12-ML": {
+            "defined_slab_count": 3,
+            "defined_slab_thresholds": [8, 144]
+          },
+          "18-ML": {
+            "defined_slab_count": 5,
+            "defined_slab_thresholds": [8, 32, 576, 960]
+          }
+        },
+        "cogs_per_size": {
+          "12-ML": 8,
+          "18-ML": 8
+        },
+        "scenario_discounts_by_size": {
+          "12-ML": {
+            "slab1": 14,
+            "slab2": 23
+          },
+          "18-ML": {
+            "slab1": 11.5,
+            "slab2": 15.5,
+            "slab3": 16.5,
+            "slab4": 19
+          }
+        }
+      }
+    },
+    {
+      "name": "baseline_forecast_3_month",
+      "method": "POST",
+      "path": "/api/forecast/baseline",
+      "payload": {
+        "states": [],
+        "categories": [],
+        "subcategories": ["STX INSTA SHAMPOO", "STREAX INSTA SHAMPOO"],
+        "brands": [],
+        "sizes": ["12-ML", "18-ML"],
+        "recency_threshold": 90,
+        "frequency_threshold": 20,
+        "include_lag_discount": true,
+        "l2_penalty": 0.1,
+        "optimize_l2_penalty": true,
+        "round_step": 0.5,
+        "min_upward_jump_pp": 1.0,
+        "min_downward_drop_pp": 1.0,
+        "slab_definition_mode": "define",
+        "defined_slab_level": "monthly_outlet",
+        "defined_slab_count": 5,
+        "defined_slab_thresholds": [8, 32, 576, 960],
+        "defined_slab_profiles": {
+          "12-ML": {
+            "defined_slab_count": 3,
+            "defined_slab_thresholds": [8, 144]
+          },
+          "18-ML": {
+            "defined_slab_count": 5,
+            "defined_slab_thresholds": [8, 32, 576, 960]
+          }
+        },
+        "forecast_months": 3
+      }
+    }
+  ]
+}

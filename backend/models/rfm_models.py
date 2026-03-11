@@ -123,6 +123,11 @@ class BaseDepthRequest(BaseModel):
     outlet_classifications: Optional[List[str]] = None
     slabs: Optional[List[str]] = None
     outlet_ids: Optional[List[str]] = None
+    slab_definition_mode: str = Field(default="data", pattern="^(data|define)$")
+    defined_slab_level: str = Field(default="monthly_outlet", pattern="^(monthly_outlet)$")
+    defined_slab_count: int = Field(default=5, ge=2, le=20)
+    defined_slab_thresholds: Optional[List[float]] = None
+    defined_slab_profiles: Optional[Dict[str, Any]] = None
 
 
 class BaseDepthPoint(BaseModel):
@@ -156,6 +161,11 @@ class DiscountOptionsRequest(BaseModel):
     rfm_segments: Optional[List[str]] = None
     outlet_classifications: Optional[List[str]] = None
     slabs: Optional[List[str]] = None
+    slab_definition_mode: str = Field(default="data", pattern="^(data|define)$")
+    defined_slab_level: str = Field(default="monthly_outlet", pattern="^(monthly_outlet)$")
+    defined_slab_count: int = Field(default=5, ge=2, le=20)
+    defined_slab_thresholds: Optional[List[float]] = None
+    defined_slab_profiles: Optional[Dict[str, Any]] = None
 
 
 class DiscountOptionsResponse(BaseModel):
@@ -178,7 +188,7 @@ class RunCreateResponse(BaseModel):
 
 
 class RunStateUpdateRequest(BaseModel):
-    active_step: Optional[str] = Field(default=None, pattern="^(step1|step2|step3|step4|step5)$")
+    active_step: Optional[str] = Field(default=None, pattern="^(step1|step2|step3|step4|step5|step6)$")
     filters: Optional[Dict[str, Any]] = None
     table_query: Optional[Dict[str, Any]] = None
     step2_filters: Optional[Dict[str, Any]] = None
@@ -197,6 +207,7 @@ class RunStateResponse(BaseModel):
     step3_result: Optional[Dict[str, Any]] = None
     step4_result: Optional[Dict[str, Any]] = None
     step5_result: Optional[Dict[str, Any]] = None
+    step6_result: Optional[Dict[str, Any]] = None
 
 
 class ModelingRequest(BaseModel):
@@ -220,10 +231,16 @@ class ModelingRequest(BaseModel):
     constraint_tactical_non_negative: bool = True
     constraint_lag_non_positive: bool = True
     cogs_per_unit: Optional[float] = Field(default=None, ge=0.0)
+    cogs_per_size: Optional[Dict[str, float]] = None
     rfm_segments: Optional[List[str]] = None
     outlet_classifications: Optional[List[str]] = None
     slabs: Optional[List[str]] = None
     outlet_ids: Optional[List[str]] = None
+    slab_definition_mode: str = Field(default="data", pattern="^(data|define)$")
+    defined_slab_level: str = Field(default="monthly_outlet", pattern="^(monthly_outlet)$")
+    defined_slab_count: int = Field(default=5, ge=2, le=20)
+    defined_slab_thresholds: Optional[List[float]] = None
+    defined_slab_profiles: Optional[Dict[str, Any]] = None
 
 
 class ModelingPoint(BaseModel):
@@ -242,6 +259,7 @@ class ModelingPoint(BaseModel):
 
 
 class ModelingSlabResult(BaseModel):
+    size: Optional[str] = None
     slab: str
     valid: bool = True
     reason: Optional[str] = None
@@ -282,6 +300,11 @@ class PlannerRequest(BaseModel):
     outlet_classifications: Optional[List[str]] = None
     slabs: Optional[List[str]] = None
     outlet_ids: Optional[List[str]] = None
+    slab_definition_mode: str = Field(default="data", pattern="^(data|define)$")
+    defined_slab_level: str = Field(default="monthly_outlet", pattern="^(monthly_outlet)$")
+    defined_slab_count: int = Field(default=5, ge=2, le=20)
+    defined_slab_thresholds: Optional[List[float]] = None
+    defined_slab_profiles: Optional[Dict[str, Any]] = None
     slab: Optional[str] = None
     plan_start_year: Optional[int] = None
     planned_structural_discounts: Optional[List[float]] = None
@@ -345,6 +368,96 @@ class PlannerScenarioComparisonResponse(BaseModel):
     default_structural_discounts: List[float] = []
     default_metrics: Dict[str, float] = {}
     scenarios: List[PlannerScenarioComparisonRow] = []
+
+
+class CrossSizePlannerRequest(ModelingRequest):
+    scenario_discounts_by_size: Optional[Dict[str, Dict[str, float]]] = None
+    scenario_discounts_by_period: Optional[Dict[str, Dict[str, Dict[str, float]]]] = None
+    forecast_months: int = Field(default=3, ge=1, le=3)
+    planner_mode: str = Field(default="additive_only")
+    reference_mode: str = Field(default="ly_same_3m", pattern="^(ly_same_3m|last_3m_before_projection)$")
+
+
+class CrossSizePlannerSlabState(BaseModel):
+    slab: str
+    default_discount_pct: float
+    scenario_discount_pct: float
+    residual_store: float
+    lag1_base_discount_pct: float
+    anchor_qty: float
+    base_price: float = 0.0
+    cogs_per_unit: float = 0.0
+    stage2_intercept: float
+    coef_residual_store: float
+    coef_base_discount_pct: float
+    coef_lag1_base_discount_pct: float
+    coef_other_slabs_weighted_base_discount_pct: float
+
+
+class CrossSizePlannerSizeResult(BaseModel):
+    size: str
+    slabs: List[CrossSizePlannerSlabState] = []
+    modeled_weights: Optional[Dict[str, float]] = None
+    weight_source: Optional[str] = None
+
+
+class CrossSizePlannerResponse(BaseModel):
+    success: bool
+    message: str
+    size_results: List[CrossSizePlannerSizeResult] = []
+    impact_summary: Dict[str, float] = {}
+    periods: List[str] = []
+    defaults_matrix: Dict[str, Dict[str, List[float]]] = {}
+    scenario_matrix: Dict[str, Dict[str, List[float]]] = {}
+    baseline_slab_matrix: Dict[str, Dict[str, List[float]]] = {}
+    monthly_results: List[Dict[str, Any]] = []
+    summary_3m: Dict[str, Dict[str, float]] = {}
+    cross_elasticity_12_from_18: Optional[float] = None
+    cross_elasticity_18_from_12: Optional[float] = None
+    cross_model_r2_12: Optional[float] = None
+    cross_model_r2_18: Optional[float] = None
+    reference_mode: Optional[str] = None
+
+
+class AIScenarioGenerateRequest(CrossSizePlannerRequest):
+    scenario_count: int = Field(default=5, ge=1, le=20)
+    goal: str = Field(default="maximize_revenue")
+    prompt: str = Field(default="")
+
+
+class AIScenarioRow(BaseModel):
+    name: str
+    scenario_discounts_by_period: Dict[str, Dict[str, Dict[str, float]]] = {}
+
+
+class AIScenarioGenerateResponse(BaseModel):
+    success: bool
+    message: str
+    scenarios: List[AIScenarioRow] = []
+
+
+class BaselineForecastRequest(ModelingRequest):
+    forecast_months: int = Field(default=3, ge=1, le=12)
+
+
+class BaselineForecastPoint(BaseModel):
+    period: str
+    baseline_12_ml: float
+    baseline_18_ml: float
+    discount_component_12_ml: float = 0.0
+    discount_component_18_ml: float = 0.0
+    total_baseline: float
+    is_forecast: bool = False
+
+
+class BaselineForecastResponse(BaseModel):
+    success: bool
+    message: str
+    forecast_months: int = 3
+    next_month_12_ml: float = 0.0
+    next_month_18_ml: float = 0.0
+    next_month_total: float = 0.0
+    points: List[BaselineForecastPoint] = []
 
 
 class EDARequest(BaseModel):

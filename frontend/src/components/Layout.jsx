@@ -13,7 +13,7 @@ const Layout = ({ children, rightSidebar }) => {
     { name: 'Store Segmentation', href: '/rfm', icon: BarChart3, step: '1' },
     { name: 'Base Discount Estimator', href: '/rfm?step=2', icon: Percent, step: '2' },
     { name: 'Modeling & ROI', href: '/rfm?step=3', icon: LineChart, step: '3' },
-    { name: '12-Month Planner', href: '/rfm?step=4', icon: CalendarDays, step: '4' },
+    { name: 'Cross-Size Planner', href: '/rfm?step=4', icon: CalendarDays, step: '4' },
     { name: 'Scenario Comparison', href: '/rfm?step=5', icon: Upload, step: '5' },
   ]
 

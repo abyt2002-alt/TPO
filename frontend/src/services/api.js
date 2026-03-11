@@ -47,7 +47,9 @@ export const exportRFMOutlets = async (filters) => {
 }
 
 export const calculateBaseDepth = async (payload) => {
-  const response = await api.post('/api/discount/base-depth', payload)
+  const response = await api.post('/api/discount/base-depth', payload, {
+    timeout: 180000,
+  })
   return response.data
 }
 
@@ -57,12 +59,28 @@ export const getDiscountOptions = async (payload) => {
 }
 
 export const calculateModeling = async (payload) => {
-  const response = await api.post('/api/discount/modeling', payload)
+  const response = await api.post('/api/discount/modeling', payload, {
+    timeout: 180000,
+  })
   return response.data
 }
 
 export const calculate12MonthPlanner = async (payload) => {
   const response = await api.post('/api/planner/12-month', payload, {
+    timeout: 180000,
+  })
+  return response.data
+}
+
+export const calculateCrossSizePlanner = async (payload) => {
+  const response = await api.post('/api/planner/cross-size', payload, {
+    timeout: 180000,
+  })
+  return response.data
+}
+
+export const calculateBaselineForecast = async (payload) => {
+  const response = await api.post('/api/forecast/baseline', payload, {
     timeout: 180000,
   })
   return response.data
@@ -77,6 +95,13 @@ export const comparePlannerScenarios = async ({ payload, file }) => {
     headers: {
       'Content-Type': 'multipart/form-data',
     },
+  })
+  return response.data
+}
+
+export const generateAIScenarios = async (payload) => {
+  const response = await api.post('/api/planner/scenario-ai-generate', payload, {
+    timeout: 180000,
   })
   return response.data
 }

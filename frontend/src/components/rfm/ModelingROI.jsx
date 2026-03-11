@@ -55,6 +55,7 @@ const slabSortKey = (slab) => {
   if (m) return [0, parseInt(m[0], 10), text]
   return [1, Number.MAX_SAFE_INTEGER, text]
 }
+const isCombinedSlabKey = (slab) => String(slab || '').trim().toLowerCase() === 'combined_all_slabs'
 
 const ModelingROI = ({
   data,
@@ -65,6 +66,7 @@ const ModelingROI = ({
   settings,
   showControls = true,
 }) => {
+  const [activeSize, setActiveSize] = useState('')
   const [activeSlab, setActiveSlab] = useState('')
   const [isModelModalOpen, setIsModelModalOpen] = useState(false)
   const [includeLagDiscount, setIncludeLagDiscount] = useState(true)
@@ -85,9 +87,12 @@ const ModelingROI = ({
     }
   }, [settings])
 
-  const validSlabs = useMemo(() => {
+  const validResults = useMemo(() => {
     const slabs = (data?.slab_results || []).filter((s) => s.valid)
     return slabs.sort((a, b) => {
+      const sa = String(a?.size || a?.model_coefficients?.size_key || '')
+      const sb = String(b?.size || b?.model_coefficients?.size_key || '')
+      if (sa !== sb) return sa.localeCompare(sb)
       const ka = slabSortKey(a?.slab)
       const kb = slabSortKey(b?.slab)
       if (ka[0] !== kb[0]) return ka[0] - kb[0]
@@ -96,17 +101,84 @@ const ModelingROI = ({
     })
   }, [data])
 
+  const sizeOptions = useMemo(() => (
+    Array.from(
+      new Set(
+        validResults
+          .map((item) => String(item?.size || item?.model_coefficients?.size_key || '').trim())
+          .filter(Boolean)
+      )
+    )
+  ), [validResults])
+
+  const validSlabs = useMemo(() => {
+    if (!activeSize) return []
+    return validResults.filter((item) => String(item?.size || item?.model_coefficients?.size_key || '') === activeSize)
+  }, [validResults, activeSize])
+
+  const slabOnlyResults = useMemo(
+    () => validSlabs.filter((item) => !isCombinedSlabKey(item?.slab)),
+    [validSlabs]
+  )
+
   useEffect(() => {
-    if (!validSlabs.length) {
+    if (!sizeOptions.length) {
+      setActiveSize('')
+      return
+    }
+    if (!sizeOptions.includes(activeSize)) {
+      setActiveSize(sizeOptions[0])
+    }
+  }, [sizeOptions, activeSize])
+
+  useEffect(() => {
+    if (!slabOnlyResults.length) {
       setActiveSlab('')
       return
     }
-    if (!validSlabs.find((s) => s.slab === activeSlab)) {
-      setActiveSlab(validSlabs[0].slab)
+    if (!slabOnlyResults.find((s) => s.slab === activeSlab)) {
+      setActiveSlab(slabOnlyResults[0].slab)
     }
-  }, [validSlabs, activeSlab])
+  }, [slabOnlyResults, activeSlab])
 
-  const slabData = validSlabs.find((s) => s.slab === activeSlab) || validSlabs[0]
+  const slabData = slabOnlyResults.find((s) => s.slab === activeSlab) || slabOnlyResults[0]
+  const slabSizeKey = String(slabData?.size || slabData?.model_coefficients?.size_key || activeSize || '').trim()
+  const selectedSizeCombinedRoiSummary = useMemo(() => {
+    if (!slabOnlyResults.length) return null
+    const totalSpend = slabOnlyResults.reduce((acc, item) => acc + Number(item?.summary?.total_spend || 0), 0)
+    const totalIncrementalRevenue = slabOnlyResults.reduce(
+      (acc, item) => acc + Number(item?.summary?.total_incremental_revenue || 0),
+      0
+    )
+    const totalIncrementalProfit = slabOnlyResults.reduce(
+      (acc, item) => acc + Number(item?.summary?.total_incremental_profit || 0),
+      0
+    )
+    return {
+      structural_roi_1mo: totalSpend > 0 ? totalIncrementalRevenue / totalSpend : 0,
+      structural_profit_roi_1mo: totalSpend > 0 ? totalIncrementalProfit / totalSpend : 0,
+      slab_count: slabOnlyResults.length,
+    }
+  }, [slabOnlyResults])
+  const overallCombinedRoiSummary = useMemo(() => {
+    if (!validResults.length) return null
+    const allRealSlabs = validResults.filter((item) => !isCombinedSlabKey(item?.slab))
+    if (!allRealSlabs.length) return null
+    const totalSpend = allRealSlabs.reduce((acc, item) => acc + Number(item?.summary?.total_spend || 0), 0)
+    const totalIncrementalRevenue = allRealSlabs.reduce(
+      (acc, item) => acc + Number(item?.summary?.total_incremental_revenue || 0),
+      0
+    )
+    const totalIncrementalProfit = allRealSlabs.reduce(
+      (acc, item) => acc + Number(item?.summary?.total_incremental_profit || 0),
+      0
+    )
+    return {
+      structural_roi_1mo: totalSpend > 0 ? totalIncrementalRevenue / totalSpend : 0,
+      structural_profit_roi_1mo: totalSpend > 0 ? totalIncrementalProfit / totalSpend : 0,
+      slab_count: allRealSlabs.length,
+    }
+  }, [validResults])
   const summaryBySlab = useMemo(
     () => (Array.isArray(data?.summary_by_slab) ? data.summary_by_slab : []),
     [data]
@@ -126,6 +198,10 @@ const ModelingROI = ({
         const slab = String(row?.Slab || '').toLowerCase()
         return slab !== 'slab0'
       })
+      .filter((row) => {
+        const sizeKey = String(row?.Size_Key || '').trim()
+        return !activeSize || !sizeKey || sizeKey === activeSize
+      })
 
     return rows.sort((a, b) => {
       const ai = slabSortKey(a?.Slab)
@@ -134,7 +210,7 @@ const ModelingROI = ({
       if (ai[1] !== bi[1]) return ai[1] - bi[1]
       return ai[2].localeCompare(bi[2])
     })
-  }, [summaryBySlab])
+  }, [summaryBySlab, activeSize])
 
   useEffect(() => {
     const fromModel = Number(slabData?.summary?.cogs_per_unit)
@@ -169,7 +245,28 @@ const ModelingROI = ({
     return (
       <>
         <div className="bg-white rounded-lg shadow-md p-6">
-          <h4 className="text-lg font-semibold text-body mb-4">Slab {slabData.slab} - Monthly Model</h4>
+          <h4 className="text-lg font-semibold text-body mb-4">{slabSizeKey} {slabData.slab} - Model View</h4>
+          <h5 className="text-base font-semibold text-body mb-3">Stage 1: Store Count vs Discount</h5>
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-3 text-sm mb-6">
+            <div className="bg-accent-light rounded-md p-3">
+              <p className="text-muted">Stage 1 R2</p>
+              <p className="font-bold text-body">{fmt(slabData?.model_coefficients?.stage1_r2)}</p>
+            </div>
+            <div className="bg-accent-light rounded-md p-3">
+              <p className="text-muted">Stage 1 Intercept</p>
+              <p className="font-bold text-body">{fmt(slabData?.model_coefficients?.stage1_intercept)}</p>
+            </div>
+            <div className="bg-accent-light rounded-md p-3">
+              <p className="text-muted">Discount Beta</p>
+              <p className="font-bold text-body">{fmt(slabData?.model_coefficients?.stage1_coef_discount)}</p>
+            </div>
+            <div className="bg-accent-light rounded-md p-3">
+              <p className="text-muted">COGS Per Unit</p>
+              <p className="font-bold text-body">{fmt(slabData?.summary?.cogs_per_unit)}</p>
+            </div>
+          </div>
+
+          <h5 className="text-base font-semibold text-body mb-3">Stage 2: Quantity Model</h5>
           <div className="grid grid-cols-1 md:grid-cols-6 gap-3 text-sm mb-4">
             <div className="bg-accent-light rounded-md p-3">
               <p className="text-muted">Constrained Ridge R2</p>
@@ -200,7 +297,10 @@ const ModelingROI = ({
               </p>
             </div>
           </div>
-          <p className="text-xs text-muted mb-3">OLS is shown for comparison only. Planner/ROI still uses constrained ridge.</p>
+          <p className="text-xs text-muted mb-3">
+            Stage 2 uses the Streamlit New Strategy feature set: residual store, base discount, lag base discount, and weighted base discount from the other slabs of the same pack.
+          </p>
+          <p className="text-xs text-muted mb-3">OLS is shown for comparison only. ROI and planning still use constrained ridge.</p>
           <h5 className="text-base font-semibold text-body mb-3">Coefficient Comparison</h5>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
             <div className="rounded-md border border-gray-200 p-3">
@@ -219,12 +319,12 @@ const ModelingROI = ({
                   <p className="font-bold text-body">{fmt(slabData?.model_coefficients?.coef_structural_discount)}</p>
                 </div>
                 <div className="bg-accent-light rounded-md p-3">
-                  <p className="text-muted">Tactical Discount</p>
-                  <p className="font-bold text-body">{fmt(slabData?.model_coefficients?.coef_tactical_discount)}</p>
-                </div>
-                <div className="bg-accent-light rounded-md p-3">
                   <p className="text-muted">Lag1 Structural Discount</p>
                   <p className="font-bold text-body">{fmt(slabData?.model_coefficients?.coef_lag1_structural_discount)}</p>
+                </div>
+                <div className="bg-accent-light rounded-md p-3">
+                  <p className="text-muted">Other Slabs Weighted Discount</p>
+                  <p className="font-bold text-body">{fmt(slabData?.model_coefficients?.coef_other_slabs_weighted_base_discount_pct)}</p>
                 </div>
               </div>
             </div>
@@ -244,12 +344,12 @@ const ModelingROI = ({
                   <p className="font-bold text-body">{fmt(slabData?.model_coefficients?.stage2_ols_coef_structural_discount)}</p>
                 </div>
                 <div className="bg-accent-light rounded-md p-3">
-                  <p className="text-muted">Tactical Discount</p>
-                  <p className="font-bold text-body">{fmt(slabData?.model_coefficients?.stage2_ols_coef_tactical_discount)}</p>
-                </div>
-                <div className="bg-accent-light rounded-md p-3">
                   <p className="text-muted">Lag1 Structural Discount</p>
                   <p className="font-bold text-body">{fmt(slabData?.model_coefficients?.stage2_ols_coef_lag1_structural_discount)}</p>
+                </div>
+                <div className="bg-accent-light rounded-md p-3">
+                  <p className="text-muted">Other Slabs Weighted Discount</p>
+                  <p className="font-bold text-body">{fmt(slabData?.model_coefficients?.stage2_ols_coef_other_slabs_weighted_base_discount_pct)}</p>
                 </div>
               </div>
             </div>
@@ -361,26 +461,87 @@ const ModelingROI = ({
 
       {data?.success && (
         <>
-          {validSlabs.length > 0 && (
-            <div className="bg-white rounded-lg shadow-md p-4">
-              <p className="text-sm font-semibold text-body mb-3">ROI Slab Selection</p>
-              <div className="flex flex-wrap gap-2 mb-3">
-                {validSlabs.map((slab) => (
-                  <button
-                    key={slab.slab}
-                    type="button"
-                    onClick={() => setActiveSlab(slab.slab)}
-                    className={`px-3 py-1.5 text-sm rounded-md border ${
-                      activeSlab === slab.slab
-                        ? 'bg-primary text-white border-primary'
-                        : 'bg-white text-body border-gray-300'
-                    }`}
-                  >
-                    {slab.slab}
-                  </button>
-                ))}
+          {(overallCombinedRoiSummary || sizeOptions.length > 0 || slabOnlyResults.length > 0) && (
+            <>
+              <div className="bg-white rounded-lg shadow-md p-4">
+                <div className="grid grid-cols-1 xl:grid-cols-[240px_minmax(0,1fr)] gap-4 items-start">
+                  <div>
+                    <p className="text-sm font-semibold text-body mb-2">Pack Level</p>
+                    {sizeOptions.length > 0 && (
+                      <div className="flex flex-wrap gap-2">
+                        {sizeOptions.map((sizeKey) => (
+                          <button
+                            key={sizeKey}
+                            type="button"
+                            onClick={() => setActiveSize(sizeKey)}
+                            className={`px-3 py-1.5 text-sm rounded-md border ${
+                              activeSize === sizeKey
+                                ? 'bg-primary text-white border-primary'
+                                : 'bg-white text-body border-gray-300'
+                            }`}
+                          >
+                            {sizeKey}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    {overallCombinedRoiSummary && (
+                      <>
+                        <div className="bg-accent-light rounded-md p-3">
+                          <p className="text-muted">Combined Topline ROI</p>
+                          <p className="font-bold text-body">{fmt(overallCombinedRoiSummary.structural_roi_1mo)}x</p>
+                        </div>
+                        <div className="bg-accent-light rounded-md p-3">
+                          <p className="text-muted">Combined Gross Margin ROI</p>
+                          <p className="font-bold text-body">{fmt(overallCombinedRoiSummary.structural_profit_roi_1mo)}x</p>
+                        </div>
+                      </>
+                    )}
+                  </div>
+                </div>
               </div>
-            </div>
+
+              {slabOnlyResults.length > 0 && (
+                <div className="bg-white rounded-lg shadow-md p-4">
+                  <div className="grid grid-cols-1 xl:grid-cols-[280px_minmax(0,1fr)] gap-4 items-start">
+                    <div>
+                      <p className="text-sm font-semibold text-body mb-2">ROI Slab Selection</p>
+                      <div className="flex flex-wrap gap-2">
+                        {slabOnlyResults.map((slab) => (
+                          <button
+                            key={slab.slab}
+                            type="button"
+                            onClick={() => setActiveSlab(slab.slab)}
+                            className={`px-3 py-1.5 text-sm rounded-md border ${
+                              activeSlab === slab.slab
+                                ? 'bg-primary text-white border-primary'
+                                : 'bg-white text-body border-gray-300'
+                            }`}
+                          >
+                            {slab.slab}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    {selectedSizeCombinedRoiSummary && (
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                        <div className="bg-accent-light rounded-md p-3">
+                          <p className="text-muted">{activeSize || slabSizeKey} Topline ROI</p>
+                          <p className="font-bold text-body">{fmt(selectedSizeCombinedRoiSummary.structural_roi_1mo)}x</p>
+                        </div>
+                        <div className="bg-accent-light rounded-md p-3">
+                          <p className="text-muted">{activeSize || slabSizeKey} Gross Margin ROI</p>
+                          <p className="font-bold text-body">{fmt(selectedSizeCombinedRoiSummary.structural_profit_roi_1mo)}x</p>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+            </>
           )}
 
           <details className="bg-white rounded-lg shadow-md p-4">
@@ -432,7 +593,7 @@ const ModelingROI = ({
           {slabData && (
             <div className="bg-white rounded-lg shadow-md p-6">
               <div className="flex items-center justify-between mb-4">
-                <h4 className="text-lg font-semibold text-body">Topline ROI View - {slabData.slab}</h4>
+                <h4 className="text-lg font-semibold text-body">Topline ROI View - {slabSizeKey} {slabData.slab}</h4>
                 <button
                   type="button"
                   onClick={() => setIsModelModalOpen(true)}
@@ -528,7 +689,7 @@ const ModelingROI = ({
         <div className="fixed inset-0 z-50 bg-black/40 flex items-start justify-center p-4 overflow-y-auto">
           <div className="w-full max-w-6xl bg-white rounded-lg shadow-xl">
             <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200">
-              <h3 className="text-lg font-semibold text-body">Model View - {slabData.slab}</h3>
+              <h3 className="text-lg font-semibold text-body">Model View - {slabSizeKey} {slabData.slab}</h3>
               <button
                 type="button"
                 onClick={() => setIsModelModalOpen(false)}
