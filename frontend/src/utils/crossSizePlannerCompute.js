@@ -219,8 +219,30 @@ export const computeCrossSizePlannerData = ({ data, periods, scenarioDiscountsBy
   })
 
   const summary = {
-    '12-ML': { baseline_qty: 0, scenario_qty_additive: 0, final_qty: 0, baseline_revenue: 0, scenario_revenue: 0, baseline_profit: 0, scenario_profit: 0 },
-    '18-ML': { baseline_qty: 0, scenario_qty_additive: 0, final_qty: 0, baseline_revenue: 0, scenario_revenue: 0, baseline_profit: 0, scenario_profit: 0 },
+    '12-ML': {
+      baseline_qty: 0,
+      scenario_qty_additive: 0,
+      final_qty: 0,
+      baseline_revenue: 0,
+      scenario_revenue: 0,
+      baseline_profit: 0,
+      scenario_profit: 0,
+      baseline_investment: 0,
+      scenario_investment: 0,
+      investment_change_positive: 0,
+    },
+    '18-ML': {
+      baseline_qty: 0,
+      scenario_qty_additive: 0,
+      final_qty: 0,
+      baseline_revenue: 0,
+      scenario_revenue: 0,
+      baseline_profit: 0,
+      scenario_profit: 0,
+      baseline_investment: 0,
+      scenario_investment: 0,
+      investment_change_positive: 0,
+    },
   }
 
   monthlyResults.forEach((row) => {
@@ -231,6 +253,9 @@ export const computeCrossSizePlannerData = ({ data, periods, scenarioDiscountsBy
       let scenarioRevenueTotal = 0
       let baselineProfitTotal = 0
       let scenarioProfitTotal = 0
+      let baselineInvestmentTotal = 0
+      let scenarioInvestmentTotal = 0
+      let scenarioInvestmentPositiveTotal = 0
       const slabs = block?.slabs || []
       slabs.forEach((slab) => {
         const baseQty = Number(slab?.non_discount_baseline_qty || 0)
@@ -243,20 +268,32 @@ export const computeCrossSizePlannerData = ({ data, periods, scenarioDiscountsBy
         const scenarioRevenue = finalQty * basePrice * (1 - (scenarioDiscount / 100))
         const baselineProfit = baselineRevenue - (baseQty * cogs)
         const scenarioProfit = scenarioRevenue - (finalQty * cogs)
+        const baselineInvestment = baseQty * basePrice * (defaultDiscount / 100)
+        const scenarioInvestment = finalQty * basePrice * (scenarioDiscount / 100)
+        const scenarioInvestmentPositive = finalQty * basePrice * (Math.max(0, scenarioDiscount - defaultDiscount) / 100)
         slab.baseline_revenue = baselineRevenue
         slab.scenario_revenue = scenarioRevenue
         slab.baseline_profit = baselineProfit
         slab.scenario_profit = scenarioProfit
+        slab.baseline_investment = baselineInvestment
+        slab.scenario_investment = scenarioInvestment
+        slab.scenario_investment_positive = scenarioInvestmentPositive
         baselineRevenueTotal += baselineRevenue
         scenarioRevenueTotal += scenarioRevenue
         baselineProfitTotal += baselineProfit
         scenarioProfitTotal += scenarioProfit
+        baselineInvestmentTotal += baselineInvestment
+        scenarioInvestmentTotal += scenarioInvestment
+        scenarioInvestmentPositiveTotal += scenarioInvestmentPositive
       })
       block.final_total_qty = slabs.reduce((s, slab) => s + Number(slab?.final_qty || 0), 0)
       block.baseline_revenue_total = baselineRevenueTotal
       block.scenario_revenue_total = scenarioRevenueTotal
       block.baseline_profit_total = baselineProfitTotal
       block.scenario_profit_total = scenarioProfitTotal
+      block.baseline_investment_total = baselineInvestmentTotal
+      block.scenario_investment_total = scenarioInvestmentTotal
+      block.scenario_investment_positive_total = scenarioInvestmentPositiveTotal
 
       summary[sizeKey].baseline_qty += Number(block?.baseline_total_qty || 0)
       summary[sizeKey].scenario_qty_additive += Number(block?.pre_cross_total_qty || 0)
@@ -265,6 +302,9 @@ export const computeCrossSizePlannerData = ({ data, periods, scenarioDiscountsBy
       summary[sizeKey].scenario_revenue += scenarioRevenueTotal
       summary[sizeKey].baseline_profit += baselineProfitTotal
       summary[sizeKey].scenario_profit += scenarioProfitTotal
+      summary[sizeKey].baseline_investment += baselineInvestmentTotal
+      summary[sizeKey].scenario_investment += scenarioInvestmentTotal
+      summary[sizeKey].investment_change_positive += scenarioInvestmentPositiveTotal
     })
   })
 
@@ -273,6 +313,7 @@ export const computeCrossSizePlannerData = ({ data, periods, scenarioDiscountsBy
     const refQty = Number(baseSummary?.[sizeKey]?.reference_qty || 0)
     const refRev = Number(baseSummary?.[sizeKey]?.reference_revenue || 0)
     const refProfit = Number(baseSummary?.[sizeKey]?.reference_profit || 0)
+    const refInvestment = Number(baseSummary?.[sizeKey]?.reference_investment || 0)
     const refAvail = Number(baseSummary?.[sizeKey]?.reference_available || 0)
     return {
       baseline_qty: s.baseline_qty,
@@ -287,12 +328,19 @@ export const computeCrossSizePlannerData = ({ data, periods, scenarioDiscountsBy
       baseline_profit: s.baseline_profit,
       scenario_profit: s.scenario_profit,
       profit_delta_pct: Math.abs(s.baseline_profit) > 1e-9 ? ((s.scenario_profit - s.baseline_profit) / Math.abs(s.baseline_profit)) * 100 : 0,
+      baseline_investment: s.baseline_investment,
+      scenario_investment: s.scenario_investment,
+      investment_change_positive: s.investment_change_positive,
+      investment_delta_pct: s.baseline_investment > 0 ? ((s.scenario_investment - s.baseline_investment) / s.baseline_investment) * 100 : 0,
       reference_qty: refQty,
       reference_revenue: refRev,
       reference_profit: refProfit,
+      reference_investment: refInvestment,
       vs_reference_volume_pct: refQty > 0 ? ((s.final_qty - refQty) / refQty) * 100 : 0,
       vs_reference_revenue_pct: refRev > 0 ? ((s.scenario_revenue - refRev) / refRev) * 100 : 0,
       vs_reference_profit_pct: Math.abs(refProfit) > 1e-9 ? ((s.scenario_profit - refProfit) / Math.abs(refProfit)) * 100 : 0,
+      vs_reference_investment_pct: refInvestment > 0 ? ((s.scenario_investment - refInvestment) / refInvestment) * 100 : 0,
+      investment_change_positive_vs_reference_pct: refInvestment > 0 ? ((s.investment_change_positive - refInvestment) / refInvestment) * 100 : 0,
       reference_available: refAvail,
     }
   }
@@ -306,9 +354,13 @@ export const computeCrossSizePlannerData = ({ data, periods, scenarioDiscountsBy
   const totalScenarioRevenue = s12.scenario_revenue + s18.scenario_revenue
   const totalBaselineProfit = s12.baseline_profit + s18.baseline_profit
   const totalScenarioProfit = s12.scenario_profit + s18.scenario_profit
+  const totalBaselineInvestment = s12.baseline_investment + s18.baseline_investment
+  const totalScenarioInvestment = s12.scenario_investment + s18.scenario_investment
+  const totalInvestmentChangePositive = s12.investment_change_positive + s18.investment_change_positive
   const refTotalQty = Number(baseSummary?.TOTAL?.reference_qty || 0)
   const refTotalRev = Number(baseSummary?.TOTAL?.reference_revenue || 0)
   const refTotalProfit = Number(baseSummary?.TOTAL?.reference_profit || 0)
+  const refTotalInvestment = Number(baseSummary?.TOTAL?.reference_investment || 0)
   const refTotalAvail = Number(baseSummary?.TOTAL?.reference_available || 0)
   const baselineVolumeMl = (s12.baseline_qty * 12) + (s18.baseline_qty * 18)
   const scenarioVolumeMlAdd = (s12.scenario_qty_additive * 12) + (s18.scenario_qty_additive * 18)
@@ -331,12 +383,19 @@ export const computeCrossSizePlannerData = ({ data, periods, scenarioDiscountsBy
       baseline_profit: totalBaselineProfit,
       scenario_profit: totalScenarioProfit,
       profit_delta_pct: Math.abs(totalBaselineProfit) > 1e-9 ? ((totalScenarioProfit - totalBaselineProfit) / Math.abs(totalBaselineProfit)) * 100 : 0,
+      baseline_investment: totalBaselineInvestment,
+      scenario_investment: totalScenarioInvestment,
+      investment_change_positive: totalInvestmentChangePositive,
+      investment_delta_pct: totalBaselineInvestment > 0 ? ((totalScenarioInvestment - totalBaselineInvestment) / totalBaselineInvestment) * 100 : 0,
       reference_qty: refTotalQty,
       reference_revenue: refTotalRev,
       reference_profit: refTotalProfit,
+      reference_investment: refTotalInvestment,
       vs_reference_volume_pct: refTotalQty > 0 ? ((totalFinalQty - refTotalQty) / refTotalQty) * 100 : 0,
       vs_reference_revenue_pct: refTotalRev > 0 ? ((totalScenarioRevenue - refTotalRev) / refTotalRev) * 100 : 0,
       vs_reference_profit_pct: Math.abs(refTotalProfit) > 1e-9 ? ((totalScenarioProfit - refTotalProfit) / Math.abs(refTotalProfit)) * 100 : 0,
+      vs_reference_investment_pct: refTotalInvestment > 0 ? ((totalScenarioInvestment - refTotalInvestment) / refTotalInvestment) * 100 : 0,
+      investment_change_positive_vs_reference_pct: refTotalInvestment > 0 ? ((totalInvestmentChangePositive - refTotalInvestment) / refTotalInvestment) * 100 : 0,
       reference_available: refTotalAvail,
       baseline_volume_ml: baselineVolumeMl,
       scenario_volume_ml_additive: scenarioVolumeMlAdd,

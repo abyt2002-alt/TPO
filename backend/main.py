@@ -15,6 +15,7 @@ from models.rfm_models import (
     PlannerRequest, PlannerResponse, PlannerScenarioComparisonResponse,
     CrossSizePlannerRequest, CrossSizePlannerResponse,
     AIScenarioGenerateRequest, AIScenarioGenerateResponse,
+    AIScenarioJobCreateResponse, AIScenarioJobStatusResponse, AIScenarioJobResultsResponse,
     BaselineForecastRequest, BaselineForecastResponse,
     EDARequest, EDAResponse, EDAOptionsResponse
 )
@@ -259,6 +260,43 @@ async def generate_ai_scenarios(request: AIScenarioGenerateRequest):
     """Generate AI scenario discount matrices for Step 5 using Gemini."""
     try:
         return await rfm_service.generate_ai_scenarios(request)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/planner/scenario-ai-generate/jobs", response_model=AIScenarioJobCreateResponse)
+async def create_ai_scenario_job(request: AIScenarioGenerateRequest):
+    """Start async AI scenario generation job for Step 5."""
+    try:
+        return await rfm_service.create_ai_scenario_job(request)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/planner/scenario-ai-generate/jobs/{job_id}", response_model=AIScenarioJobStatusResponse)
+async def get_ai_scenario_job_status(job_id: str):
+    """Fetch async AI scenario job status and progress."""
+    try:
+        status = rfm_service.get_ai_scenario_job_status(job_id)
+        if status is None:
+            raise HTTPException(status_code=404, detail="AI scenario job not found")
+        return status
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/planner/scenario-ai-generate/jobs/{job_id}/results", response_model=AIScenarioJobResultsResponse)
+async def get_ai_scenario_job_results(job_id: str, offset: int = 0, limit: int = 200):
+    """Fetch paged AI scenarios for a completed/partial async job."""
+    try:
+        results = rfm_service.get_ai_scenario_job_results(job_id=job_id, offset=offset, limit=limit)
+        if results is None:
+            raise HTTPException(status_code=404, detail="AI scenario job not found")
+        return results
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

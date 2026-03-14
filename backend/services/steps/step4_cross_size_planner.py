@@ -3,7 +3,10 @@
 import pandas as pd
 import numpy as np
 from pathlib import Path
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Tuple
+import asyncio
+import threading
+import time
 from sklearn.cluster import KMeans
 from sklearn.preprocessing import StandardScaler
 from sklearn.linear_model import LinearRegression
@@ -14,6 +17,8 @@ import json
 import uuid
 import copy
 import re
+import random
+import hashlib
 from io import BytesIO
 from datetime import datetime, date
 import urllib.request
@@ -33,10 +38,15 @@ from models.rfm_models import (
     PlannerScenarioComparisonResponse, PlannerScenarioComparisonRow,
     CrossSizePlannerRequest, CrossSizePlannerResponse, CrossSizePlannerSizeResult, CrossSizePlannerSlabState,
     AIScenarioGenerateRequest, AIScenarioGenerateResponse, AIScenarioRow,
+    AIScenarioJobCreateResponse, AIScenarioJobStatusResponse, AIScenarioJobResultsResponse,
     BaselineForecastRequest, BaselineForecastResponse, BaselineForecastPoint,
     EDARequest, EDAResponse, EDAProductOption, EDAProductContribution,
     EDAContributionRow, EDAOptionsResponse
 )
+
+
+class _AIJobCancelled(Exception):
+    pass
 
 
 class Step4CrossSizePlannerMixin:
@@ -81,6 +91,15 @@ class Step4CrossSizePlannerMixin:
             v = float(default)
         return float(min(30.0, max(5.0, v)))
 
+    def _clamp_discount_5_30_int(self, value: Any, default: float) -> int:
+        try:
+            v = float(value)
+            if not np.isfinite(v):
+                raise ValueError
+        except Exception:
+            v = float(default)
+        return int(min(30, max(5, int(round(v)))))
+
     def _enforce_size_month_ladder(self, slab_values: Dict[str, float], slab_order: List[str]) -> Dict[str, float]:
         out: Dict[str, float] = {}
         floor = 5.0
@@ -91,6 +110,370 @@ class Step4CrossSizePlannerMixin:
             floor = out[slab]
         return out
 
+    def _enforce_size_month_ladder_int(self, slab_values: Dict[str, Any], slab_order: List[str]) -> Dict[str, int]:
+        out: Dict[str, int] = {}
+        floor = 5
+        for slab in slab_order:
+            current = self._clamp_discount_5_30_int(slab_values.get(slab), floor)
+            next_value = max(floor, current)
+            out[slab] = int(next_value)
+            floor = out[slab]
+        return out
+
+    def _parse_step5_discount_constraints(
+        self,
+        request: AIScenarioGenerateRequest,
+        periods: List[str],
+        slab_order_by_size: Dict[str, List[str]],
+    ) -> Dict[str, Dict[str, Optional[int]]]:
+        out: Dict[str, Dict[str, Optional[int]]] = {}
+        period_set = {str(p) for p in (periods or [])}
+        slab_set_by_size = {
+            str(size_key): {str(slab) for slab in (slabs or [])}
+            for size_key, slabs in (slab_order_by_size or {}).items()
+        }
+        raw_constraints = getattr(request, 'discount_constraints', None) or []
+        for raw in raw_constraints:
+            item = raw if isinstance(raw, dict) else {}
+            period_key = self._normalize_period_key(item.get('period'))
+            size_key = self._normalize_step2_size_key(item.get('size'))
+            slab_key = str(item.get('slab') or '').strip()
+            if period_key not in period_set:
+                continue
+            if size_key not in slab_set_by_size:
+                continue
+            if slab_key not in slab_set_by_size.get(size_key, set()):
+                continue
+
+            min_raw = item.get('min')
+            max_raw = item.get('max')
+            min_val: Optional[int] = None
+            max_val: Optional[int] = None
+            try:
+                if min_raw is not None and str(min_raw) != '':
+                    min_val = self._clamp_discount_5_30_int(min_raw, 5.0)
+            except Exception:
+                min_val = None
+            try:
+                if max_raw is not None and str(max_raw) != '':
+                    max_val = self._clamp_discount_5_30_int(max_raw, 30.0)
+            except Exception:
+                max_val = None
+
+            if min_val is not None and max_val is not None and min_val > max_val:
+                raise RuntimeError(
+                    f"Invalid discount constraints for {period_key} {size_key} {slab_key}: min ({min_val}) > max ({max_val})."
+                )
+
+            out[f"{period_key}|{size_key}|{slab_key}"] = {
+                'min': min_val,
+                'max': max_val,
+            }
+        return out
+
+    def _enforce_size_month_ladder_int_with_bounds(
+        self,
+        slab_values: Dict[str, Any],
+        slab_order: List[str],
+        bounds_by_slab: Dict[str, Dict[str, Optional[int]]],
+    ) -> Optional[Dict[str, int]]:
+        if not slab_order:
+            return {}
+
+        lows: List[int] = []
+        highs: List[int] = []
+        seeds: List[int] = []
+        for slab in slab_order:
+            bound = bounds_by_slab.get(str(slab), {}) or {}
+            low = 5 if bound.get('min') is None else int(bound.get('min'))
+            high = 30 if bound.get('max') is None else int(bound.get('max'))
+            low = int(min(30, max(5, low)))
+            high = int(min(30, max(5, high)))
+            if low > high:
+                return None
+            lows.append(low)
+            highs.append(high)
+            seeds.append(self._clamp_discount_5_30_int(slab_values.get(slab), low))
+
+        # Forward adjust minimum bounds for monotonic ladder.
+        for idx in range(1, len(lows)):
+            lows[idx] = max(lows[idx], lows[idx - 1])
+        # Backward adjust maximum bounds for monotonic ladder.
+        for idx in range(len(highs) - 2, -1, -1):
+            highs[idx] = min(highs[idx], highs[idx + 1])
+
+        for idx in range(len(lows)):
+            if lows[idx] > highs[idx]:
+                return None
+
+        out: Dict[str, int] = {}
+        prev = lows[0]
+        for idx, slab in enumerate(slab_order):
+            low = lows[idx]
+            high = highs[idx]
+            val = max(int(seeds[idx]), low, prev)
+            if val > high:
+                val = high
+            if val < max(low, prev):
+                return None
+            out[str(slab)] = int(val)
+            prev = out[str(slab)]
+
+        return out
+
+    def _step5_clamp_int(self, value: Any, lo: int, hi: int, default: int) -> int:
+        try:
+            v = int(round(float(value)))
+        except Exception:
+            v = int(default)
+        return max(int(lo), min(int(hi), int(v)))
+
+    def _step5_allowed_patterns(self) -> set:
+        return {"flat", "up", "down", "wave", "pulse"}
+
+    def _step5_normalize_weights(self, weights: Dict[str, Any], keys: List[str], fallback: float = 1.0) -> Dict[str, float]:
+        parsed: Dict[str, float] = {}
+        for key in keys:
+            try:
+                val = float((weights or {}).get(key, fallback))
+            except Exception:
+                val = float(fallback)
+            parsed[str(key)] = max(0.0, val)
+        total = float(sum(parsed.values()))
+        if total <= 0:
+            eq = 1.0 / max(1, len(keys))
+            return {str(k): eq for k in keys}
+        return {str(k): float(parsed[str(k)] / total) for k in keys}
+
+    def _step5_default_family(self, index: int) -> Dict[str, Any]:
+        templates = [
+            {
+                "name": "Balanced realistic",
+                "priority_weight": 0.40,
+                "base_min": 10,
+                "base_max": 16,
+                "gap_min": 1,
+                "gap_max": 2,
+                "month_pattern": "flat",
+                "month_shift_strength": 1,
+                "size_bias_12": 0,
+                "size_bias_18": 0,
+                "volatility": 1,
+                "anchor_weights": {
+                    "latest_month": 0.40,
+                    "last_3m_avg": 0.40,
+                    "ly_same_3m": 0.10,
+                    "stress_explore": 0.10,
+                },
+            },
+            {
+                "name": "Revenue push",
+                "priority_weight": 0.35,
+                "base_min": 12,
+                "base_max": 20,
+                "gap_min": 1,
+                "gap_max": 3,
+                "month_pattern": "up",
+                "month_shift_strength": 1,
+                "size_bias_12": 1,
+                "size_bias_18": 1,
+                "volatility": 2,
+                "anchor_weights": {
+                    "latest_month": 0.30,
+                    "last_3m_avg": 0.20,
+                    "ly_same_3m": 0.10,
+                    "stress_explore": 0.40,
+                },
+            },
+            {
+                "name": "Margin safe",
+                "priority_weight": 0.25,
+                "base_min": 8,
+                "base_max": 14,
+                "gap_min": 1,
+                "gap_max": 2,
+                "month_pattern": "down",
+                "month_shift_strength": 1,
+                "size_bias_12": -1,
+                "size_bias_18": 0,
+                "volatility": 1,
+                "anchor_weights": {
+                    "latest_month": 0.20,
+                    "last_3m_avg": 0.50,
+                    "ly_same_3m": 0.20,
+                    "stress_explore": 0.10,
+                },
+            },
+        ]
+        return copy.deepcopy(templates[index % len(templates)])
+
+    def _step5_sanitize_family(self, item: Dict[str, Any], idx: int) -> Dict[str, Any]:
+        raw = dict(item or {})
+        pattern = str(raw.get("month_pattern", "flat")).strip().lower()
+        if pattern not in self._step5_allowed_patterns():
+            pattern = "flat"
+
+        base_min = self._step5_clamp_int(raw.get("base_min", 10), 5, 30, 10)
+        base_max = self._step5_clamp_int(raw.get("base_max", 18), 5, 30, 18)
+        if base_max < base_min:
+            base_min, base_max = base_max, base_min
+        if base_max - base_min < 2:
+            base_max = min(30, base_min + 2)
+
+        gap_min = self._step5_clamp_int(raw.get("gap_min", 1), 1, 10, 1)
+        gap_max = self._step5_clamp_int(raw.get("gap_max", 3), 1, 10, 3)
+        if gap_max < gap_min:
+            gap_min, gap_max = gap_max, gap_min
+        if gap_max - gap_min < 1:
+            gap_max = min(10, gap_min + 1)
+
+        anchor_keys = ["latest_month", "last_3m_avg", "ly_same_3m", "stress_explore"]
+        return {
+            "name": str(raw.get("name") or f"Family {idx + 1}"),
+            "priority_weight": max(0.0, float(raw.get("priority_weight", 1.0))),
+            "base_min": int(base_min),
+            "base_max": int(base_max),
+            "gap_min": int(gap_min),
+            "gap_max": int(gap_max),
+            "month_pattern": pattern,
+            "month_shift_strength": self._step5_clamp_int(raw.get("month_shift_strength", 2), 0, 6, 2),
+            "size_bias_12": self._step5_clamp_int(raw.get("size_bias_12", 0), -6, 6, 0),
+            "size_bias_18": self._step5_clamp_int(raw.get("size_bias_18", 0), -6, 6, 0),
+            "volatility": self._step5_clamp_int(raw.get("volatility", 1), 0, 6, 1),
+            "anchor_weights": self._step5_normalize_weights(raw.get("anchor_weights", {}), anchor_keys),
+        }
+
+    def _step5_family_similarity_score(self, a: Dict[str, Any], b: Dict[str, Any]) -> float:
+        pattern_score = 1.0 if a.get("month_pattern") == b.get("month_pattern") else 0.0
+        numeric_parts = [
+            max(0.0, 1.0 - (abs(float(a["base_min"]) - float(b["base_min"])) / 6.0)),
+            max(0.0, 1.0 - (abs(float(a["base_max"]) - float(b["base_max"])) / 6.0)),
+            max(0.0, 1.0 - (abs(float(a["gap_min"]) - float(b["gap_min"])) / 3.0)),
+            max(0.0, 1.0 - (abs(float(a["gap_max"]) - float(b["gap_max"])) / 3.0)),
+            max(0.0, 1.0 - (abs(float(a["month_shift_strength"]) - float(b["month_shift_strength"])) / 3.0)),
+            max(0.0, 1.0 - (abs(float(a["size_bias_12"]) - float(b["size_bias_12"])) / 4.0)),
+            max(0.0, 1.0 - (abs(float(a["size_bias_18"]) - float(b["size_bias_18"])) / 4.0)),
+            max(0.0, 1.0 - (abs(float(a["volatility"]) - float(b["volatility"])) / 3.0)),
+        ]
+        numeric_score = float(sum(numeric_parts) / max(1, len(numeric_parts)))
+        anchor_keys = ["latest_month", "last_3m_avg", "ly_same_3m", "stress_explore"]
+        l1 = sum(
+            abs(float((a.get("anchor_weights") or {}).get(k, 0.0)) - float((b.get("anchor_weights") or {}).get(k, 0.0)))
+            for k in anchor_keys
+        )
+        anchor_score = max(0.0, 1.0 - (l1 / 2.0))
+        return (0.35 * pattern_score) + (0.45 * numeric_score) + (0.20 * anchor_score)
+
+    def _step5_families_too_similar(self, a: Dict[str, Any], b: Dict[str, Any]) -> bool:
+        return self._step5_family_similarity_score(a, b) >= 0.90
+
+    def _step5_diversify_family(self, family: Dict[str, Any], idx: int) -> Dict[str, Any]:
+        cycle = ["flat", "up", "down", "wave", "pulse"]
+        mutated = dict(family or {})
+        current = str(mutated.get("month_pattern", "flat"))
+        if current not in cycle:
+            current = "flat"
+        mutated["name"] = f"{family.get('name', f'Family {idx + 1}')} (diversified)"
+        mutated["month_pattern"] = cycle[(cycle.index(current) + 1) % len(cycle)]
+        mutated["base_min"] = max(5, int(family.get("base_min", 10)) - (1 + (idx % 2)))
+        mutated["base_max"] = min(30, int(family.get("base_max", 18)) + 2)
+        if int(mutated["base_max"]) - int(mutated["base_min"]) < 3:
+            mutated["base_max"] = min(30, int(mutated["base_min"]) + 3)
+        mutated["gap_min"] = max(1, int(family.get("gap_min", 1)))
+        mutated["gap_max"] = min(10, max(int(family.get("gap_max", 3)) + 1, int(mutated["gap_min"]) + 1))
+        mutated["month_shift_strength"] = min(6, max(1, int(family.get("month_shift_strength", 2)) + 1))
+        mutated["volatility"] = min(6, max(2, int(family.get("volatility", 1)) + 1))
+        mutated["size_bias_12"] = self._step5_clamp_int(int(family.get("size_bias_12", 0)) + (1 if idx % 2 == 0 else -1), -6, 6, 0)
+        mutated["size_bias_18"] = self._step5_clamp_int(int(family.get("size_bias_18", 0)) + (-1 if idx % 2 == 0 else 1), -6, 6, 0)
+        default_anchor = self._step5_sanitize_family(self._step5_default_family(idx), idx).get("anchor_weights", {})
+        anchor_keys = ["latest_month", "last_3m_avg", "ly_same_3m", "stress_explore"]
+        blended = {
+            k: (0.70 * float((family.get("anchor_weights") or {}).get(k, 0.0))) + (0.30 * float(default_anchor.get(k, 0.0)))
+            for k in anchor_keys
+        }
+        mutated["anchor_weights"] = self._step5_normalize_weights(blended, anchor_keys)
+        return self._step5_sanitize_family(mutated, idx)
+
+    def _step5_diversify_families(self, families: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+        diversified = [dict(f) for f in (families or [])]
+        actions: List[Dict[str, Any]] = []
+        for i in range(len(diversified)):
+            for j in range(i + 1, len(diversified)):
+                if not self._step5_families_too_similar(diversified[i], diversified[j]):
+                    continue
+                before_score = round(self._step5_family_similarity_score(diversified[i], diversified[j]), 4)
+                candidate = self._step5_diversify_family(diversified[j], j)
+                action_type = "widened"
+                if self._step5_families_too_similar(diversified[i], candidate):
+                    candidate = self._step5_sanitize_family(self._step5_default_family(j), j)
+                    action_type = "replaced_with_default"
+                after_score = round(self._step5_family_similarity_score(diversified[i], candidate), 4)
+                diversified[j] = candidate
+                actions.append({
+                    "pair": f"{i + 1}-{j + 1}",
+                    "action": action_type,
+                    "before_similarity": before_score,
+                    "after_similarity": after_score,
+                })
+        return diversified, actions
+
+    def _step5_sanitize_families(self, payload: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+        families_raw = payload.get("families", []) if isinstance(payload, dict) else []
+        if not isinstance(families_raw, list):
+            families_raw = []
+        sanitized = [self._step5_sanitize_family(item, idx) for idx, item in enumerate(families_raw[:3])]
+        while len(sanitized) < 3:
+            sanitized.append(self._step5_sanitize_family(self._step5_default_family(len(sanitized)), len(sanitized)))
+        sanitized, diversity_actions = self._step5_diversify_families(sanitized)
+        weight_map = self._step5_normalize_weights({str(i): f.get("priority_weight", 1.0) for i, f in enumerate(sanitized)}, ["0", "1", "2"])
+        for i, fam in enumerate(sanitized):
+            fam["priority_weight"] = float(weight_map.get(str(i), 0.0))
+        return sanitized, {
+            "provided_count": len(families_raw),
+            "final_count": len(sanitized),
+            "diversity_actions": diversity_actions,
+        }
+
+    def _step5_allocate_count_by_family(self, total: int, family_weights: List[float]) -> List[int]:
+        total = int(total or 0)
+        n = len(family_weights or [])
+        if total <= 0 or n == 0:
+            return [0] * n
+        weight_keys = [str(i) for i in range(n)]
+        normalized = self._step5_normalize_weights({str(i): float(family_weights[i]) for i in range(n)}, weight_keys)
+        weights = [float(normalized[str(i)]) for i in range(n)]
+        if total >= n:
+            base = [1] * n
+            remaining = total - n
+            raw = [w * remaining for w in weights]
+        else:
+            base = [0] * n
+            remaining = total
+            raw = [w * remaining for w in weights]
+        floors = [int(v) for v in raw]
+        allocated = [base[i] + floors[i] for i in range(n)]
+        remainder = total - sum(allocated)
+        fractions = sorted([(raw[i] - floors[i], i) for i in range(n)], reverse=True)
+        idx = 0
+        while remainder > 0 and idx < len(fractions):
+            allocated[fractions[idx][1]] += 1
+            remainder -= 1
+            idx += 1
+        return allocated
+
+    def _step5_month_shift(self, pattern: str, idx: int, strength: int) -> int:
+        if pattern == "up":
+            return idx * int(strength)
+        if pattern == "down":
+            return -idx * int(strength)
+        if pattern == "wave":
+            seq = [0, int(strength), -int(strength)]
+            return seq[idx % 3]
+        if pattern == "pulse":
+            seq = [int(strength), 0, int(strength)]
+            return seq[idx % 3]
+        return 0
+
     def _build_step5_ai_prompt(
         self,
         scenario_count: int,
@@ -98,292 +481,1026 @@ class Step4CrossSizePlannerMixin:
         user_prompt: str,
         periods: List[str],
         defaults_matrix: Dict[str, Dict[str, List[float]]],
+        planner_context: Optional[Dict[str, Any]] = None,
     ) -> str:
+        slab_order_map: Dict[str, List[str]] = {
+            size_key: sorted(list((defaults_matrix.get(size_key) or {}).keys()), key=self._slab_sort_key)
+            for size_key in ["12-ML", "18-ML"]
+        }
         period_defaults: Dict[str, Dict[str, Dict[str, float]]] = {}
-        slab_order_map: Dict[str, List[str]] = {}
-        for size_key in ["12-ML", "18-ML"]:
-            slab_keys = sorted(list((defaults_matrix.get(size_key) or {}).keys()), key=self._slab_sort_key)
-            slab_order_map[size_key] = slab_keys
-
-        for month_idx, period in enumerate(periods):
-            period_defaults[str(period)] = {}
+        for idx, period in enumerate(periods):
+            pkey = str(period)
+            period_defaults[pkey] = {}
             for size_key in ["12-ML", "18-ML"]:
-                period_defaults[str(period)][size_key] = {}
+                period_defaults[pkey][size_key] = {}
                 for slab_key in slab_order_map.get(size_key, []):
-                    series = defaults_matrix.get(size_key, {}).get(slab_key, [])
-                    default_val = float(series[month_idx]) if month_idx < len(series) else 10.0
-                    period_defaults[str(period)][size_key][slab_key] = round(default_val, 2)
+                    series = defaults_matrix.get(size_key, {}).get(slab_key, []) or []
+                    default_val = float(series[idx]) if idx < len(series) else 10.0
+                    period_defaults[pkey][size_key][slab_key] = float(round(default_val, 2))
 
-        payload = {
+        schema = {
+            "families": [
+                {
+                    "name": "Balanced realistic",
+                    "priority_weight": 0.4,
+                    "base_min": 10,
+                    "base_max": 17,
+                    "gap_min": 1,
+                    "gap_max": 3,
+                    "month_pattern": "flat",
+                    "month_shift_strength": 2,
+                    "size_bias_12": 0,
+                    "size_bias_18": 0,
+                    "volatility": 1,
+                    "anchor_weights": {
+                        "latest_month": 0.4,
+                        "last_3m_avg": 0.3,
+                        "ly_same_3m": 0.2,
+                        "stress_explore": 0.1,
+                    },
+                }
+            ]
+        }
+        prompt_text = str(user_prompt or "").strip()
+        prompt_lower = prompt_text.lower()
+
+        intent_hints: List[str] = []
+        if ("12" in prompt_lower or "12ml" in prompt_lower or "12-ml" in prompt_lower) and any(
+            k in prompt_lower for k in ["increase", "grow", "growth", "up", "volume"]
+        ):
+            intent_hints.append(
+                "If user asks 12-ML volume growth, prioritize stronger 12-ML discount moves (within constraints) "
+                "before changing 18-ML."
+            )
+        if ("18" in prompt_lower or "18ml" in prompt_lower or "18-ml" in prompt_lower) and any(
+            k in prompt_lower for k in ["increase", "grow", "growth", "up", "volume"]
+        ):
+            intent_hints.append(
+                "If user asks 18-ML volume growth, prioritize stronger 18-ML discount moves (within constraints)."
+            )
+        if any(k in prompt_lower for k in ["profit", "margin", "gm"]):
+            intent_hints.append(
+                "For profit/margin goals, prefer shallower discount ladders, especially for 18-ML "
+                "(higher margin pack), unless prompt explicitly asks aggressive 18-ML discounting."
+            )
+        if any(k in prompt_lower for k in ["no deep", "not deep", "avoid deep", "shallow"]) and (
+            "18" in prompt_lower or "18ml" in prompt_lower or "18-ml" in prompt_lower
+        ):
+            intent_hints.append(
+                "If prompt says no deep 18-ML discount, keep 18-ML ladder in shallow-to-moderate range and avoid "
+                "high deep-discount tops."
+            )
+        if any(k in prompt_lower for k in ["revenue", "sales"]):
+            intent_hints.append(
+                "For revenue goals, allow moderate-to-high discount ladders but keep family diversity and realism."
+            )
+        if not intent_hints:
+            intent_hints.append(
+                "Map user intent explicitly by pack: 12-ML actions should primarily come from 12-ML ladders, "
+                "18-ML actions from 18-ML ladders."
+            )
+
+        prompt_payload = {
             "scenario_count": int(scenario_count),
             "goal": str(goal or "").strip() or "maximize_revenue",
-            "user_prompt": str(user_prompt or "").strip(),
+            "user_prompt": prompt_text,
             "periods": [str(p) for p in periods],
-            "slab_order": slab_order_map,
             "default_discounts_by_period": period_defaults,
-            "hard_constraints": [
-                "Discount range must be between 5 and 30.",
-                "Within each month and size, slab ladder must be non-decreasing: slab1 <= slab2 <= ...",
-                "Return ONLY valid JSON object.",
-            ],
-            "output_schema": {
-                "scenarios": [
-                    {
-                        "name": "AI Scenario 1",
-                        "scenario_discounts_by_period": {
-                            "YYYY-MM": {
-                                "12-ML": {"slab1": 14.0},
-                                "18-ML": {"slab1": 11.5},
-                            }
-                        },
-                    }
-                ]
+            "slab_order": slab_order_map,
+            "planner_context": planner_context or {},
+            "intent_hints": intent_hints,
+            "intent_resolution_framework": {
+                "step_1": "Infer pack target from prompt (12-ML, 18-ML, both).",
+                "step_2": "Infer objective priority (volume, revenue, profit, balanced).",
+                "step_3": "Use coefficient signs/magnitudes to set family direction by slab.",
+                "step_4": "Use margin profile to avoid unnecessary deep discounting when objective is profit.",
+                "step_5": "Generate diverse but business-realistic families aligned to inferred intent.",
             },
+            "constraints": [
+                "return EXACTLY 3 families",
+                "all discounts are later repaired to integer [5,30]",
+                "ladder is repaired monotonic later; still keep realistic family ranges",
+                "avoid degenerate families (all ones / all flat tiny values)",
+            ],
+            "schema": schema,
         }
-        payload_text = json.dumps(payload, ensure_ascii=True)
         return (
-            "You are generating Step-5 scenario discount plans for a trade-promo planner.\n"
-            "Business objective is provided in `goal`. User preference is provided in `user_prompt`.\n"
-            "Generate exactly `scenario_count` scenarios.\n"
-            "Each scenario must include month-wise slab discounts for both sizes: 12-ML and 18-ML.\n"
-            "Hard rules:\n"
-            "1) Discounts must stay in [5, 30].\n"
-            "2) Within one month and one size, ladder order must be non-decreasing by slab index.\n"
-            "3) Keep monthly changes realistic; avoid extreme random jumps unless prompt explicitly asks.\n"
-            "4) Use clear business names for each scenario based on objective.\n"
-            "5) Return strict JSON only, no markdown, no explanation text.\n"
-            "JSON shape must be exactly:\n"
-            "{ \"scenarios\": [ { \"name\": \"...\", \"scenario_discounts_by_period\": { \"YYYY-MM\": { \"12-ML\": {\"slab1\": 0}, \"18-ML\": {\"slab1\": 0} } } } ] }\n\n"
-            f"{payload_text}"
+            "Return ONE JSON object only (no markdown, no code fences).\n"
+            "You are generating scenario families for discount ladders.\n"
+            "Create exactly 3 families with this schema:\n"
+            f"{json.dumps(schema)}\n"
+            "Use planner_context deeply (do not ignore it):\n"
+            "- size_slab_coefficients gives per-slab model coefficients.\n"
+            "- pack_margin_profile gives relative pricing/margin context by pack.\n"
+            "- cross elasticities indicate cross-pack relationship direction/strength.\n"
+            "How to interpret coefficients:\n"
+            "- coef_base_discount_pct: own discount sensitivity for that slab (stronger absolute magnitude => stronger response).\n"
+            "- coef_lag1_base_discount_pct: carryover/drag from prior month discount.\n"
+            "- coef_other_slabs_weighted_base_discount_pct: coupling/cannibalization signal within same pack.\n"
+            "Pack-aware decision rules (must follow):\n"
+            "- If user asks 12-ML growth, move 12-ML ladders up first; do not rely mainly on 18-ML changes.\n"
+            "- If user asks 18-ML growth, move 18-ML ladders up first.\n"
+            "- If user asks profit/margin increase, avoid deep discounting (especially in 18-ML unless explicitly asked).\n"
+            "- Respect pack-specific constraints mentioned in prompt (e.g., keep 18-ML shallow).\n"
+            "- If prompt is ambiguous, choose balanced families and explicitly hedge with one conservative and one growth family.\n"
+            "Hard constraints:\n"
+            "- month_pattern must be one of: flat, up, down, wave, pulse.\n"
+            "- base_min/base_max/gap_min/gap_max must define meaningful spread.\n"
+            "- priority_weight and anchor_weights can be floats; they will be normalized.\n"
+            "- focus on realistic business scenarios, but keep diversity across families.\n"
+            f"Input:\n{json.dumps(prompt_payload)}"
         )
 
-    def _build_step5_local_ai_scenarios(
+    def _step5_build_anchor_vectors(
         self,
+        periods: List[str],
+        defaults_matrix: Dict[str, Dict[str, List[float]]],
+        slab_order_by_size: Dict[str, List[str]],
+    ) -> Tuple[Dict[str, Dict[str, Dict[str, Dict[str, float]]]], Dict[str, Any]]:
+        anchor_keys = ["latest_month", "last_3m_avg", "ly_same_3m", "stress_explore"]
+
+        def _empty() -> Dict[str, Dict[str, Dict[str, float]]]:
+            out: Dict[str, Dict[str, Dict[str, float]]] = {}
+            for period in periods:
+                pkey = str(period)
+                out[pkey] = {}
+                for size_key in ["12-ML", "18-ML"]:
+                    out[pkey][size_key] = {}
+                    for slab_key in slab_order_by_size.get(size_key, []):
+                        out[pkey][size_key][slab_key] = float(10.0)
+            return out
+
+        anchors: Dict[str, Dict[str, Dict[str, Dict[str, float]]]] = {k: _empty() for k in anchor_keys}
+        flat_cells = 0
+        total_cells = 0
+        synthetic_diversification_applied = False
+
+        for size_key in ["12-ML", "18-ML"]:
+            slabs = slab_order_by_size.get(size_key, [])
+            if not slabs:
+                continue
+            for slab_key in slabs:
+                hist_vals: List[float] = []
+                series = defaults_matrix.get(size_key, {}).get(slab_key, []) or []
+                for idx in range(len(periods)):
+                    if idx < len(series):
+                        hist_vals.append(float(series[idx]))
+                    else:
+                        hist_vals.append(float(series[-1] if series else 10.0))
+                if not hist_vals:
+                    hist_vals = [10.0 for _ in periods]
+                latest_val = float(hist_vals[-1])
+                avg_val = float(sum(hist_vals) / max(1, len(hist_vals)))
+                hist_span = float(max(hist_vals) - min(hist_vals)) if hist_vals else 0.0
+                is_flat = hist_span < 1e-9
+                total_cells += max(1, len(periods))
+                if is_flat:
+                    flat_cells += max(1, len(periods))
+
+                avg_month_step = max(1.0, min(2.5, hist_span if hist_span > 0 else 1.5))
+                stress_amp = max(2.0, min(6.0, (hist_span + 2.0)))
+                size_bias = 0.8 if size_key == "12-ML" else -0.6
+                slab_rank = slabs.index(slab_key)
+                slab_bias = 0.4 if slab_rank >= 2 else 0.0
+
+                for month_idx, period in enumerate(periods):
+                    pkey = str(period)
+                    avg_offsets = [-avg_month_step, 0.0, avg_month_step]
+                    avg_offset = avg_offsets[min(month_idx, len(avg_offsets) - 1)]
+                    seasonal_offsets = [1.5, -0.5, 1.0]
+                    seasonal_offset = seasonal_offsets[min(month_idx, len(seasonal_offsets) - 1)]
+                    stress_offsets = [-(stress_amp + 0.5), stress_amp * 0.5, stress_amp + 1.0]
+                    stress_offset = stress_offsets[min(month_idx, len(stress_offsets) - 1)]
+
+                    latest_anchor = latest_val
+                    last3_anchor = avg_val + avg_offset
+                    if is_flat:
+                        ly_anchor = avg_val + seasonal_offset
+                        synthetic_diversification_applied = True
+                    else:
+                        ly_anchor = hist_vals[min(month_idx, len(hist_vals) - 1)]
+                    stress_anchor = avg_val + stress_offset + size_bias + slab_bias
+
+                    anchors["latest_month"][pkey][size_key][slab_key] = float(self._clamp_discount_5_30(latest_anchor, latest_val))
+                    anchors["last_3m_avg"][pkey][size_key][slab_key] = float(self._clamp_discount_5_30(last3_anchor, avg_val))
+                    anchors["ly_same_3m"][pkey][size_key][slab_key] = float(self._clamp_discount_5_30(ly_anchor, avg_val))
+                    anchors["stress_explore"][pkey][size_key][slab_key] = float(self._clamp_discount_5_30(stress_anchor, avg_val))
+
+        for anchor_key in anchor_keys:
+            for period in periods:
+                pkey = str(period)
+                for size_key in ["12-ML", "18-ML"]:
+                    slabs = slab_order_by_size.get(size_key, [])
+                    if not slabs:
+                        continue
+                    ladd = {slab: anchors[anchor_key][pkey][size_key].get(slab, 10.0) for slab in slabs}
+                    anchors[anchor_key][pkey][size_key] = self._enforce_size_month_ladder(ladd, slabs)
+
+        info = {
+            "flat_defaults_cells": int(flat_cells),
+            "total_anchor_cells": int(total_cells),
+            "synthetic_diversification_applied": bool(synthetic_diversification_applied),
+        }
+        return anchors, info
+
+    def _step5_choose_weighted_anchor(self, rng: random.Random, weights: Dict[str, float]) -> str:
+        keys = ["latest_month", "last_3m_avg", "ly_same_3m", "stress_explore"]
+        probs = self._step5_normalize_weights(weights or {}, keys)
+        r = float(rng.random())
+        cum = 0.0
+        for key in keys:
+            cum += float(probs.get(key, 0.0))
+            if r <= cum:
+                return key
+        return keys[-1]
+
+    def _step5_sample_from_family(
+        self,
+        family: Dict[str, Any],
+        anchors: Dict[str, Dict[str, Dict[str, Dict[str, float]]]],
+        rng: random.Random,
+        periods: List[str],
+        slab_order_by_size: Dict[str, List[str]],
+    ) -> Tuple[Dict[str, Dict[str, Dict[str, float]]], str]:
+        anchor_key = self._step5_choose_weighted_anchor(rng, family.get("anchor_weights", {}))
+        anchor = anchors.get(anchor_key, anchors.get("last_3m_avg", {}))
+        scenario: Dict[str, Dict[str, Dict[str, float]]] = {}
+
+        for month_idx, period in enumerate(periods):
+            pkey = str(period)
+            scenario[pkey] = {}
+            shift = self._step5_month_shift(str(family.get("month_pattern", "flat")), month_idx, int(family.get("month_shift_strength", 0)))
+            for size_key in ["12-ML", "18-ML"]:
+                slabs = slab_order_by_size.get(size_key, [])
+                scenario[pkey][size_key] = {}
+                if not slabs:
+                    continue
+                bias = int(family.get("size_bias_12", 0)) if size_key == "12-ML" else int(family.get("size_bias_18", 0))
+                volatility = int(family.get("volatility", 0))
+                noise = rng.randint(-volatility, volatility) if volatility > 0 else 0
+                anchor_vals = [float(((anchor.get(pkey, {}).get(size_key, {}) or {}).get(slab, 10.0))) for slab in slabs]
+
+                base_raw = anchor_vals[0] + bias + shift + noise + rng.randint(-1, 1)
+                base_low = int(family.get("base_min", 10))
+                base_high = int(family.get("base_max", 16))
+                base = self._clamp_discount_5_30(max(base_low, min(base_high, base_raw)), 10.0)
+                ladder = [float(base)]
+
+                for i in range(1, len(slabs)):
+                    anchor_gap = max(1, int(round(anchor_vals[i] - anchor_vals[i - 1])))
+                    gap_raw = anchor_gap + rng.randint(-1, 1)
+                    gap_min = int(family.get("gap_min", 1))
+                    gap_max = int(family.get("gap_max", 3))
+                    gap = max(gap_min, min(gap_max, gap_raw))
+                    ladder.append(float(ladder[-1] + gap))
+
+                mapped = {slabs[i]: float(ladder[i]) for i in range(len(slabs))}
+                scenario[pkey][size_key] = self._enforce_size_month_ladder(mapped, slabs)
+        return scenario, anchor_key
+
+    def _step5_is_degenerate(
+        self,
+        scenario_map: Dict[str, Dict[str, Dict[str, float]]],
+        periods: List[str],
+        slab_order_by_size: Dict[str, List[str]],
+    ) -> bool:
+        values: List[int] = []
+        month_signatures: List[Tuple[int, ...]] = []
+        for period in periods:
+            pkey = str(period)
+            month_vals: List[int] = []
+            for size_key in ["12-ML", "18-ML"]:
+                for slab in slab_order_by_size.get(size_key, []):
+                    raw_val = (scenario_map.get(pkey, {}).get(size_key, {}) or {}).get(slab, 0.0)
+                    val = int(round(float(raw_val)))
+                    values.append(val)
+                    month_vals.append(val)
+            month_signatures.append(tuple(month_vals))
+        if not values:
+            return True
+        unique_vals = set(values)
+        if len(unique_vals) <= 2:
+            return True
+        if max(values) <= 6:
+            return True
+        if (max(values) - min(values)) <= 2:
+            return True
+        if len(set(month_signatures)) <= 1:
+            return True
+        return False
+
+    # Step 5 AI scenario generation now supports async jobs + polling.
+    def _ensure_ai_job_store(self):
+        if not hasattr(self, "_step5_ai_jobs"):
+            self._step5_ai_jobs: Dict[str, Dict[str, Any]] = {}
+        if not hasattr(self, "_step5_ai_job_lock"):
+            self._step5_ai_job_lock = threading.RLock()
+
+    def _persist_ai_job_snapshot(self, run_id: Optional[str]):
+        if not run_id:
+            return
+        self._ensure_ai_job_store()
+        try:
+            with self._step5_ai_job_lock:
+                summaries: Dict[str, Dict[str, Any]] = {}
+                for job in self._step5_ai_jobs.values():
+                    if str(job.get("run_id") or "") != str(run_id):
+                        continue
+                    summaries[str(job.get("job_id"))] = {
+                        "job_id": str(job.get("job_id")),
+                        "status": str(job.get("status") or "queued"),
+                        "progress_current": int(job.get("progress_current") or 0),
+                        "progress_total": int(job.get("progress_total") or 0),
+                        "result_count": int(job.get("result_count") or 0),
+                        "error_detail": job.get("error_detail"),
+                        "created_at": str(job.get("created_at") or ""),
+                        "updated_at": str(job.get("updated_at") or ""),
+                    }
+            self.save_run_state(
+                run_id=run_id,
+                state_update={"ui_state": {"step5_ai_jobs": summaries}},
+            )
+        except Exception:
+            return
+
+    def _create_ai_job(self, request: AIScenarioGenerateRequest) -> Dict[str, Any]:
+        self._ensure_ai_job_store()
+        run_id = str(getattr(request, "run_id", "") or "").strip()
+        run_id = self.create_run(run_id if run_id else None)
+        payload = (
+            request.model_dump(exclude_none=True)
+            if hasattr(request, "model_dump")
+            else request.dict(exclude_none=True)
+        )
+        payload["run_id"] = run_id
+
+        now_iso = datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+        job_id = str(uuid.uuid4())
+        with self._step5_ai_job_lock:
+            for job in self._step5_ai_jobs.values():
+                if str(job.get("run_id") or "") != run_id:
+                    continue
+                if str(job.get("status") or "") in {"queued", "running"}:
+                    job["cancel_requested"] = True
+                    job["status"] = "cancelled"
+                    job["error_detail"] = "Cancelled by newer AI generation job."
+                    job["updated_at"] = now_iso
+
+            job = {
+                "job_id": job_id,
+                "run_id": run_id,
+                "status": "queued",
+                "progress_current": 0,
+                "progress_total": int(getattr(request, "scenario_count", 0) or 0),
+                "result_count": 0,
+                "error_detail": None,
+                "request_payload": payload,
+                "results": [],
+                "cancel_requested": False,
+                "created_at": now_iso,
+                "updated_at": now_iso,
+            }
+            self._step5_ai_jobs[job_id] = job
+        self._persist_ai_job_snapshot(run_id)
+        return copy.deepcopy(job)
+
+    def _update_ai_job_status(
+        self,
+        job_id: str,
+        *,
+        status: Optional[str] = None,
+        progress_current: Optional[int] = None,
+        progress_total: Optional[int] = None,
+        result_count: Optional[int] = None,
+        error_detail: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        self._ensure_ai_job_store()
+        now_iso = datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+        with self._step5_ai_job_lock:
+            job = self._step5_ai_jobs.get(str(job_id))
+            if job is None:
+                return None
+            if status is not None:
+                job["status"] = str(status)
+            if progress_current is not None:
+                job["progress_current"] = int(max(0, progress_current))
+            if progress_total is not None:
+                job["progress_total"] = int(max(0, progress_total))
+            if result_count is not None:
+                job["result_count"] = int(max(0, result_count))
+            if error_detail is not None:
+                job["error_detail"] = str(error_detail) if error_detail else None
+            job["updated_at"] = now_iso
+            snapshot = copy.deepcopy(job)
+        self._persist_ai_job_snapshot(snapshot.get("run_id"))
+        return snapshot
+
+    def _append_ai_job_results(self, job_id: str, scenarios: List[AIScenarioRow]) -> Optional[Dict[str, Any]]:
+        self._ensure_ai_job_store()
+        now_iso = datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+        with self._step5_ai_job_lock:
+            job = self._step5_ai_jobs.get(str(job_id))
+            if job is None:
+                return None
+            normalized_rows: List[Dict[str, Any]] = []
+            for row in (scenarios or []):
+                if hasattr(row, "model_dump"):
+                    normalized_rows.append(row.model_dump())
+                elif isinstance(row, dict):
+                    normalized_rows.append(copy.deepcopy(row))
+            job["results"] = normalized_rows
+            job["result_count"] = len(normalized_rows)
+            job["updated_at"] = now_iso
+            snapshot = copy.deepcopy(job)
+        self._persist_ai_job_snapshot(snapshot.get("run_id"))
+        return snapshot
+
+    def _get_ai_job(self, job_id: str) -> Optional[Dict[str, Any]]:
+        self._ensure_ai_job_store()
+        with self._step5_ai_job_lock:
+            job = self._step5_ai_jobs.get(str(job_id))
+            if job is None:
+                return None
+            return copy.deepcopy(job)
+
+    def _list_ai_job_results(self, job_id: str, offset: int, limit: int) -> Optional[Dict[str, Any]]:
+        self._ensure_ai_job_store()
+        with self._step5_ai_job_lock:
+            job = self._step5_ai_jobs.get(str(job_id))
+            if job is None:
+                return None
+            total = len(job.get("results") or [])
+            safe_offset = max(0, int(offset or 0))
+            safe_limit = max(1, min(1000, int(limit or 200)))
+            rows = (job.get("results") or [])[safe_offset:safe_offset + safe_limit]
+            return {
+                "job_id": str(job.get("job_id")),
+                "status": str(job.get("status") or "queued"),
+                "offset": safe_offset,
+                "limit": safe_limit,
+                "total_results": total,
+                "rows": copy.deepcopy(rows),
+            }
+
+    def _is_ai_job_cancelled(self, job_id: str) -> bool:
+        self._ensure_ai_job_store()
+        with self._step5_ai_job_lock:
+            job = self._step5_ai_jobs.get(str(job_id))
+            if job is None:
+                return True
+            return bool(job.get("cancel_requested"))
+
+    def _request_gemini_ai_scenarios(
+        self,
+        *,
         scenario_count: int,
         goal: str,
         user_prompt: str,
         periods: List[str],
         defaults_matrix: Dict[str, Dict[str, List[float]]],
-        slab_order_by_size: Dict[str, List[str]],
-    ) -> List[Dict[str, Any]]:
-        """Deterministic fallback when Gemini is unavailable (network/key/proxy issues)."""
-        goal_key = str(goal or "").strip().lower()
-        prompt_lc = str(user_prompt or "").strip().lower()
+        planner_context: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        api_key = (os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or "").strip()
+        if not api_key:
+            raise RuntimeError("AI generation disabled. Set GEMINI_API_KEY on backend.")
 
-        if goal_key == "maximize_volume":
-            base_moves = [2.0, 3.0, 1.0, 4.0, 0.0, -1.0]
-        elif goal_key == "maximize_profit":
-            base_moves = [-2.0, -1.0, 0.0, 1.0, -3.0, 2.0]
-        elif goal_key == "balanced_growth":
-            base_moves = [0.0, 1.0, -1.0, 2.0, -2.0, 0.5]
-        else:  # maximize_revenue default
-            base_moves = [1.0, 2.0, 0.0, 3.0, -1.0, 0.5]
+        model_name = (os.getenv("GEMINI_MODEL") or "gemini-2.5-flash").strip()
+        endpoint = (
+            f"https://generativelanguage.googleapis.com/v1beta/models/"
+            f"{model_name}:generateContent?key={api_key}"
+        )
+        prompt_text = self._build_step5_ai_prompt(
+            scenario_count=scenario_count,
+            goal=goal,
+            user_prompt=user_prompt,
+            periods=periods,
+            defaults_matrix=defaults_matrix,
+            planner_context=planner_context or {},
+        )
+        request_body = {
+            "contents": [{"role": "user", "parts": [{"text": prompt_text}]}],
+            "generationConfig": {
+                "temperature": 0.35,
+                "topP": 0.9,
+                "maxOutputTokens": 9000,
+                "responseMimeType": "application/json",
+            },
+        }
+        last_error: Optional[str] = None
+        retry_delays = [0.8, 1.5, 2.5]
 
-        prompt_bias = 0.0
-        if any(tok in prompt_lc for tok in ["aggressive", "deep", "high discount", "push volume"]):
-            prompt_bias = 1.0
-        if any(tok in prompt_lc for tok in ["conservative", "shallow", "margin protection", "protect profit"]):
-            prompt_bias = -1.0
-
-        month_count = max(1, len(periods))
-        scenarios: List[Dict[str, Any]] = []
-        for idx in range(max(1, int(scenario_count))):
-            move = float(base_moves[idx % len(base_moves)] + prompt_bias)
-            pattern_kind = idx % 4
-            if pattern_kind == 0:
-                month_moves = [move for _ in range(month_count)]
-            elif pattern_kind == 1:
-                month_moves = [move + 1.0, move, move - 1.0][:month_count]
-                while len(month_moves) < month_count:
-                    month_moves.append(move)
-            elif pattern_kind == 2:
-                month_moves = [move - 1.0, move, move + 1.0][:month_count]
-                while len(month_moves) < month_count:
-                    month_moves.append(move)
-            else:
-                month_moves = [move, move - 0.5, move][:month_count]
-                while len(month_moves) < month_count:
-                    month_moves.append(move)
-
-            by_period: Dict[str, Dict[str, Dict[str, float]]] = {}
-            for month_idx, period_key in enumerate(periods):
-                by_period[str(period_key)] = {}
-                for size_key in ["12-ML", "18-ML"]:
-                    slab_order = slab_order_by_size.get(size_key, [])
-                    seed: Dict[str, float] = {}
-                    for slab_key in slab_order:
-                        default_series = defaults_matrix.get(size_key, {}).get(slab_key, [])
-                        default_val = float(default_series[month_idx]) if month_idx < len(default_series) else 10.0
-                        seed[slab_key] = self._clamp_discount_5_30(default_val + month_moves[month_idx], default_val)
-                    by_period[str(period_key)][size_key] = self._enforce_size_month_ladder(seed, slab_order)
-
-            scenarios.append(
-                {
-                    "name": f"AI Scenario {idx + 1}",
-                    "scenario_discounts_by_period": by_period,
-                }
-            )
-        return scenarios
-
-    async def generate_ai_scenarios(self, request: AIScenarioGenerateRequest) -> AIScenarioGenerateResponse:
-        try:
-            request_payload = (
-                request.model_dump(exclude_none=True)
-                if hasattr(request, "model_dump")
-                else request.dict(exclude_none=True)
-            )
-            for key in ["scenario_count", "goal", "prompt"]:
-                request_payload.pop(key, None)
-
-            base_request = CrossSizePlannerRequest(**request_payload)
-            planner_base = await self.calculate_cross_size_planner(base_request)
-            if not planner_base.success:
-                return AIScenarioGenerateResponse(
-                    success=False,
-                    message=planner_base.message or "Failed to initialize planner base for AI scenarios.",
-                    scenarios=[],
-                )
-
-            periods = [str(p) for p in (planner_base.periods or [])]
-            defaults_matrix = planner_base.defaults_matrix or {}
-            if not periods or not defaults_matrix:
-                return AIScenarioGenerateResponse(
-                    success=False,
-                    message="Planner base is missing periods/default discount matrix.",
-                    scenarios=[],
-                )
-
-            slab_order_by_size: Dict[str, List[str]] = {
-                size_key: sorted(list((defaults_matrix.get(size_key) or {}).keys()), key=self._slab_sort_key)
-                for size_key in ["12-ML", "18-ML"]
-            }
-            scenario_count = int(getattr(request, "scenario_count", 5) or 5)
-            goal = str(getattr(request, "goal", "") or "").strip()
-            user_prompt = str(getattr(request, "prompt", "") or "").strip()
-
-            api_key = (os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or "").strip()
-            if not api_key:
-                return AIScenarioGenerateResponse(
-                    success=False,
-                    message="AI generation disabled. Set GEMINI_API_KEY on backend.",
-                    scenarios=[],
-                )
-
-            model_name = (os.getenv("GEMINI_MODEL") or "gemini-2.5-flash").strip()
-            endpoint = (
-                f"https://generativelanguage.googleapis.com/v1beta/models/"
-                f"{model_name}:generateContent?key={api_key}"
-            )
-            prompt_text = self._build_step5_ai_prompt(
-                scenario_count=scenario_count,
-                goal=goal,
-                user_prompt=user_prompt,
-                periods=periods,
-                defaults_matrix=defaults_matrix,
-            )
-            request_body = {
-                "contents": [{"role": "user", "parts": [{"text": prompt_text}]}],
-                "generationConfig": {
-                    "temperature": 0.3,
-                    "topP": 0.9,
-                    "maxOutputTokens": 5000,
-                    "responseMimeType": "application/json",
-                },
-            }
-
+        for attempt_idx in range(len(retry_delays) + 1):
             req_obj = urllib.request.Request(
                 endpoint,
                 data=json.dumps(request_body).encode("utf-8"),
                 headers={"Content-Type": "application/json"},
                 method="POST",
             )
-            raw_scenarios: List[Any] = []
-            ai_error: str = ""
             try:
-                with urllib.request.urlopen(req_obj, timeout=40) as resp:
+                with urllib.request.urlopen(req_obj, timeout=75) as resp:
                     body = resp.read().decode("utf-8")
-                payload = json.loads(body)
-                raw_parts: List[str] = []
-                for candidate in (payload.get("candidates") or []):
-                    content = candidate.get("content") or {}
-                    for part in (content.get("parts") or []):
-                        txt = part.get("text")
-                        if isinstance(txt, str) and txt.strip():
-                            raw_parts.append(txt.strip())
-
-                parsed = self._extract_first_json_object("\n".join(raw_parts))
-                if isinstance(parsed, dict):
-                    raw_scenarios = parsed.get("scenarios") or []
-                if not isinstance(raw_scenarios, list):
-                    raw_scenarios = []
-                if not raw_scenarios:
-                    ai_error = "Empty/invalid Gemini response"
             except urllib.error.HTTPError as err:
                 detail = ""
                 try:
                     detail = err.read().decode("utf-8", errors="ignore")
                 except Exception:
                     detail = str(err)
-                ai_error = f"HTTP {err.code}: {detail[:120]}"
+                last_error = f"Gemini HTTP {err.code}: {detail[:160]}"
+                if attempt_idx < len(retry_delays):
+                    time.sleep(retry_delays[attempt_idx])
+                    continue
+                raise RuntimeError(last_error) from err
             except Exception as err:
-                ai_error = str(err)
+                last_error = f"Gemini unavailable ({str(err)})"
+                if attempt_idx < len(retry_delays):
+                    time.sleep(retry_delays[attempt_idx])
+                    continue
+                raise RuntimeError(last_error) from err
 
-            if ai_error:
-                raw_scenarios = self._build_step5_local_ai_scenarios(
-                    scenario_count=scenario_count,
-                    goal=goal,
-                    user_prompt=user_prompt,
+            try:
+                payload = json.loads(body)
+            except Exception:
+                last_error = "Invalid Gemini JSON envelope"
+                if attempt_idx < len(retry_delays):
+                    time.sleep(retry_delays[attempt_idx])
+                    continue
+                raise RuntimeError(last_error)
+
+            raw_parts: List[str] = []
+            for candidate in (payload.get("candidates") or []):
+                content = candidate.get("content") or {}
+                for part in (content.get("parts") or []):
+                    txt = part.get("text")
+                    if isinstance(txt, str) and txt.strip():
+                        raw_parts.append(txt.strip())
+
+            families_payload: Optional[Dict[str, Any]] = None
+            for part_text in raw_parts:
+                parsed_any: Any = None
+                try:
+                    parsed_any = json.loads(part_text)
+                except Exception:
+                    parsed_any = self._extract_first_json_object(part_text)
+
+                if isinstance(parsed_any, dict):
+                    candidate_list = parsed_any.get("families")
+                    if isinstance(candidate_list, list) and len(candidate_list) > 0:
+                        families_payload = parsed_any
+                        break
+
+            if isinstance(families_payload, dict) and isinstance(families_payload.get("families"), list):
+                return families_payload
+
+            last_error = "Empty/invalid Gemini response"
+            if attempt_idx < len(retry_delays):
+                time.sleep(retry_delays[attempt_idx])
+                continue
+            raise RuntimeError(last_error)
+
+        raise RuntimeError(last_error or "Empty/invalid Gemini response")
+
+    def _scenario_signature(self, scenario_map: Dict[str, Dict[str, Dict[str, float]]]) -> str:
+        parts: List[str] = []
+        for period_key in sorted(list((scenario_map or {}).keys())):
+            by_size = scenario_map.get(period_key) or {}
+            for size_key in ["12-ML", "18-ML"]:
+                by_slab = by_size.get(size_key) or {}
+                slab_keys = sorted(list(by_slab.keys()), key=self._slab_sort_key)
+                for slab_key in slab_keys:
+                    v = float(by_slab.get(slab_key, 0.0))
+                    parts.append(f"{period_key}|{size_key}|{slab_key}|{round(v, 2):.2f}")
+        return "||".join(parts)
+
+    def _sanitize_ai_scenarios(
+        self,
+        *,
+        raw_scenarios: List[Any],
+        periods: List[str],
+        defaults_matrix: Dict[str, Dict[str, List[float]]],
+        slab_order_by_size: Dict[str, List[str]],
+        constraint_bounds_by_key: Optional[Dict[str, Dict[str, Optional[int]]]] = None,
+        start_index: int = 1,
+    ) -> List[AIScenarioRow]:
+        month_index = {str(p): idx for idx, p in enumerate(periods)}
+        constraint_bounds_by_key = constraint_bounds_by_key or {}
+
+        def _default_for(period_key: str, size_key: str, slab_key: str) -> float:
+            idx = month_index.get(period_key, 0)
+            series = defaults_matrix.get(size_key, {}).get(slab_key, [])
+            if idx < len(series):
+                return float(series[idx])
+            return 10.0
+
+        out: List[AIScenarioRow] = []
+        for raw_idx, source in enumerate(raw_scenarios):
+            source_obj = source if isinstance(source, dict) else {}
+            name = str(source_obj.get("name") or "").strip() or f"AI Scenario {start_index + raw_idx}"
+            by_period_raw = source_obj.get("scenario_discounts_by_period") or {}
+            scenario_map: Dict[str, Dict[str, Dict[str, float]]] = {}
+
+            for period_key in periods:
+                period_key = str(period_key)
+                scenario_map[period_key] = {}
+                period_obj = by_period_raw.get(period_key, {}) if isinstance(by_period_raw, dict) else {}
+                for size_key in ["12-ML", "18-ML"]:
+                    slab_values_in = period_obj.get(size_key, {}) if isinstance(period_obj, dict) else {}
+                    slab_seed: Dict[str, float] = {}
+                    bound_map: Dict[str, Dict[str, Optional[int]]] = {}
+                    for slab_key in slab_order_by_size.get(size_key, []):
+                        default_value = _default_for(period_key, size_key, slab_key)
+                        raw_value = slab_values_in.get(slab_key) if isinstance(slab_values_in, dict) else None
+                        slab_seed[slab_key] = float(self._clamp_discount_5_30_int(raw_value, default_value))
+                        bound_map[slab_key] = constraint_bounds_by_key.get(
+                            f"{period_key}|{size_key}|{slab_key}",
+                            {'min': None, 'max': None},
+                        )
+                    bounded = self._enforce_size_month_ladder_int_with_bounds(
+                        slab_seed,
+                        slab_order_by_size.get(size_key, []),
+                        bound_map,
+                    )
+                    if bounded is None:
+                        scenario_map = {}
+                        break
+                    scenario_map[period_key][size_key] = bounded
+                if not scenario_map:
+                    break
+            if not scenario_map:
+                continue
+            out.append(AIScenarioRow(name=name, scenario_discounts_by_period=scenario_map))
+        return out
+
+    async def _generate_ai_scenarios_rows(
+        self,
+        request: AIScenarioGenerateRequest,
+        progress_callback=None,
+        cancel_check=None,
+    ) -> List[AIScenarioRow]:
+        request_payload = (
+            request.model_dump(exclude_none=True)
+            if hasattr(request, "model_dump")
+            else request.dict(exclude_none=True)
+        )
+        for key in ["scenario_count", "goal", "prompt", "discount_constraints", "metric_thresholds"]:
+            request_payload.pop(key, None)
+
+        base_request = CrossSizePlannerRequest(**request_payload)
+        planner_base = await self.calculate_cross_size_planner(base_request)
+        if not planner_base.success:
+            raise RuntimeError(planner_base.message or "Failed to initialize planner base for AI scenarios.")
+
+        periods = [str(p) for p in (planner_base.periods or [])]
+        defaults_matrix = planner_base.defaults_matrix or {}
+        if not periods or not defaults_matrix:
+            raise RuntimeError("Planner base is missing periods/default discount matrix.")
+
+        slab_order_by_size: Dict[str, List[str]] = {
+            size_key: sorted(list((defaults_matrix.get(size_key) or {}).keys()), key=self._slab_sort_key)
+            for size_key in ["12-ML", "18-ML"]
+        }
+        discount_constraint_bounds = self._parse_step5_discount_constraints(
+            request=request,
+            periods=periods,
+            slab_order_by_size=slab_order_by_size,
+        )
+        target_count = int(getattr(request, "scenario_count", 5) or 5)
+        goal = str(getattr(request, "goal", "") or "").strip()
+        user_prompt = str(getattr(request, "prompt", "") or "").strip()
+
+        if progress_callback:
+            progress_callback(0, target_count, 0)
+
+        accepted: List[AIScenarioRow] = []
+        seen_signatures: set = set()
+
+        planner_context = {
+            "cross_elasticity_12_from_18": float(planner_base.cross_elasticity_12_from_18 or 0.0),
+            "cross_elasticity_18_from_12": float(planner_base.cross_elasticity_18_from_12 or 0.0),
+            "cross_model_r2_12": float(planner_base.cross_model_r2_12 or 0.0),
+            "cross_model_r2_18": float(planner_base.cross_model_r2_18 or 0.0),
+            "model_build_notes": (
+                "There is a negative relationship between 12-ML and 18-ML. "
+                "Planner volume is built slab-wise from beta*own_discount + beta*lag_discount + beta*other_slabs_weighted_discount, "
+                "then slabs are summed to pack totals. Cross adjustment is applied on pack changes."
+            ),
+        }
+        size_slab_coefficients: Dict[str, Dict[str, Dict[str, float]]] = {}
+        pack_margin_profile: Dict[str, Dict[str, float]] = {}
+        for size_payload in (getattr(planner_base, "size_results", None) or []):
+            size_key = str(getattr(size_payload, "size", "") or "").strip()
+            if not size_key:
+                continue
+            slab_map: Dict[str, Dict[str, float]] = {}
+            weighted_price_num = 0.0
+            weighted_cogs_num = 0.0
+            weighted_den = 0.0
+            for slab_state in (getattr(size_payload, "slabs", None) or []):
+                slab_key = str(getattr(slab_state, "slab", "") or "").strip()
+                if not slab_key:
+                    continue
+                anchor_qty = float(getattr(slab_state, "anchor_qty", 0.0) or 0.0)
+                base_price = float(getattr(slab_state, "base_price", 0.0) or 0.0)
+                cogs_per_unit = float(getattr(slab_state, "cogs_per_unit", 0.0) or 0.0)
+                coef_base = float(getattr(slab_state, "coef_base_discount_pct", 0.0) or 0.0)
+                coef_lag = float(getattr(slab_state, "coef_lag1_base_discount_pct", 0.0) or 0.0)
+                coef_other = float(getattr(slab_state, "coef_other_slabs_weighted_base_discount_pct", 0.0) or 0.0)
+                default_disc = float(getattr(slab_state, "default_discount_pct", 0.0) or 0.0)
+                slab_map[slab_key] = {
+                    "default_discount_pct": float(round(default_disc, 4)),
+                    "anchor_qty": float(round(anchor_qty, 4)),
+                    "base_price": float(round(base_price, 4)),
+                    "cogs_per_unit": float(round(cogs_per_unit, 4)),
+                    "coef_base_discount_pct": float(round(coef_base, 6)),
+                    "coef_lag1_base_discount_pct": float(round(coef_lag, 6)),
+                    "coef_other_slabs_weighted_base_discount_pct": float(round(coef_other, 6)),
+                    "coef_signal": float(round(abs(coef_base) + abs(coef_lag) + abs(coef_other), 6)),
+                }
+                w = max(anchor_qty, 0.0)
+                weighted_price_num += w * base_price
+                weighted_cogs_num += w * cogs_per_unit
+                weighted_den += w
+            if slab_map:
+                size_slab_coefficients[size_key] = slab_map
+            if weighted_den > 0:
+                avg_price = weighted_price_num / weighted_den
+                avg_cogs = weighted_cogs_num / weighted_den
+            else:
+                avg_price = 0.0
+                avg_cogs = 0.0
+            pack_margin_profile[size_key] = {
+                "weighted_avg_base_price": float(round(avg_price, 6)),
+                "weighted_avg_cogs_per_unit": float(round(avg_cogs, 6)),
+                "weighted_avg_unit_margin": float(round(avg_price - avg_cogs, 6)),
+            }
+        planner_context["size_slab_coefficients"] = size_slab_coefficients
+        planner_context["pack_margin_profile"] = pack_margin_profile
+        planner_context["ai_intent_usage_notes"] = [
+            "Read user prompt and map objective by pack before creating families.",
+            "For pack-specific growth asks, move that pack primarily; avoid accidental opposite-pack domination.",
+            "Use slab coefficients to prioritize slabs with stronger modeled response.",
+            "For margin/profit asks, use shallower ladders where margin profile is stronger unless prompt says otherwise.",
+        ]
+        planner_context["hard_discount_constraints"] = [
+            {
+                "period": str(k).split("|")[0],
+                "size": str(k).split("|")[1],
+                "slab": str(k).split("|")[2],
+                "min": v.get("min"),
+                "max": v.get("max"),
+            }
+            for k, v in (discount_constraint_bounds or {}).items()
+        ]
+        families_payload = self._request_gemini_ai_scenarios(
+            scenario_count=target_count,
+            goal=goal,
+            user_prompt=user_prompt,
+            periods=periods,
+            defaults_matrix=defaults_matrix,
+            planner_context=planner_context,
+        )
+        families, _sanitize_info = self._step5_sanitize_families(families_payload)
+        allocation = self._step5_allocate_count_by_family(
+            total=target_count,
+            family_weights=[float(f.get("priority_weight", 0.0)) for f in families],
+        )
+        anchors, _anchor_info = self._step5_build_anchor_vectors(
+            periods=periods,
+            defaults_matrix=defaults_matrix,
+            slab_order_by_size=slab_order_by_size,
+        )
+
+        seed_input = json.dumps(
+            {
+                "prompt": user_prompt,
+                "goal": goal,
+                "planner_context": planner_context,
+                "families": families,
+                "target": target_count,
+                "periods": periods,
+            },
+            sort_keys=True,
+        )
+        seed_base = int(hashlib.sha256(seed_input.encode("utf-8")).hexdigest()[:12], 16) % (10**9)
+
+        for fam_idx, family in enumerate(families):
+            target = int(allocation[fam_idx]) if fam_idx < len(allocation) else 0
+            if target <= 0:
+                continue
+            rng = random.Random(seed_base + (fam_idx + 1) * 104729)
+            attempts = 0
+            max_attempts = max(200, target * 100)
+            accepted_in_family = 0
+
+            while accepted_in_family < target and attempts < max_attempts:
+                if cancel_check and bool(cancel_check()):
+                    raise _AIJobCancelled("Cancelled by newer job")
+                attempts += 1
+
+                sampled_map, anchor_used = self._step5_sample_from_family(
+                    family=family,
+                    anchors=anchors,
+                    rng=rng,
+                    periods=periods,
+                    slab_order_by_size=slab_order_by_size,
+                )
+                sanitized_rows = self._sanitize_ai_scenarios(
+                    raw_scenarios=[{
+                        "name": f"AI {len(accepted) + 1:03d} - {family.get('name', 'Family')} ({anchor_used})",
+                        "scenario_discounts_by_period": sampled_map,
+                    }],
                     periods=periods,
                     defaults_matrix=defaults_matrix,
                     slab_order_by_size=slab_order_by_size,
+                    constraint_bounds_by_key=discount_constraint_bounds,
+                    start_index=len(accepted) + 1,
+                )
+                if not sanitized_rows:
+                    continue
+                row = sanitized_rows[0]
+                if self._step5_is_degenerate(row.scenario_discounts_by_period or {}, periods, slab_order_by_size):
+                    continue
+                signature = self._scenario_signature(row.scenario_discounts_by_period or {})
+                if signature in seen_signatures:
+                    continue
+                seen_signatures.add(signature)
+                accepted.append(row)
+                accepted_in_family += 1
+                if progress_callback:
+                    progress_callback(len(accepted), target_count, len(accepted))
+
+        if len(accepted) < target_count:
+            extra_attempts = 0
+            extra_max = max(1000, (target_count - len(accepted)) * 250)
+            rr_idx = 0
+            while len(accepted) < target_count and extra_attempts < extra_max:
+                if cancel_check and bool(cancel_check()):
+                    raise _AIJobCancelled("Cancelled by newer job")
+                fam_idx = rr_idx % len(families)
+                family = families[fam_idx]
+                rng = random.Random(seed_base + 700001 + extra_attempts * 37)
+                extra_attempts += 1
+                rr_idx += 1
+                sampled_map, anchor_used = self._step5_sample_from_family(
+                    family=family,
+                    anchors=anchors,
+                    rng=rng,
+                    periods=periods,
+                    slab_order_by_size=slab_order_by_size,
+                )
+                sanitized_rows = self._sanitize_ai_scenarios(
+                    raw_scenarios=[{
+                        "name": f"AI {len(accepted) + 1:03d} - {family.get('name', 'Family')} ({anchor_used})",
+                        "scenario_discounts_by_period": sampled_map,
+                    }],
+                    periods=periods,
+                    defaults_matrix=defaults_matrix,
+                    slab_order_by_size=slab_order_by_size,
+                    constraint_bounds_by_key=discount_constraint_bounds,
+                    start_index=len(accepted) + 1,
+                )
+                if not sanitized_rows:
+                    continue
+                row = sanitized_rows[0]
+                if self._step5_is_degenerate(row.scenario_discounts_by_period or {}, periods, slab_order_by_size):
+                    continue
+                signature = self._scenario_signature(row.scenario_discounts_by_period or {})
+                if signature in seen_signatures:
+                    continue
+                seen_signatures.add(signature)
+                accepted.append(row)
+                if progress_callback:
+                    progress_callback(len(accepted), target_count, len(accepted))
+
+        if len(accepted) < target_count:
+            raise RuntimeError(
+                f"Generated {len(accepted)} unique scenario(s) out of requested {target_count}. "
+                "Try lowering scenario count or using a more specific prompt."
+            )
+        return accepted[:target_count]
+
+    def _run_ai_job_worker(self, job_id: str):
+        try:
+            job = self._get_ai_job(job_id)
+            if not job:
+                return
+            request_payload = copy.deepcopy(job.get("request_payload") or {})
+            request = AIScenarioGenerateRequest(**request_payload)
+            self._update_ai_job_status(
+                job_id,
+                status="running",
+                progress_current=0,
+                progress_total=int(getattr(request, "scenario_count", 0) or 0),
+                result_count=0,
+                error_detail=None,
+            )
+
+            def _progress(curr: int, total: int, result_count: int):
+                if self._is_ai_job_cancelled(job_id):
+                    raise _AIJobCancelled("Cancelled by newer job")
+                self._update_ai_job_status(
+                    job_id,
+                    status="running",
+                    progress_current=int(curr),
+                    progress_total=int(total),
+                    result_count=int(result_count),
                 )
 
-            def _default_for(period_key: str, size_key: str, slab_key: str) -> float:
-                month_idx = periods.index(period_key)
-                series = defaults_matrix.get(size_key, {}).get(slab_key, [])
-                if month_idx < len(series):
-                    return float(series[month_idx])
-                return 10.0
-
-            scenarios_out: List[AIScenarioRow] = []
-            for idx in range(scenario_count):
-                source = raw_scenarios[idx] if idx < len(raw_scenarios) and isinstance(raw_scenarios[idx], dict) else {}
-                name = str(source.get("name") or "").strip() or f"AI Scenario {idx + 1}"
-                by_period_raw = source.get("scenario_discounts_by_period") or {}
-                scenario_map: Dict[str, Dict[str, Dict[str, float]]] = {}
-
-                for period_key in periods:
-                    scenario_map[period_key] = {}
-                    period_obj = by_period_raw.get(period_key, {}) if isinstance(by_period_raw, dict) else {}
-                    for size_key in ["12-ML", "18-ML"]:
-                        slab_values_in = period_obj.get(size_key, {}) if isinstance(period_obj, dict) else {}
-                        slab_values_seed: Dict[str, float] = {}
-                        for slab_key in slab_order_by_size.get(size_key, []):
-                            default_value = _default_for(period_key, size_key, slab_key)
-                            raw_value = None
-                            if isinstance(slab_values_in, dict):
-                                raw_value = slab_values_in.get(slab_key)
-                            slab_values_seed[slab_key] = self._clamp_discount_5_30(raw_value, default_value)
-                        scenario_map[period_key][size_key] = self._enforce_size_month_ladder(
-                            slab_values_seed,
-                            slab_order_by_size.get(size_key, []),
-                        )
-
-                scenarios_out.append(
-                    AIScenarioRow(
-                        name=name if name else f"AI Scenario {idx + 1}",
-                        scenario_discounts_by_period=scenario_map,
-                    )
+            rows = asyncio.run(
+                self._generate_ai_scenarios_rows(
+                    request=request,
+                    progress_callback=_progress,
+                    cancel_check=lambda: self._is_ai_job_cancelled(job_id),
                 )
+            )
+            if self._is_ai_job_cancelled(job_id):
+                self._update_ai_job_status(
+                    job_id,
+                    status="cancelled",
+                    error_detail="Cancelled by newer AI generation job.",
+                )
+                return
+            self._append_ai_job_results(job_id, rows)
+            self._update_ai_job_status(
+                job_id,
+                status="completed",
+                progress_current=len(rows),
+                progress_total=len(rows),
+                result_count=len(rows),
+                error_detail=None,
+            )
+        except _AIJobCancelled as err:
+            self._update_ai_job_status(job_id, status="cancelled", error_detail=str(err))
+        except Exception as err:
+            self._update_ai_job_status(job_id, status="failed", error_detail=str(err))
 
+    async def create_ai_scenario_job(self, request: AIScenarioGenerateRequest) -> AIScenarioJobCreateResponse:
+        try:
+            job = self._create_ai_job(request)
+            worker = threading.Thread(
+                target=self._run_ai_job_worker,
+                args=(str(job.get("job_id")),),
+                daemon=True,
+                name=f"step5-ai-job-{job.get('job_id')}",
+            )
+            worker.start()
+            return AIScenarioJobCreateResponse(
+                success=True,
+                message="AI scenario generation job started.",
+                job_id=str(job.get("job_id")),
+                status="queued",
+            )
+        except Exception as err:
+            return AIScenarioJobCreateResponse(
+                success=False,
+                message=f"Failed to start AI scenario generation job: {str(err)}",
+                job_id="",
+                status="failed",
+            )
+
+    def get_ai_scenario_job_status(self, job_id: str) -> Optional[AIScenarioJobStatusResponse]:
+        job = self._get_ai_job(job_id)
+        if not job:
+            return None
+        status = str(job.get("status") or "queued")
+        return AIScenarioJobStatusResponse(
+            success=status in {"queued", "running", "completed"},
+            message=f"AI scenario job is {status}.",
+            job_id=str(job.get("job_id")),
+            status=status,
+            progress_current=int(job.get("progress_current") or 0),
+            progress_total=int(job.get("progress_total") or 0),
+            result_count=int(job.get("result_count") or 0),
+            error_detail=job.get("error_detail"),
+        )
+
+    def get_ai_scenario_job_results(self, job_id: str, offset: int = 0, limit: int = 200) -> Optional[AIScenarioJobResultsResponse]:
+        snapshot = self._list_ai_job_results(job_id=job_id, offset=offset, limit=limit)
+        if snapshot is None:
+            return None
+        rows: List[AIScenarioRow] = []
+        for row in (snapshot.get("rows") or []):
+            try:
+                rows.append(AIScenarioRow(**(row or {})))
+            except Exception:
+                continue
+        return AIScenarioJobResultsResponse(
+            success=True,
+            message="AI scenario job results loaded.",
+            job_id=str(snapshot.get("job_id")),
+            status=str(snapshot.get("status") or "queued"),
+            offset=int(snapshot.get("offset") or 0),
+            limit=int(snapshot.get("limit") or 200),
+            total_results=int(snapshot.get("total_results") or 0),
+            scenarios=rows,
+        )
+
+    async def generate_ai_scenarios(self, request: AIScenarioGenerateRequest) -> AIScenarioGenerateResponse:
+        try:
+            rows = await self._generate_ai_scenarios_rows(request=request)
             return AIScenarioGenerateResponse(
                 success=True,
-                message=(
-                    f"Generated {len(scenarios_out)} AI scenario(s)."
-                    if not ai_error
-                    else f"Generated {len(scenarios_out)} fallback AI scenario(s) because Gemini was unreachable ({ai_error})."
-                ),
-                scenarios=scenarios_out,
+                message=f"Generated {len(rows)} AI scenario(s).",
+                scenarios=rows,
             )
         except Exception as err:
             return AIScenarioGenerateResponse(
@@ -461,29 +1578,34 @@ class Step4CrossSizePlannerMixin:
                     'reference_qty': 0.0,
                     'reference_revenue': 0.0,
                     'reference_profit': 0.0,
+                    'reference_investment': 0.0,
                     'reference_available': 0.0,
                 }
                 continue
 
             qty = float(size_part['Quantity_Num'].sum())
             revenue = float(size_part['Net_Revenue'].sum())
+            investment = float(size_part['Discount_Num'].sum())
             cogs = float(pair_state.get(size_key, {}).get('cogs_per_unit', 0.0))
             profit = float(revenue - (qty * cogs))
             out[size_key] = {
                 'reference_qty': qty,
                 'reference_revenue': revenue,
                 'reference_profit': profit,
+                'reference_investment': investment,
                 'reference_available': 1.0,
             }
 
         total_qty = float(sum(out.get(size, {}).get('reference_qty', 0.0) for size in ['12-ML', '18-ML']))
         total_revenue = float(sum(out.get(size, {}).get('reference_revenue', 0.0) for size in ['12-ML', '18-ML']))
         total_profit = float(sum(out.get(size, {}).get('reference_profit', 0.0) for size in ['12-ML', '18-ML']))
+        total_investment = float(sum(out.get(size, {}).get('reference_investment', 0.0) for size in ['12-ML', '18-ML']))
         total_available = 1.0 if any(out.get(size, {}).get('reference_available', 0.0) > 0 for size in ['12-ML', '18-ML']) else 0.0
         out['TOTAL'] = {
             'reference_qty': total_qty,
             'reference_revenue': total_revenue,
             'reference_profit': total_profit,
+            'reference_investment': total_investment,
             'reference_available': total_available,
         }
         return out
@@ -1886,8 +3008,30 @@ class Step4CrossSizePlannerMixin:
 
             # Recompute month totals and size summaries from redistributed final slab-month qty.
             summary_acc = {
-                '12-ML': {'baseline_qty': 0.0, 'pre_cross_qty': 0.0, 'final_qty': 0.0, 'baseline_revenue': 0.0, 'scenario_revenue': 0.0, 'baseline_profit': 0.0, 'scenario_profit': 0.0},
-                '18-ML': {'baseline_qty': 0.0, 'pre_cross_qty': 0.0, 'final_qty': 0.0, 'baseline_revenue': 0.0, 'scenario_revenue': 0.0, 'baseline_profit': 0.0, 'scenario_profit': 0.0},
+                '12-ML': {
+                    'baseline_qty': 0.0,
+                    'pre_cross_qty': 0.0,
+                    'final_qty': 0.0,
+                    'baseline_revenue': 0.0,
+                    'scenario_revenue': 0.0,
+                    'baseline_profit': 0.0,
+                    'scenario_profit': 0.0,
+                    'baseline_investment': 0.0,
+                    'scenario_investment': 0.0,
+                    'scenario_investment_positive': 0.0,
+                },
+                '18-ML': {
+                    'baseline_qty': 0.0,
+                    'pre_cross_qty': 0.0,
+                    'final_qty': 0.0,
+                    'baseline_revenue': 0.0,
+                    'scenario_revenue': 0.0,
+                    'baseline_profit': 0.0,
+                    'scenario_profit': 0.0,
+                    'baseline_investment': 0.0,
+                    'scenario_investment': 0.0,
+                    'scenario_investment_positive': 0.0,
+                },
             }
             for row in monthly_results:
                 period_sizes = row.get('sizes', {})
@@ -1905,6 +3049,9 @@ class Step4CrossSizePlannerMixin:
                     scenario_revenue_total = 0.0
                     baseline_profit_total = 0.0
                     scenario_profit_total = 0.0
+                    baseline_investment_total = 0.0
+                    scenario_investment_total = 0.0
+                    scenario_investment_positive_total = 0.0
                     for slab_row in slabs_for_month:
                         final_qty = max(float(slab_row.get('final_qty', 0.0)), 0.0)
                         base_price = float(slab_row.get('base_price', 0.0))
@@ -1917,16 +3064,25 @@ class Step4CrossSizePlannerMixin:
                         scenario_revenue = final_qty * base_price * (1.0 - (scenario_discount / 100.0))
                         baseline_profit = baseline_revenue - (baseline_qty * cogs_per_unit)
                         scenario_profit = scenario_revenue - (final_qty * cogs_per_unit)
+                        baseline_investment = baseline_qty * base_price * (default_discount / 100.0)
+                        scenario_investment = final_qty * base_price * (scenario_discount / 100.0)
+                        scenario_investment_positive = final_qty * base_price * (max(0.0, scenario_discount - default_discount) / 100.0)
 
                         slab_row['baseline_revenue'] = float(baseline_revenue)
                         slab_row['scenario_revenue'] = float(scenario_revenue)
                         slab_row['baseline_profit'] = float(baseline_profit)
                         slab_row['scenario_profit'] = float(scenario_profit)
+                        slab_row['baseline_investment'] = float(baseline_investment)
+                        slab_row['scenario_investment'] = float(scenario_investment)
+                        slab_row['scenario_investment_positive'] = float(scenario_investment_positive)
 
                         baseline_revenue_total += baseline_revenue
                         scenario_revenue_total += scenario_revenue
                         baseline_profit_total += baseline_profit
                         scenario_profit_total += scenario_profit
+                        baseline_investment_total += baseline_investment
+                        scenario_investment_total += scenario_investment
+                        scenario_investment_positive_total += scenario_investment_positive
 
                     size_payload['final_total_qty'] = float(final_total_qty)
                     size_payload['volume_delta_pct'] = ((final_total_qty - baseline_total_qty_non_discount) / baseline_total_qty_non_discount * 100.0) if baseline_total_qty_non_discount > 0 else 0.0
@@ -1936,6 +3092,10 @@ class Step4CrossSizePlannerMixin:
                     size_payload['baseline_profit_total'] = float(baseline_profit_total)
                     size_payload['scenario_profit_total'] = float(scenario_profit_total)
                     size_payload['profit_delta_pct'] = ((scenario_profit_total - baseline_profit_total) / abs(baseline_profit_total) * 100.0) if abs(baseline_profit_total) > 1e-9 else 0.0
+                    size_payload['baseline_investment_total'] = float(baseline_investment_total)
+                    size_payload['scenario_investment_total'] = float(scenario_investment_total)
+                    size_payload['scenario_investment_positive_total'] = float(scenario_investment_positive_total)
+                    size_payload['investment_delta_pct'] = ((scenario_investment_total - baseline_investment_total) / baseline_investment_total * 100.0) if baseline_investment_total > 0 else 0.0
 
                     summary_acc[size_key]['baseline_qty'] += baseline_total_qty_non_discount
                     summary_acc[size_key]['pre_cross_qty'] += pre_cross_total_qty
@@ -1944,6 +3104,9 @@ class Step4CrossSizePlannerMixin:
                     summary_acc[size_key]['scenario_revenue'] += scenario_revenue_total
                     summary_acc[size_key]['baseline_profit'] += baseline_profit_total
                     summary_acc[size_key]['scenario_profit'] += scenario_profit_total
+                    summary_acc[size_key]['baseline_investment'] += baseline_investment_total
+                    summary_acc[size_key]['scenario_investment'] += scenario_investment_total
+                    summary_acc[size_key]['scenario_investment_positive'] += scenario_investment_positive_total
 
                 row['impact'] = {
                     'prev12_qty': float(row.get('sizes', {}).get('12-ML', {}).get('baseline_total_qty', 0.0)),
@@ -1968,9 +3131,13 @@ class Step4CrossSizePlannerMixin:
                 scenario_revenue = float(agg.get('scenario_revenue', 0.0))
                 baseline_profit = float(agg.get('baseline_profit', 0.0))
                 scenario_profit = float(agg.get('scenario_profit', 0.0))
+                baseline_investment = float(agg.get('baseline_investment', 0.0))
+                scenario_investment = float(agg.get('scenario_investment', 0.0))
+                scenario_investment_positive = float(agg.get('scenario_investment_positive', 0.0))
                 reference_qty = float(reference_3m.get(size_key, {}).get('reference_qty', 0.0))
                 reference_revenue = float(reference_3m.get(size_key, {}).get('reference_revenue', 0.0))
                 reference_profit = float(reference_3m.get(size_key, {}).get('reference_profit', 0.0))
+                reference_investment = float(reference_3m.get(size_key, {}).get('reference_investment', 0.0))
                 reference_available = float(reference_3m.get(size_key, {}).get('reference_available', 0.0))
                 summary_3m[size_key] = {
                     'baseline_qty': baseline_qty,
@@ -1985,14 +3152,24 @@ class Step4CrossSizePlannerMixin:
                     'baseline_profit': baseline_profit,
                     'scenario_profit': scenario_profit,
                     'profit_delta_pct': ((scenario_profit - baseline_profit) / abs(baseline_profit) * 100.0) if abs(baseline_profit) > 1e-9 else 0.0,
+                    'baseline_investment': baseline_investment,
+                    'scenario_investment': scenario_investment,
+                    'investment_change_positive': scenario_investment_positive,
+                    'investment_delta_pct': ((scenario_investment - baseline_investment) / baseline_investment * 100.0) if baseline_investment > 0 else 0.0,
                     'reference_qty': reference_qty,
                     'reference_revenue': reference_revenue,
                     'reference_profit': reference_profit,
+                    'reference_investment': reference_investment,
                     'own_delta_vs_reference_pct': ((pre_cross_qty - reference_qty) / reference_qty * 100.0) if reference_qty > 0 else 0.0,
                     'adjusted_delta_vs_reference_pct': ((final_qty - reference_qty) / reference_qty * 100.0) if reference_qty > 0 else 0.0,
                     'vs_reference_volume_pct': ((final_qty - reference_qty) / reference_qty * 100.0) if reference_qty > 0 else 0.0,
                     'vs_reference_revenue_pct': ((scenario_revenue - reference_revenue) / reference_revenue * 100.0) if reference_revenue > 0 else 0.0,
                     'vs_reference_profit_pct': ((scenario_profit - reference_profit) / abs(reference_profit) * 100.0) if abs(reference_profit) > 1e-9 else 0.0,
+                    'vs_reference_investment_pct': ((scenario_investment - reference_investment) / reference_investment * 100.0) if reference_investment > 0 else 0.0,
+                    'investment_change_positive_vs_reference_pct': (
+                        ((scenario_investment_positive - reference_investment) / reference_investment * 100.0)
+                        if reference_investment > 0 else 0.0
+                    ),
                     'reference_available': reference_available,
                 }
 
@@ -2003,9 +3180,13 @@ class Step4CrossSizePlannerMixin:
             total_scenario_revenue = float(sum(summary_3m.get(size, {}).get('scenario_revenue', 0.0) for size in ['12-ML', '18-ML']))
             total_baseline_profit = float(sum(summary_3m.get(size, {}).get('baseline_profit', 0.0) for size in ['12-ML', '18-ML']))
             total_scenario_profit = float(sum(summary_3m.get(size, {}).get('scenario_profit', 0.0) for size in ['12-ML', '18-ML']))
+            total_baseline_investment = float(sum(summary_3m.get(size, {}).get('baseline_investment', 0.0) for size in ['12-ML', '18-ML']))
+            total_scenario_investment = float(sum(summary_3m.get(size, {}).get('scenario_investment', 0.0) for size in ['12-ML', '18-ML']))
+            total_scenario_investment_positive = float(sum(summary_3m.get(size, {}).get('investment_change_positive', 0.0) for size in ['12-ML', '18-ML']))
             reference_total_qty = float(reference_3m.get('TOTAL', {}).get('reference_qty', 0.0))
             reference_total_revenue = float(reference_3m.get('TOTAL', {}).get('reference_revenue', 0.0))
             reference_total_profit = float(reference_3m.get('TOTAL', {}).get('reference_profit', 0.0))
+            reference_total_investment = float(reference_3m.get('TOTAL', {}).get('reference_investment', 0.0))
             baseline_volume_ml = float(
                 sum(
                     summary_3m.get(size, {}).get('baseline_qty', 0.0) * self._pack_size_ml(size)
@@ -2043,9 +3224,14 @@ class Step4CrossSizePlannerMixin:
                 'baseline_profit': total_baseline_profit,
                 'scenario_profit': total_scenario_profit,
                 'profit_delta_pct': ((total_scenario_profit - total_baseline_profit) / abs(total_baseline_profit) * 100.0) if abs(total_baseline_profit) > 1e-9 else 0.0,
+                'baseline_investment': total_baseline_investment,
+                'scenario_investment': total_scenario_investment,
+                'investment_change_positive': total_scenario_investment_positive,
+                'investment_delta_pct': ((total_scenario_investment - total_baseline_investment) / total_baseline_investment * 100.0) if total_baseline_investment > 0 else 0.0,
                 'reference_qty': reference_total_qty,
                 'reference_revenue': reference_total_revenue,
                 'reference_profit': reference_total_profit,
+                'reference_investment': reference_total_investment,
                 'vs_reference_volume_pct': (
                     ((total_final_qty - reference_total_qty) / reference_total_qty * 100.0)
                     if reference_total_qty > 0 else 0.0
@@ -2057,6 +3243,14 @@ class Step4CrossSizePlannerMixin:
                 'vs_reference_profit_pct': (
                     ((total_scenario_profit - reference_total_profit) / abs(reference_total_profit) * 100.0)
                     if abs(reference_total_profit) > 1e-9 else 0.0
+                ),
+                'vs_reference_investment_pct': (
+                    ((total_scenario_investment - reference_total_investment) / reference_total_investment * 100.0)
+                    if reference_total_investment > 0 else 0.0
+                ),
+                'investment_change_positive_vs_reference_pct': (
+                    ((total_scenario_investment_positive - reference_total_investment) / reference_total_investment * 100.0)
+                    if reference_total_investment > 0 else 0.0
                 ),
                 'reference_available': float(reference_3m.get('TOTAL', {}).get('reference_available', 0.0)),
                 'baseline_volume_ml': baseline_volume_ml,

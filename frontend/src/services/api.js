@@ -11,7 +11,7 @@ const API_BASE_URL = (import.meta.env.VITE_API_URL || '').trim() || resolveDefau
 
 const api = axios.create({
   baseURL: API_BASE_URL,
-  timeout: 30000,
+  timeout: 120000,
   headers: {
     'Content-Type': 'application/json',
   },
@@ -106,6 +106,28 @@ export const generateAIScenarios = async (payload) => {
   return response.data
 }
 
+export const startAIScenarioJob = async (payload) => {
+  const response = await api.post('/api/planner/scenario-ai-generate/jobs', payload, {
+    timeout: 120000,
+  })
+  return response.data
+}
+
+export const getAIScenarioJobStatus = async (jobId) => {
+  const response = await api.get(`/api/planner/scenario-ai-generate/jobs/${jobId}`, {
+    timeout: 120000,
+  })
+  return response.data
+}
+
+export const getAIScenarioJobResults = async (jobId, { offset = 0, limit = 200 } = {}) => {
+  const response = await api.get(`/api/planner/scenario-ai-generate/jobs/${jobId}/results`, {
+    params: { offset, limit },
+    timeout: 180000,
+  })
+  return response.data
+}
+
 export const getEDAOptions = async (payload) => {
   const response = await api.post('/api/eda/options', payload, {
     timeout: 120000,
@@ -121,17 +143,23 @@ export const getEDAOverview = async (payload) => {
 }
 
 export const createRun = async (runId = null) => {
-  const response = await api.post('/api/runs/create', runId ? { run_id: runId } : {})
+  const response = await api.post('/api/runs/create', runId ? { run_id: runId } : {}, {
+    timeout: 120000,
+  })
   return response.data
 }
 
 export const getRunState = async (runId) => {
-  const response = await api.get(`/api/runs/${runId}/state`)
+  const response = await api.get(`/api/runs/${runId}/state`, {
+    timeout: 120000,
+  })
   return response.data
 }
 
 export const saveRunState = async (runId, payload) => {
-  const response = await api.post(`/api/runs/${runId}/state`, payload)
+  const response = await api.post(`/api/runs/${runId}/state`, payload, {
+    timeout: 120000,
+  })
   return response.data
 }
 

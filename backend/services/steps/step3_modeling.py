@@ -38,11 +38,17 @@ from models.rfm_models import (
 )
 from services.core.shared_math import CustomConstrainedRidge
 
+DEFAULT_COGS_BY_SIZE = {
+    "12-ML": 8.0,
+    "18-ML": 10.0,
+}
+
 
 class Step3ModelingMixin:
 
     def _resolve_modeling_cogs_for_size(self, request: ModelingRequest, size_key: Optional[str], default_cogs: float) -> float:
         normalized_size = self._normalize_step2_size_key(size_key)
+        size_default_cogs = DEFAULT_COGS_BY_SIZE.get(normalized_size)
         mapping = getattr(request, 'cogs_per_size', None) or {}
         if isinstance(mapping, dict) and normalized_size:
             for raw_key, raw_value in mapping.items():
@@ -53,12 +59,23 @@ class Step3ModelingMixin:
                 except Exception:
                     parsed = np.nan
                 if np.isfinite(parsed):
+                    if parsed > 0:
+                        return float(parsed)
+                    if size_default_cogs is not None:
+                        return float(size_default_cogs)
                     return max(parsed, 0.0)
         if getattr(request, 'cogs_per_unit', None) is not None:
             try:
-                return max(float(request.cogs_per_unit), 0.0)
+                parsed = float(request.cogs_per_unit)
+                if parsed > 0:
+                    return float(parsed)
+                if size_default_cogs is not None:
+                    return float(size_default_cogs)
+                return max(parsed, 0.0)
             except Exception:
                 pass
+        if size_default_cogs is not None:
+            return float(size_default_cogs)
         return max(float(default_cogs), 0.0)
 
 

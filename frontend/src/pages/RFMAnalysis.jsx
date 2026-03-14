@@ -10,6 +10,9 @@ import {
   calculateModeling,
   calculateCrossSizePlanner,
   calculateBaselineForecast,
+  startAIScenarioJob,
+  getAIScenarioJobStatus,
+  getAIScenarioJobResults,
   getEDAOptions,
   getEDAOverview,
   getDiscountOptions,
@@ -294,12 +297,26 @@ const FIXED_STAGE3_SETTINGS = {
 }
 
 const DEFAULT_MODELING_COGS_BY_SIZE = {
-  '12-ML': 0,
-  '18-ML': 0,
+  '12-ML': 8,
+  '18-ML': 10,
+}
+
+const normalizeModelingCogsBySize = (raw = {}) => {
+  const out = { ...DEFAULT_MODELING_COGS_BY_SIZE }
+  const input = raw && typeof raw === 'object' ? raw : {}
+  Object.keys(out).forEach((sizeKey) => {
+    const parsed = Number(input[sizeKey])
+    if (Number.isFinite(parsed) && parsed > 0) out[sizeKey] = parsed
+  })
+  return out
 }
 
 const DEFAULT_STEP5_SCENARIO_BUILDER = {
   mode: 'fixed_historical_ladders_v2',
+}
+const DEFAULT_STEP5_AI_SETTINGS = {
+  scenario_count: 5,
+  prompt: '',
 }
 
 const STEP5_ANCHOR_SCENARIOS = [
@@ -532,7 +549,13 @@ const RFMAnalysis = () => {
   const [scenarioResult, setScenarioResult] = useState(null)
   const [scenarioErrorMessage, setScenarioErrorMessage] = useState('')
   const [step5Filters, setStep5Filters] = useState(DEFAULT_STEP5_FILTERS)
-  const [step5ScenarioBuilder] = useState(DEFAULT_STEP5_SCENARIO_BUILDER)
+  const [step5ScenarioBuilder, setStep5ScenarioBuilder] = useState(DEFAULT_STEP5_SCENARIO_BUILDER)
+  const [step5AISettings, setStep5AISettings] = useState(DEFAULT_STEP5_AI_SETTINGS)
+  const [step5AIJob, setStep5AIJob] = useState(null)
+  const [step5CurrentFilterContext, setStep5CurrentFilterContext] = useState({
+    discount_constraints: [],
+    metric_thresholds: {},
+  })
   const [step5CreateScenarioRequestId, setStep5CreateScenarioRequestId] = useState(0)
   const step5AutoScenarioInitRef = useRef(false)
   const [edaOptions, setEdaOptions] = useState({
@@ -745,29 +768,30 @@ const RFMAnalysis = () => {
         volume_pct: Number(summaryBlock?.vs_reference_volume_pct ?? 0),
         revenue_pct: Number(summaryBlock?.vs_reference_revenue_pct ?? 0),
         profit_pct: Number(summaryBlock?.vs_reference_profit_pct ?? 0),
+        scenario_investment: Number(summaryBlock?.scenario_investment ?? 0),
+        reference_investment: Number(summaryBlock?.reference_investment ?? 0),
+        investment_pct: Number(
+          summaryBlock?.vs_reference_investment_pct ??
+          summaryBlock?.investment_delta_pct ??
+          summaryBlock?.investment_change_positive_vs_reference_pct ??
+          0
+        ),
       })
 
       const historicalContext = buildStep5HistoricalDiscountContext(defaultResponse)
-      const scenarioInputs = step5ScenarioDefs.map((scenarioDef) => ({
-        key: scenarioDef.key,
-        id: scenarioDef.id,
-        name: scenarioDef.name,
-        scenarioByPeriod: buildStep5GeneratedScenarioMap(defaultResponse, scenarioDef, historicalContext),
-      }))
-
-      const scenarios = scenarioInputs.map((scenarioDef) => {
-        const scenarioByPeriod = scenarioDef.scenarioByPeriod
+      const buildScenarioRow = ({ key, id, name, scenarioByPeriod }) => {
         try {
           const response = computeCrossSizePlannerData({
             data: defaultResponse,
             periods,
             scenarioDiscountsByPeriod: scenarioByPeriod,
+            applyTerminalLagStart: true,
           })
           const summary = response?.summary_3m || {}
           return {
-            key: scenarioDef.key,
-            scenario: scenarioDef.name,
-            scenario_id: scenarioDef.id,
+            key,
+            scenario: name,
+            scenario_id: id,
             success: Boolean(response?.success),
             message: response?.message || '',
             scenario_discounts_by_period: scenarioByPeriod,
@@ -783,22 +807,49 @@ const RFMAnalysis = () => {
           }
         } catch (error) {
           return {
-            key: scenarioDef.key,
-            scenario: scenarioDef.name,
-            scenario_id: scenarioDef.id,
+            key,
+            scenario: name,
+            scenario_id: id,
             success: false,
             message: error?.message || 'Failed to compute scenario',
             scenario_discounts_by_period: scenarioByPeriod,
             summary: null,
           }
         }
-      })
+      }
+
+      let scenarioInputs = []
+      const mode = String(variables?.mode || 'fixed')
+
+      if (mode === 'fixed') {
+        scenarioInputs = step5ScenarioDefs.map((scenarioDef) => ({
+          key: scenarioDef.key,
+          id: scenarioDef.id,
+          name: scenarioDef.name,
+          scenarioByPeriod: buildStep5GeneratedScenarioMap(defaultResponse, scenarioDef, historicalContext),
+        }))
+      } else if (mode === 'custom') {
+        scenarioInputs = Array.isArray(variables?.scenarioInputs) ? variables.scenarioInputs : []
+        if (!scenarioInputs.length) {
+          throw new Error('No custom scenarios provided.')
+        }
+      } else {
+        throw new Error('Unsupported Step 5 scenario mode.')
+      }
+
+      const scenarios = scenarioInputs.map((scenarioDef) => buildScenarioRow({
+        key: scenarioDef.key,
+        id: scenarioDef.id,
+        name: scenarioDef.name,
+        scenarioByPeriod: scenarioDef.scenarioByPeriod,
+      }))
 
       const successCount = scenarios.filter((row) => row?.success).length
+      const successLabel = mode === 'custom' ? 'Updated' : 'Generated'
       return {
         success: successCount > 0,
-        message: `Generated ${scenarios.length} scenario(s); successful: ${successCount}.`,
-        generation_mode: 'fixed',
+        message: String(variables?.message || `${successLabel} ${scenarios.length} scenario(s); successful: ${successCount}.`),
+        generation_mode: mode,
         reference_mode: String(basePayload.reference_mode || defaultResponse?.reference_mode || 'last_3m_before_projection'),
         periods,
         planner_base: defaultResponse,
@@ -843,6 +894,122 @@ const RFMAnalysis = () => {
     },
     onError: (error) => {
       setScenarioErrorMessage(error?.message || 'Failed to run Step 5 scenario generation')
+    },
+  })
+
+  const aiScenarioJobMutation = useMutation({
+    mutationFn: async (variables = {}) => {
+      if (!modelingResult?.success) {
+        throw new Error('Run Step 3 modeling before AI scenario generation.')
+      }
+      const basePayload = buildPlannerPayload({
+        reference_mode: step4DisplayReferenceMode || 'last_3m_before_projection',
+      })
+      const aiPayload = {
+        ...basePayload,
+        scenario_count: Math.min(1000, Math.max(1, Number(variables?.scenario_count || step5AISettings.scenario_count || 5))),
+        prompt: String(variables?.prompt || step5AISettings.prompt || ''),
+        discount_constraints: Array.isArray(variables?.discount_constraints) ? variables.discount_constraints : [],
+        metric_thresholds: variables?.metric_thresholds && typeof variables.metric_thresholds === 'object'
+          ? variables.metric_thresholds
+          : {},
+      }
+      const createResp = await startAIScenarioJob(aiPayload)
+      if (!createResp?.success || !createResp?.job_id) {
+        throw new Error(createResp?.message || 'Failed to start AI scenario job.')
+      }
+      const jobId = String(createResp.job_id)
+      const totalTarget = Number(aiPayload.scenario_count || 0)
+      setStep5AIJob({
+        jobId,
+        status: String(createResp.status || 'queued'),
+        progressCurrent: 0,
+        progressTotal: totalTarget,
+        resultCount: 0,
+        errorDetail: '',
+      })
+
+      const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+      let statusResp = null
+      let pollRounds = 0
+      let consecutivePollFailures = 0
+      while (pollRounds < 3600) {
+        pollRounds += 1
+        await sleep(1500)
+        try {
+          statusResp = await getAIScenarioJobStatus(jobId)
+          consecutivePollFailures = 0
+        } catch (pollError) {
+          consecutivePollFailures += 1
+          const pollMsg = String(pollError?.message || '').toLowerCase()
+          const transient =
+            pollMsg.includes('timeout') ||
+            pollMsg.includes('network error') ||
+            pollMsg.includes('aborted') ||
+            pollMsg.includes('canceled') ||
+            pollMsg.includes('cancelled')
+          if (transient && consecutivePollFailures <= 5) {
+            continue
+          }
+          throw pollError
+        }
+        const status = String(statusResp?.status || 'queued')
+        setStep5AIJob({
+          jobId,
+          status,
+          progressCurrent: Number(statusResp?.progress_current || 0),
+          progressTotal: Number(statusResp?.progress_total || totalTarget),
+          resultCount: Number(statusResp?.result_count || 0),
+          errorDetail: String(statusResp?.error_detail || ''),
+        })
+        if (status === 'completed') break
+        if (status === 'failed' || status === 'cancelled') {
+          throw new Error(statusResp?.error_detail || statusResp?.message || 'AI scenario generation failed.')
+        }
+      }
+      if (!statusResp || String(statusResp?.status || '') !== 'completed') {
+        throw new Error('AI scenario generation timed out.')
+      }
+
+      const rows = []
+      const pageSize = 200
+      let offset = 0
+      const totalRows = Number(statusResp?.result_count || 0)
+      while (offset < totalRows) {
+        const page = await getAIScenarioJobResults(jobId, { offset, limit: pageSize })
+        const pageRows = Array.isArray(page?.scenarios) ? page.scenarios : []
+        rows.push(...pageRows)
+        offset += pageRows.length
+        if (pageRows.length === 0) break
+      }
+
+      const stamp = Date.now()
+      const scenarioInputs = rows.map((row, idx) => ({
+        key: `ai_${jobId}_${idx + 1}`,
+        id: `ai_${jobId}_${idx + 1}`,
+        name: String(row?.name || `AI Scenario ${idx + 1}`),
+        scenarioByPeriod: row?.scenario_discounts_by_period || {},
+      }))
+      return {
+        scenarioInputs,
+        message: `Generated ${scenarioInputs.length} AI scenario(s); successful: ${scenarioInputs.length}.`,
+        stamp,
+      }
+    },
+    onSuccess: (data) => {
+      scenarioMutation.mutate({
+        mode: 'custom',
+        scenarioInputs: Array.isArray(data?.scenarioInputs) ? data.scenarioInputs : [],
+        message: String(data?.message || 'Generated AI scenarios.'),
+      })
+    },
+    onError: (error) => {
+      setScenarioErrorMessage(error?.message || 'AI scenario generation failed')
+      setStep5AIJob((prev) => ({
+        ...(prev || {}),
+        status: 'failed',
+        errorDetail: error?.message || 'AI scenario generation failed',
+      }))
     },
   })
 
@@ -923,6 +1090,7 @@ const RFMAnalysis = () => {
         const restoredUi = state.ui_state || {}
         const restoredStep5Filters = restoredUi.step5_filters || {}
         const restoredStep5Builder = normalizeStep5ScenarioBuilder(restoredUi.step5_builder || {})
+        const restoredStep5AI = restoredUi.step5_ai_settings || {}
 
         setFilters((prev) => ({
           ...prev,
@@ -964,6 +1132,12 @@ const RFMAnalysis = () => {
           product_codes: restoredStep5Filters.product_codes || [],
         }))
         setStep5ScenarioBuilder(restoredStep5Builder)
+        setStep5AISettings((prev) => ({
+          ...prev,
+          ...restoredStep5AI,
+          scenario_count: Math.min(1000, Math.max(1, Number(restoredStep5AI?.scenario_count || prev.scenario_count || 5))),
+          prompt: String(restoredStep5AI?.prompt || prev.prompt || ''),
+        }))
         if (restored?.step1_result) {
           setRfmData(restored.step1_result)
         }
@@ -1027,10 +1201,14 @@ const RFMAnalysis = () => {
 
   useEffect(() => {
     if (!runId || !hydrationCompletedRef.current) return
+    if (aiScenarioJobMutation.isPending) return
 
     let isActive = true
     const timer = setTimeout(async () => {
       try {
+        const persistedStep5Builder = {
+          mode: String(step5ScenarioBuilder?.mode || DEFAULT_STEP5_SCENARIO_BUILDER.mode),
+        }
         await saveRunState(runId, {
           active_step: activeStepTab,
           filters,
@@ -1041,13 +1219,14 @@ const RFMAnalysis = () => {
           ui_state: {
             is_base_depth_config_expanded: isBaseDepthConfigExpanded,
             step5_filters: step5Filters,
-            step5_builder: step5ScenarioBuilder,
+            step5_builder: persistedStep5Builder,
+            step5_ai_settings: step5AISettings,
           },
         })
       } catch {
         if (!isActive) return
       }
-    }, 500)
+    }, 2000)
 
     return () => {
       isActive = false
@@ -1064,6 +1243,8 @@ const RFMAnalysis = () => {
     isBaseDepthConfigExpanded,
     step5Filters,
     step5ScenarioBuilder,
+    step5AISettings,
+    aiScenarioJobMutation.isPending,
   ])
 
   const handleCalculate = () => {
@@ -1164,7 +1345,7 @@ const RFMAnalysis = () => {
     const effectiveSettings = {
       include_lag_discount: settings.include_lag_discount ?? modelingSettings.include_lag_discount,
       cogs_per_unit: settings.cogs_per_unit ?? modelingSettings.cogs_per_unit,
-      cogs_per_size: settings.cogs_per_size ?? modelingSettings.cogs_per_size,
+      cogs_per_size: normalizeModelingCogsBySize(settings.cogs_per_size ?? modelingSettings.cogs_per_size),
       ...FIXED_STAGE3_SETTINGS,
     }
     setModelingSettings((prev) => ({
@@ -1172,9 +1353,8 @@ const RFMAnalysis = () => {
       include_lag_discount: Boolean(effectiveSettings.include_lag_discount),
       cogs_per_unit: Number(effectiveSettings.cogs_per_unit || 0),
       cogs_per_size: {
-        ...DEFAULT_MODELING_COGS_BY_SIZE,
-        ...(prev.cogs_per_size || {}),
-        ...(effectiveSettings.cogs_per_size || {}),
+        ...normalizeModelingCogsBySize(prev.cogs_per_size || {}),
+        ...normalizeModelingCogsBySize(effectiveSettings.cogs_per_size || {}),
       },
       ...FIXED_STAGE3_SETTINGS,
     }))
@@ -1193,10 +1373,7 @@ const RFMAnalysis = () => {
       constraint_tactical_non_negative: Boolean(FIXED_STAGE3_SETTINGS.constraint_tactical_non_negative),
       constraint_lag_non_positive: Boolean(FIXED_STAGE3_SETTINGS.constraint_lag_non_positive),
       cogs_per_unit: Number(effectiveSettings.cogs_per_unit || 0),
-      cogs_per_size: {
-        ...DEFAULT_MODELING_COGS_BY_SIZE,
-        ...(effectiveSettings.cogs_per_size || {}),
-      },
+      cogs_per_size: normalizeModelingCogsBySize(effectiveSettings.cogs_per_size || {}),
       ...step2Filters,
     }
     setPlannerResult(null)
@@ -1223,10 +1400,7 @@ const RFMAnalysis = () => {
       constraint_tactical_non_negative: Boolean(FIXED_STAGE3_SETTINGS.constraint_tactical_non_negative),
       constraint_lag_non_positive: Boolean(FIXED_STAGE3_SETTINGS.constraint_lag_non_positive),
       cogs_per_unit: Number(modelingSettings.cogs_per_unit || 0),
-      cogs_per_size: {
-        ...DEFAULT_MODELING_COGS_BY_SIZE,
-        ...(modelingSettings.cogs_per_size || {}),
-      },
+      cogs_per_size: normalizeModelingCogsBySize(modelingSettings.cogs_per_size || {}),
       forecast_months: 3,
       planner_mode: 'additive_only',
       reference_mode: 'last_3m_before_projection',
@@ -1569,6 +1743,146 @@ const RFMAnalysis = () => {
     setStep5CreateScenarioRequestId((prev) => prev + 1)
   }
 
+  const buildStep5PromptWithFilterContext = (basePromptRaw = '', filterContext = {}) => {
+    const basePrompt = String(basePromptRaw || '').trim()
+    const discountConstraints = Array.isArray(filterContext?.discount_constraints)
+      ? filterContext.discount_constraints
+      : []
+    const thresholds = filterContext?.metric_thresholds || {}
+
+    const constraintLines = []
+    discountConstraints.forEach((c) => {
+      const label = `${String(c?.period || '')} ${String(c?.size || '')} ${String(c?.slab || '')}`.trim()
+      const minTxt = Number.isFinite(Number(c?.min)) ? `>= ${Number(c.min)}` : ''
+      const maxTxt = Number.isFinite(Number(c?.max)) ? `<= ${Number(c.max)}` : ''
+      const cond = [minTxt, maxTxt].filter(Boolean).join(' and ')
+      if (label && cond) constraintLines.push(`- ${label}: ${cond}`)
+    })
+
+    const metricLines = []
+    const pushMetricMin = (name, val) => {
+      if (Number.isFinite(Number(val))) metricLines.push(`- ${name}: >= ${Number(val)}%`)
+    }
+    const pushMetricMax = (name, val) => {
+      if (Number.isFinite(Number(val))) metricLines.push(`- ${name}: <= ${Number(val)}%`)
+    }
+    pushMetricMin('12-ML volume change', thresholds?.min_12_volume_pct)
+    pushMetricMin('18-ML volume change', thresholds?.min_18_volume_pct)
+    pushMetricMin('TOTAL volume change', thresholds?.min_total_volume_pct)
+    pushMetricMin('TOTAL revenue change', thresholds?.min_revenue_pct)
+    pushMetricMin('TOTAL profit change', thresholds?.min_profit_pct)
+    pushMetricMin('TOTAL investment change', thresholds?.min_investment_pct)
+    pushMetricMax('TOTAL investment change', thresholds?.max_investment_pct)
+    pushMetricMax('TOTAL CTS (investment/revenue)', thresholds?.max_cts_pct)
+
+    const promptParts = [
+      basePrompt,
+      constraintLines.length > 0 ? `Hard slab-month discount constraints:\n${constraintLines.join('\n')}` : '',
+      metricLines.length > 0 ? `Hard output constraints:\n${metricLines.join('\n')}` : '',
+      (constraintLines.length > 0 || metricLines.length > 0)
+        ? 'Generate scenarios that satisfy all constraints. If needed, prioritize valid scenarios over aggressive exploration.'
+        : '',
+    ].filter((s) => String(s || '').trim() !== '')
+
+    return promptParts.join('\n\n')
+  }
+
+  const normalizeStep5FilterContextForAI = (filterContext = {}) => {
+    const rawConstraints = Array.isArray(filterContext?.discount_constraints)
+      ? filterContext.discount_constraints
+      : []
+    const discount_constraints = rawConstraints
+      .map((c) => ({
+        period: String(c?.period || '').trim(),
+        size: String(c?.size || '').trim(),
+        slab: String(c?.slab || '').trim(),
+        min: Number.isFinite(Number(c?.min)) ? Number(c.min) : null,
+        max: Number.isFinite(Number(c?.max)) ? Number(c.max) : null,
+      }))
+      .filter((c) => c.period && c.size && c.slab && (c.min !== null || c.max !== null))
+
+    const rawThresholds = filterContext?.metric_thresholds || {}
+    const metric_thresholds = {
+      min_12_volume_pct: Number.isFinite(Number(rawThresholds?.min_12_volume_pct)) ? Number(rawThresholds.min_12_volume_pct) : null,
+      min_18_volume_pct: Number.isFinite(Number(rawThresholds?.min_18_volume_pct)) ? Number(rawThresholds.min_18_volume_pct) : null,
+      min_total_volume_pct: Number.isFinite(Number(rawThresholds?.min_total_volume_pct)) ? Number(rawThresholds.min_total_volume_pct) : null,
+      min_revenue_pct: Number.isFinite(Number(rawThresholds?.min_revenue_pct)) ? Number(rawThresholds.min_revenue_pct) : null,
+      min_profit_pct: Number.isFinite(Number(rawThresholds?.min_profit_pct)) ? Number(rawThresholds.min_profit_pct) : null,
+      min_investment_pct: Number.isFinite(Number(rawThresholds?.min_investment_pct)) ? Number(rawThresholds.min_investment_pct) : null,
+      max_investment_pct: Number.isFinite(Number(rawThresholds?.max_investment_pct)) ? Number(rawThresholds.max_investment_pct) : null,
+      max_cts_pct: Number.isFinite(Number(rawThresholds?.max_cts_pct)) ? Number(rawThresholds.max_cts_pct) : null,
+    }
+    return { discount_constraints, metric_thresholds }
+  }
+
+  const handleGenerateAIScenarios = () => {
+    if (!modelingResult?.success) {
+      setScenarioErrorMessage('Run Step 3 modeling before AI scenario generation.')
+      return
+    }
+    const promptWithConstraints = buildStep5PromptWithFilterContext(
+      step5AISettings.prompt,
+      step5CurrentFilterContext
+    )
+    const structuredFilters = normalizeStep5FilterContextForAI(step5CurrentFilterContext)
+    setScenarioErrorMessage('')
+    aiScenarioJobMutation.mutate({
+      scenario_count: Math.min(1000, Math.max(1, Number(step5AISettings.scenario_count || 5))),
+      prompt: promptWithConstraints,
+      discount_constraints: structuredFilters.discount_constraints,
+      metric_thresholds: structuredFilters.metric_thresholds,
+    })
+  }
+
+  const handleGenerateAIScenariosForCurrentFilters = (filterContext = {}) => {
+    if (!modelingResult?.success) {
+      setScenarioErrorMessage('Run Step 3 modeling before AI scenario generation.')
+      return
+    }
+    const promptWithConstraints = buildStep5PromptWithFilterContext(step5AISettings.prompt, filterContext)
+    const structuredFilters = normalizeStep5FilterContextForAI(filterContext)
+
+    setScenarioErrorMessage('')
+    aiScenarioJobMutation.mutate({
+      scenario_count: Math.min(1000, Math.max(1, Number(step5AISettings.scenario_count || 5))),
+      prompt: promptWithConstraints,
+      discount_constraints: structuredFilters.discount_constraints,
+      metric_thresholds: structuredFilters.metric_thresholds,
+    })
+  }
+
+  const isAIScenarioRow = (row = {}) => {
+    const key = String(row?.key || '').toLowerCase()
+    const id = String(row?.id || row?.scenario_id || '').toLowerCase()
+    const name = String(row?.name || row?.scenario || '').toLowerCase()
+    return key.startsWith('ai_') || id.startsWith('ai_') || name.startsWith('ai ')
+  }
+
+  const handleDeleteAIScenarios = () => {
+    setScenarioResult((prev) => {
+      const currentRows = Array.isArray(prev?.scenarios) ? prev.scenarios : []
+      const keptRows = currentRows.filter((row) => !isAIScenarioRow(row))
+      if (keptRows.length === currentRows.length) return prev
+      return {
+        ...(prev || {}),
+        success: true,
+        scenarios: keptRows,
+        message: `Removed ${currentRows.length - keptRows.length} AI scenario(s).`,
+      }
+    })
+    setScenarioErrorMessage('')
+  }
+
+  const aiScenarioCount = useMemo(() => {
+    const rows = Array.isArray(scenarioResult?.scenarios) ? scenarioResult.scenarios : []
+    return rows.reduce((acc, row) => (isAIScenarioRow(row) ? acc + 1 : acc), 0)
+  }, [scenarioResult?.scenarios])
+
+  const step5AIStatus = String(step5AIJob?.status || '').toLowerCase()
+  const isStep5AIJobRunning = step5AIStatus === 'queued' || step5AIStatus === 'running'
+  const isStep5AIApplyingResults = step5AIStatus === 'completed' && scenarioMutation.isPending
+  const isStep5AIBusy = Boolean(aiScenarioJobMutation.isPending || isStep5AIJobRunning || isStep5AIApplyingResults)
+
   const handleRunBaselineForecast = () => {
     if (!modelingResult?.success) {
       setForecastErrorMessage('Run Step 3 modeling before baseline forecast.')
@@ -1588,10 +1902,7 @@ const RFMAnalysis = () => {
       constraint_tactical_non_negative: Boolean(FIXED_STAGE3_SETTINGS.constraint_tactical_non_negative),
       constraint_lag_non_positive: Boolean(FIXED_STAGE3_SETTINGS.constraint_lag_non_positive),
       cogs_per_unit: Number(modelingSettings.cogs_per_unit || 0),
-      cogs_per_size: {
-        ...DEFAULT_MODELING_COGS_BY_SIZE,
-        ...(modelingSettings.cogs_per_size || {}),
-      },
+      cogs_per_size: normalizeModelingCogsBySize(modelingSettings.cogs_per_size || {}),
       forecast_months: 3,
       ...step2Filters,
     })
@@ -1990,12 +2301,11 @@ const RFMAnalysis = () => {
                 type="number"
                 min="0"
                 step="0.5"
-                value={modelingSettings.cogs_per_size?.['12-ML'] ?? 0}
+                value={modelingSettings.cogs_per_size?.['12-ML'] ?? DEFAULT_MODELING_COGS_BY_SIZE['12-ML']}
                 onChange={(e) => setModelingSettings((prev) => ({
                   ...prev,
                   cogs_per_size: {
-                    ...DEFAULT_MODELING_COGS_BY_SIZE,
-                    ...(prev.cogs_per_size || {}),
+                    ...normalizeModelingCogsBySize(prev.cogs_per_size || {}),
                     '12-ML': parseFloat(e.target.value || '0'),
                   },
                 }))}
@@ -2008,12 +2318,11 @@ const RFMAnalysis = () => {
                 type="number"
                 min="0"
                 step="0.5"
-                value={modelingSettings.cogs_per_size?.['18-ML'] ?? 0}
+                value={modelingSettings.cogs_per_size?.['18-ML'] ?? DEFAULT_MODELING_COGS_BY_SIZE['18-ML']}
                 onChange={(e) => setModelingSettings((prev) => ({
                   ...prev,
                   cogs_per_size: {
-                    ...DEFAULT_MODELING_COGS_BY_SIZE,
-                    ...(prev.cogs_per_size || {}),
+                    ...normalizeModelingCogsBySize(prev.cogs_per_size || {}),
                     '18-ML': parseFloat(e.target.value || '0'),
                   },
                 }))}
@@ -2069,6 +2378,70 @@ const RFMAnalysis = () => {
           >
             Create Scenario
           </button>
+          <div className="rounded-lg border border-slate-200 bg-white p-3 space-y-2">
+            <div className="text-xs font-semibold text-body">AI Scenario Generator (Append)</div>
+            <div>
+              <label className="block text-[11px] font-medium text-gray-700 mb-1">Scenario Count (1-1000)</label>
+              <input
+                type="number"
+                min="1"
+                max="1000"
+                step="1"
+                value={step5AISettings.scenario_count}
+                onChange={(e) => setStep5AISettings((prev) => ({
+                  ...prev,
+                  scenario_count: Math.min(1000, Math.max(1, Number(e.target.value || 1))),
+                }))}
+                className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg"
+              />
+            </div>
+            <div>
+              <label className="block text-[11px] font-medium text-gray-700 mb-1">Prompt</label>
+              <textarea
+                rows={3}
+                value={step5AISettings.prompt}
+                onChange={(e) => setStep5AISettings((prev) => ({ ...prev, prompt: String(e.target.value || '') }))}
+                className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg"
+                placeholder="Example: Protect margin but keep 12-ML growth positive; avoid aggressive slab jumps."
+              />
+            </div>
+            <button
+              type="button"
+              onClick={handleGenerateAIScenarios}
+              disabled={!modelingResult?.success || isStep5AIBusy}
+              className="w-full px-4 py-2 rounded-md bg-primary text-white text-sm font-semibold disabled:opacity-50"
+            >
+              {isStep5AIBusy ? 'Generating...' : 'Generate AI Scenarios (Add)'}
+            </button>
+            <button
+              type="button"
+              onClick={handleDeleteAIScenarios}
+              disabled={aiScenarioCount <= 0 || isStep5AIBusy}
+              className="w-full px-4 py-2 rounded-md bg-white border border-slate-300 text-body text-sm font-semibold disabled:opacity-50"
+            >
+              Delete AI Scenarios{aiScenarioCount > 0 ? ` (${aiScenarioCount})` : ''}
+            </button>
+            {step5AIJob?.jobId && (
+              <div className="rounded border border-slate-200 bg-slate-50 px-2 py-2 text-[11px] text-muted space-y-1">
+                <div className="flex items-center justify-between">
+                  <span>Status</span>
+                  <span className="font-semibold text-body">{String(step5AIJob.status || '').toUpperCase()}</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span>Progress</span>
+                  <span className="font-semibold text-body">
+                    {Number(step5AIJob.progressCurrent || 0)} / {Number(step5AIJob.progressTotal || 0)}
+                  </span>
+                </div>
+                {step5AIJob?.errorDetail ? (
+                  <div className="text-danger">{String(step5AIJob.errorDetail)}</div>
+                ) : null}
+              </div>
+            )}
+            <p className="text-[11px] text-muted">
+              AI scenarios are appended to the default scenario set.
+            </p>
+          </div>
         </div>
       </div>
     )
@@ -2366,6 +2739,9 @@ const RFMAnalysis = () => {
               isError={scenarioMutation.isError || Boolean(scenarioErrorMessage)}
               errorMessage={scenarioErrorMessage || scenarioMutation.error?.message}
               createScenarioRequestId={step5CreateScenarioRequestId}
+              onGenerateForCurrentFilters={handleGenerateAIScenariosForCurrentFilters}
+              isAIGenerating={isStep5AIBusy}
+              onFilterContextChange={setStep5CurrentFilterContext}
               onScenariosChange={(nextRows) => {
                 setScenarioResult((prev) => ({
                   ...(prev || {}),

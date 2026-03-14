@@ -420,19 +420,50 @@ class CrossSizePlannerResponse(BaseModel):
 
 
 class AIScenarioGenerateRequest(CrossSizePlannerRequest):
-    scenario_count: int = Field(default=5, ge=1, le=20)
+    scenario_count: int = Field(default=5, ge=1, le=1000)
     goal: str = Field(default="maximize_revenue")
     prompt: str = Field(default="")
+    discount_constraints: List[Dict[str, Any]] = []
+    metric_thresholds: Dict[str, Optional[float]] = {}
 
 
 class AIScenarioRow(BaseModel):
     name: str
-    scenario_discounts_by_period: Dict[str, Dict[str, Dict[str, float]]] = {}
+    scenario_discounts_by_period: Dict[str, Dict[str, Dict[str, int]]] = {}
 
 
 class AIScenarioGenerateResponse(BaseModel):
     success: bool
     message: str
+    scenarios: List[AIScenarioRow] = []
+
+
+class AIScenarioJobCreateResponse(BaseModel):
+    success: bool
+    message: str
+    job_id: str
+    status: str
+
+
+class AIScenarioJobStatusResponse(BaseModel):
+    success: bool
+    message: str
+    job_id: str
+    status: str
+    progress_current: int = 0
+    progress_total: int = 0
+    result_count: int = 0
+    error_detail: Optional[str] = None
+
+
+class AIScenarioJobResultsResponse(BaseModel):
+    success: bool
+    message: str
+    job_id: str
+    status: str
+    offset: int = 0
+    limit: int = 200
+    total_results: int = 0
     scenarios: List[AIScenarioRow] = []
 
 

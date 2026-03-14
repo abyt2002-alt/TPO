@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import { AlertCircle, Download, Loader2, Save, X } from 'lucide-react'
 import {
   ResponsiveContainer,
@@ -129,8 +129,19 @@ const parseThreshold = (value) => {
   return Number.isFinite(n) ? n : -9999
 }
 
-const sortScenarioRowsByRevenue = (rows = []) =>
+const totalMetricValue = (row, metric = 'revenue_pct') => {
+  const total = readSummary(row, 'TOTAL')
+  if (metric === 'volume_pct') return Number(total?.volume_ml_pct || total?.volume_pct || 0)
+  if (metric === 'profit_pct') return Number(total?.profit_pct || 0)
+  return Number(total?.revenue_pct || 0)
+}
+
+const sortScenarioRows = (rows = [], metric = 'revenue_pct') =>
   [...rows].sort((a, b) => {
+    const am = totalMetricValue(a, metric)
+    const bm = totalMetricValue(b, metric)
+    if (bm !== am) return bm - am
+
     const ar = Number(readSummary(a, 'TOTAL')?.revenue_pct || 0)
     const br = Number(readSummary(b, 'TOTAL')?.revenue_pct || 0)
     if (br !== ar) return br - ar
@@ -170,15 +181,54 @@ const resolveScenarioShortName = (row, fallbackIndex = 0) => {
 
 const readSummary = (row, sizeKey) => {
   const block = row?.summary?.[sizeKey] || {}
+  const toNum = (v, fallback = 0) => {
+    const n = Number(v)
+    return Number.isFinite(n) ? n : fallback
+  }
+  const invPctDirect = Number(
+    block?.vs_reference_investment_pct ??
+    block?.investment_pct ??
+    block?.investment_delta_pct ??
+    block?.investment_change_positive_vs_reference_pct
+  )
+  const invScenarioAbs = Number(
+    block?.scenario_investment ??
+    block?.investment_change_positive ??
+    block?.investment
+  )
+  const invRefAbs = Number(
+    block?.reference_investment ??
+    block?.ref_investment
+  )
+  const invPctDerived = (
+    Number.isFinite(invScenarioAbs) &&
+    Number.isFinite(invRefAbs) &&
+    invRefAbs > 0
+  ) ? ((invScenarioAbs - invRefAbs) / invRefAbs) * 100 : Number.NaN
+  const invPctFinal = Number.isFinite(invPctDirect)
+    ? invPctDirect
+    : (Number.isFinite(invPctDerived) ? invPctDerived : Number.NaN)
+  const revenueAbs = Number(
+    block?.scenario_revenue ??
+    block?.revenue ??
+    block?.scenarioRevenue
+  )
+  const ctsPct = (
+    Number.isFinite(invScenarioAbs) &&
+    Number.isFinite(revenueAbs) &&
+    revenueAbs > 0
+  ) ? ((invScenarioAbs / revenueAbs) * 100) : Number.NaN
   return {
-    volume: Number(block?.volume || 0),
-    revenue: Number(block?.revenue || 0),
-    profit: Number(block?.profit || 0),
-    volume_pct: Number(block?.volume_pct || 0),
-    revenue_pct: Number(block?.revenue_pct || 0),
-    profit_pct: Number(block?.profit_pct || 0),
-    volume_ml: Number(block?.volume_ml || 0),
-    volume_ml_pct: Number(block?.volume_ml_pct || 0),
+    volume: toNum(block?.volume || 0),
+    revenue: toNum(block?.revenue || 0),
+    profit: toNum(block?.profit || 0),
+    volume_pct: toNum(block?.volume_pct || 0),
+    revenue_pct: toNum(block?.revenue_pct || 0),
+    profit_pct: toNum(block?.profit_pct || 0),
+    volume_ml: toNum(block?.volume_ml || 0),
+    volume_ml_pct: toNum(block?.volume_ml_pct || 0),
+    investment_pct: invPctFinal,
+    cts_pct: ctsPct,
   }
 }
 
@@ -190,11 +240,21 @@ const ScenarioComparison = ({
   errorMessage,
   createScenarioRequestId = 0,
   onScenariosChange = null,
+  onGenerateForCurrentFilters = null,
+  isAIGenerating = false,
+  onFilterContextChange = null,
 }) => {
   const VISIBLE_SCENARIOS = 5
   const [minVolumePct, setMinVolumePct] = useState('')
+  const [min12VolumePct, setMin12VolumePct] = useState('')
+  const [min18VolumePct, setMin18VolumePct] = useState('')
   const [minRevenuePct, setMinRevenuePct] = useState('')
   const [minProfitPct, setMinProfitPct] = useState('')
+  const [maxInvestmentPct, setMaxInvestmentPct] = useState('')
+  const [maxCtsPct, setMaxCtsPct] = useState('')
+  const [minDiscountFilterByField, setMinDiscountFilterByField] = useState({})
+  const [maxDiscountFilterByField, setMaxDiscountFilterByField] = useState({})
+  const [sortMetric, setSortMetric] = useState('revenue_pct')
   const [slidePage, setSlidePage] = useState(0)
   const [modalScenario, setModalScenario] = useState(null)
   const [modalDraft, setModalDraft] = useState(null)
@@ -211,25 +271,217 @@ const ScenarioComparison = ({
   const successfulRows = useMemo(() => scenarios.filter((row) => row?.success), [scenarios])
   const failedRows = useMemo(() => scenarios.filter((row) => !row?.success), [scenarios])
 
+  const filterPeriodKeys = useMemo(() => {
+    const direct = Array.isArray(data?.periods) ? data.periods.map((p) => String(p)) : []
+    if (direct.length > 0) return direct
+    const fromPlanner = Array.isArray(plannerBase?.periods) ? plannerBase.periods.map((p) => String(p)) : []
+    if (fromPlanner.length > 0) return fromPlanner
+    return ['M1', 'M2', 'M3']
+  }, [data?.periods, plannerBase?.periods])
+
+  const slabOrderBySizeForFilters = useMemo(() => {
+    const out = {
+      '12-ML': sortSlabEntries(plannerBase?.defaults_matrix?.['12-ML'] || {}).map(([k]) => k),
+      '18-ML': sortSlabEntries(plannerBase?.defaults_matrix?.['18-ML'] || {}).map(([k]) => k),
+    }
+    if (out['12-ML'].length > 0 && out['18-ML'].length > 0) return out
+
+    successfulRows.forEach((row) => {
+      const byPeriod = normalizeScenarioDiscountsByPeriod(row, filterPeriodKeys)
+      filterPeriodKeys.forEach((periodKey) => {
+        const bySize = byPeriod?.[periodKey] || {}
+        ;['12-ML', '18-ML'].forEach((sizeKey) => {
+          sortSlabEntries(bySize?.[sizeKey] || {}).forEach(([slabKey]) => {
+            if (!out[sizeKey].includes(slabKey)) out[sizeKey].push(slabKey)
+          })
+        })
+      })
+    })
+
+    out['12-ML'] = sortSlabEntries(Object.fromEntries(out['12-ML'].map((k) => [k, 1]))).map(([k]) => k)
+    out['18-ML'] = sortSlabEntries(Object.fromEntries(out['18-ML'].map((k) => [k, 1]))).map(([k]) => k)
+    return out
+  }, [plannerBase?.defaults_matrix, successfulRows, filterPeriodKeys])
+
+  const updateMinDiscountField = (periodKey, sizeKey, slabKey, raw) => {
+    const key = fieldKey(periodKey, sizeKey, slabKey)
+    setMinDiscountFilterByField((prev) => ({
+      ...prev,
+      [key]: raw,
+    }))
+  }
+
+  const updateMaxDiscountField = (periodKey, sizeKey, slabKey, raw) => {
+    const key = fieldKey(periodKey, sizeKey, slabKey)
+    setMaxDiscountFilterByField((prev) => ({
+      ...prev,
+      [key]: raw,
+    }))
+  }
+
+  const clearInputFilters = () => {
+    setMinDiscountFilterByField({})
+    setMaxDiscountFilterByField({})
+  }
+
   const filteredRows = useMemo(() => {
     const minVol = parseThreshold(minVolumePct || -9999)
+    const min12Vol = parseThreshold(min12VolumePct || -9999)
+    const min18Vol = parseThreshold(min18VolumePct || -9999)
     const minRev = parseThreshold(minRevenuePct || -9999)
     const minProf = parseThreshold(minProfitPct || -9999)
+    const maxInv = parseThreshold(maxInvestmentPct || 9999)
+    const maxCts = parseThreshold(maxCtsPct || 9999)
+    const hasMaxInvFilter = String(maxInvestmentPct).trim() !== ''
+    const hasMaxCtsFilter = String(maxCtsPct).trim() !== ''
 
     return successfulRows.filter((row) => {
       const total = readSummary(row, 'TOTAL')
+      const s12 = readSummary(row, '12-ML')
+      const s18 = readSummary(row, '18-ML')
+      const byPeriod = normalizeScenarioDiscountsByPeriod(row, filterPeriodKeys)
+      const violatesInputMin = Object.entries(minDiscountFilterByField || {}).some(([k, rawMin]) => {
+        const txt = String(rawMin ?? '').trim()
+        if (!txt) return false
+        const minAllowed = Number(txt)
+        if (!Number.isFinite(minAllowed)) return false
+        const [periodKey, sizeKey, slabKey] = String(k).split('|')
+        const actual = Number(byPeriod?.[periodKey]?.[sizeKey]?.[slabKey])
+        if (!Number.isFinite(actual)) return true
+        return actual < minAllowed
+      })
+      if (violatesInputMin) return false
+      const violatesInputMax = Object.entries(maxDiscountFilterByField || {}).some(([k, rawMax]) => {
+        const txt = String(rawMax ?? '').trim()
+        if (!txt) return false
+        const maxAllowed = Number(txt)
+        if (!Number.isFinite(maxAllowed)) return false
+        const [periodKey, sizeKey, slabKey] = String(k).split('|')
+        const actual = Number(byPeriod?.[periodKey]?.[sizeKey]?.[slabKey])
+        if (!Number.isFinite(actual)) return true
+        return actual > maxAllowed
+      })
+      if (violatesInputMax) return false
+      const invPct = Number(total.investment_pct)
+      if (hasMaxInvFilter && !Number.isFinite(invPct)) return false
+      const ctsPct = Number(total.cts_pct)
+      if (hasMaxCtsFilter && !Number.isFinite(ctsPct)) return false
       return (
+        Number(s12.volume_pct) >= min12Vol &&
+        Number(s18.volume_pct) >= min18Vol &&
         Number(total.volume_ml_pct || total.volume_pct) >= minVol &&
         Number(total.revenue_pct) >= minRev &&
-        Number(total.profit_pct) >= minProf
+        Number(total.profit_pct) >= minProf &&
+        (!hasMaxInvFilter || invPct <= maxInv) &&
+        (!hasMaxCtsFilter || ctsPct <= maxCts)
       )
     })
-  }, [successfulRows, minVolumePct, minRevenuePct, minProfitPct])
+  }, [
+    successfulRows,
+    minVolumePct,
+    min12VolumePct,
+    min18VolumePct,
+    minRevenuePct,
+    minProfitPct,
+    maxInvestmentPct,
+    maxCtsPct,
+    minDiscountFilterByField,
+    maxDiscountFilterByField,
+    filterPeriodKeys,
+  ])
 
-  const sortedFilteredRows = useMemo(
-    () => sortScenarioRowsByRevenue(filteredRows),
-    [filteredRows]
-  )
+  const sortedFilteredRows = useMemo(() => sortScenarioRows(filteredRows, sortMetric), [filteredRows, sortMetric])
+
+  const activeDiscountConstraints = useMemo(() => {
+    const constraints = []
+    ;['12-ML', '18-ML'].forEach((sizeKey) => {
+      ;(slabOrderBySizeForFilters[sizeKey] || []).forEach((slabKey) => {
+        filterPeriodKeys.forEach((periodKey) => {
+          const minRaw = String(minDiscountFilterByField[fieldKey(periodKey, sizeKey, slabKey)] ?? '').trim()
+          const maxRaw = String(maxDiscountFilterByField[fieldKey(periodKey, sizeKey, slabKey)] ?? '').trim()
+          const minVal = Number(minRaw)
+          const maxVal = Number(maxRaw)
+          const hasMin = minRaw !== '' && Number.isFinite(minVal)
+          const hasMax = maxRaw !== '' && Number.isFinite(maxVal)
+          if (!hasMin && !hasMax) return
+          constraints.push({
+            period: periodKey,
+            size: sizeKey,
+            slab: slabKey,
+            min: hasMin ? minVal : null,
+            max: hasMax ? maxVal : null,
+          })
+        })
+      })
+    })
+    return constraints
+  }, [filterPeriodKeys, slabOrderBySizeForFilters, minDiscountFilterByField, maxDiscountFilterByField])
+
+  const hasAnyFilterConstraint = useMemo(() => {
+    return (
+      activeDiscountConstraints.length > 0 ||
+      String(min12VolumePct).trim() !== '' ||
+      String(min18VolumePct).trim() !== '' ||
+      String(minVolumePct).trim() !== '' ||
+      String(minRevenuePct).trim() !== '' ||
+      String(minProfitPct).trim() !== '' ||
+      String(maxInvestmentPct).trim() !== '' ||
+      String(maxCtsPct).trim() !== ''
+    )
+  }, [
+    activeDiscountConstraints,
+    min12VolumePct,
+    min18VolumePct,
+    minVolumePct,
+    minRevenuePct,
+    minProfitPct,
+    maxInvestmentPct,
+    maxCtsPct,
+  ])
+
+  const handleGenerateForCurrentFilters = () => {
+    if (typeof onGenerateForCurrentFilters !== 'function') return
+    onGenerateForCurrentFilters({
+      discount_constraints: activeDiscountConstraints,
+      metric_thresholds: {
+        min_12_volume_pct: String(min12VolumePct).trim() === '' ? null : Number(min12VolumePct),
+        min_18_volume_pct: String(min18VolumePct).trim() === '' ? null : Number(min18VolumePct),
+        min_total_volume_pct: String(minVolumePct).trim() === '' ? null : Number(minVolumePct),
+        min_revenue_pct: String(minRevenuePct).trim() === '' ? null : Number(minRevenuePct),
+        min_profit_pct: String(minProfitPct).trim() === '' ? null : Number(minProfitPct),
+        min_investment_pct: null,
+        max_investment_pct: String(maxInvestmentPct).trim() === '' ? null : Number(maxInvestmentPct),
+        max_cts_pct: String(maxCtsPct).trim() === '' ? null : Number(maxCtsPct),
+      },
+    })
+  }
+
+  useEffect(() => {
+    if (typeof onFilterContextChange !== 'function') return
+    onFilterContextChange({
+      discount_constraints: activeDiscountConstraints,
+      metric_thresholds: {
+        min_12_volume_pct: String(min12VolumePct).trim() === '' ? null : Number(min12VolumePct),
+        min_18_volume_pct: String(min18VolumePct).trim() === '' ? null : Number(min18VolumePct),
+        min_total_volume_pct: String(minVolumePct).trim() === '' ? null : Number(minVolumePct),
+        min_revenue_pct: String(minRevenuePct).trim() === '' ? null : Number(minRevenuePct),
+        min_profit_pct: String(minProfitPct).trim() === '' ? null : Number(minProfitPct),
+        min_investment_pct: null,
+        max_investment_pct: String(maxInvestmentPct).trim() === '' ? null : Number(maxInvestmentPct),
+        max_cts_pct: String(maxCtsPct).trim() === '' ? null : Number(maxCtsPct),
+      },
+    })
+  }, [
+    onFilterContextChange,
+    activeDiscountConstraints,
+    min12VolumePct,
+    min18VolumePct,
+    minVolumePct,
+    minRevenuePct,
+    minProfitPct,
+    maxInvestmentPct,
+    maxCtsPct,
+  ])
 
   const chartData = useMemo(
     () =>
@@ -258,6 +510,12 @@ const ScenarioComparison = ({
     })
     return map
   }, [sortedFilteredRows])
+
+  const rankLabel = useMemo(() => {
+    if (sortMetric === 'volume_pct') return 'Volume Rank'
+    if (sortMetric === 'profit_pct') return 'Profit Rank'
+    return 'Revenue Rank'
+  }, [sortMetric])
 
   const handleDownloadFilteredCsv = () => {
     if (!sortedFilteredRows.length) return
@@ -414,7 +672,17 @@ const ScenarioComparison = ({
 
   useEffect(() => {
     setSlidePage(0)
-  }, [minVolumePct, minRevenuePct, minProfitPct])
+  }, [
+    minVolumePct,
+    min12VolumePct,
+    min18VolumePct,
+    minRevenuePct,
+    minProfitPct,
+    maxInvestmentPct,
+    minDiscountFilterByField,
+    maxDiscountFilterByField,
+    sortMetric,
+  ])
 
   useEffect(() => {
     setSlidePage((prev) => Math.min(prev, maxPage))
@@ -439,18 +707,27 @@ const ScenarioComparison = ({
       data: baseForRecompute,
       periods,
       scenarioDiscountsByPeriod: scenarioByPeriod,
+      applyTerminalLagStart: true,
     })
     if (!computed?.success) {
       return { success: false, message: computed?.message || 'Scenario recomputation failed.' }
     }
     const summary = computed?.summary_3m || {}
     const readMetric = (summaryBlock = {}) => ({
-      volume: Number(summaryBlock?.final_qty ?? summaryBlock?.scenario_qty_additive ?? 0),
-      revenue: Number(summaryBlock?.scenario_revenue ?? 0),
-      profit: Number(summaryBlock?.scenario_profit ?? 0),
-      volume_pct: Number(summaryBlock?.vs_reference_volume_pct ?? 0),
-      revenue_pct: Number(summaryBlock?.vs_reference_revenue_pct ?? 0),
-      profit_pct: Number(summaryBlock?.vs_reference_profit_pct ?? 0),
+      volume: Number(summaryBlock?.final_qty ?? summaryBlock?.scenario_qty_additive ?? 0) || 0,
+      revenue: Number(summaryBlock?.scenario_revenue ?? 0) || 0,
+      profit: Number(summaryBlock?.scenario_profit ?? 0) || 0,
+      volume_pct: Number(summaryBlock?.vs_reference_volume_pct ?? 0) || 0,
+      revenue_pct: Number(summaryBlock?.vs_reference_revenue_pct ?? 0) || 0,
+      profit_pct: Number(summaryBlock?.vs_reference_profit_pct ?? 0) || 0,
+      scenario_investment: Number(summaryBlock?.scenario_investment ?? 0) || 0,
+      reference_investment: Number(summaryBlock?.reference_investment ?? 0) || 0,
+      investment_pct: Number(
+        summaryBlock?.vs_reference_investment_pct ??
+        summaryBlock?.investment_delta_pct ??
+        summaryBlock?.investment_change_positive_vs_reference_pct ??
+        0
+      ) || 0,
     })
     return {
       success: true,
@@ -658,11 +935,83 @@ const ScenarioComparison = ({
 
   return (
     <div className="space-y-6">
-      <div className="bg-white rounded-lg shadow-md p-6">
-        <h3 className="text-xl font-bold text-body">Step 5: Scenario Comparison</h3>
-        <p className="text-sm text-muted mt-1">Fixed scenario set (historical ladders) computed using Step 4 planner logic.</p>
+      <div className="bg-white rounded-lg shadow-md p-4">
+        <div className="flex items-center justify-between gap-3 mb-2">
+          <h3 className="text-base font-bold text-body">Input Filters (Discount %)</h3>
+          <button
+            type="button"
+            onClick={clearInputFilters}
+            className="px-2.5 py-1 rounded-md border border-slate-300 bg-white text-xs font-medium text-body"
+          >
+            Clear
+          </button>
+        </div>
+        <p className="text-[11px] text-muted mb-3">Set slab-month min/max. Example: Jan 12-ML slab2 max = 18.</p>
+        <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
+          {['12-ML', '18-ML'].map((sizeKey) => (
+            <div key={`compact-filter-${sizeKey}`} className="rounded-md border border-slate-200 p-2.5">
+              <div className="text-[11px] font-semibold uppercase tracking-wide text-muted mb-2">{sizeKey}</div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="text-muted">
+                      <th className="text-left font-medium pr-2 py-1" rowSpan={2}>Slab</th>
+                      {filterPeriodKeys.map((periodKey) => (
+                        <th key={`${sizeKey}-${periodKey}-head`} className="text-center font-medium px-1 py-1 border-l border-slate-200" colSpan={2}>
+                          {formatPeriodLabel(periodKey)}
+                        </th>
+                      ))}
+                    </tr>
+                    <tr className="text-muted">
+                      {filterPeriodKeys.map((periodKey) => (
+                        <Fragment key={`${sizeKey}-${periodKey}-labels`}>
+                          <th className="text-center font-medium px-1 py-1 border-l border-slate-200">Min</th>
+                          <th className="text-center font-medium px-1 py-1">Max</th>
+                        </Fragment>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(slabOrderBySizeForFilters[sizeKey] || []).map((slabKey) => (
+                      <tr key={`${sizeKey}-${slabKey}`} className="border-t border-slate-100">
+                        <td className="py-1.5 pr-2 font-medium text-body">{slabKey}</td>
+                        {filterPeriodKeys.map((periodKey) => (
+                          <Fragment key={`${sizeKey}-${slabKey}-${periodKey}`}>
+                            <td className="px-1 py-1 border-l border-slate-100">
+                              <input
+                                type="number"
+                                min={5}
+                                max={30}
+                                step="0.1"
+                                value={minDiscountFilterByField[fieldKey(periodKey, sizeKey, slabKey)] ?? ''}
+                                onChange={(e) => updateMinDiscountField(periodKey, sizeKey, slabKey, e.target.value)}
+                                className="w-16 px-1.5 py-1 text-xs border border-gray-300 rounded text-right"
+                                placeholder="min"
+                              />
+                            </td>
+                            <td className="px-1 py-1">
+                              <input
+                                type="number"
+                                min={5}
+                                max={30}
+                                step="0.1"
+                                value={maxDiscountFilterByField[fieldKey(periodKey, sizeKey, slabKey)] ?? ''}
+                                onChange={(e) => updateMaxDiscountField(periodKey, sizeKey, slabKey, e.target.value)}
+                                className="w-16 px-1.5 py-1 text-xs border border-gray-300 rounded text-right"
+                                placeholder="max"
+                              />
+                            </td>
+                          </Fragment>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          ))}
+        </div>
       </div>
-
       {isError && (
         <div className="bg-brand-dangerLight border border-danger rounded-lg p-4 flex items-start space-x-3">
           <AlertCircle className="text-danger flex-shrink-0 mt-0.5" size={20} />
@@ -697,10 +1046,32 @@ const ScenarioComparison = ({
           )}
 
           <div className="bg-white rounded-lg shadow-md p-4">
-            <h4 className="text-base font-semibold text-body mb-3">Scenario Filters (TOTAL %)</h4>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+            <h4 className="text-base font-semibold text-body mb-3">Scenario Filters (Volume / Revenue / Profit / Investment / CTS)</h4>
+            <div className="grid grid-cols-1 md:grid-cols-7 gap-3">
               <div>
-                <label className="block text-xs font-medium text-muted mb-1">Min Volume % Increase</label>
+                <label className="block text-xs font-medium text-muted mb-1">Min 12-ML Volume %</label>
+                <input
+                  type="number"
+                  step="0.1"
+                  value={min12VolumePct}
+                  onChange={(e) => setMin12VolumePct(e.target.value)}
+                  className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg"
+                  placeholder="e.g. 0"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-muted mb-1">Min 18-ML Volume %</label>
+                <input
+                  type="number"
+                  step="0.1"
+                  value={min18VolumePct}
+                  onChange={(e) => setMin18VolumePct(e.target.value)}
+                  className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg"
+                  placeholder="e.g. 0"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-muted mb-1">Min TOTAL Volume %</label>
                 <input
                   type="number"
                   step="0.1"
@@ -732,21 +1103,55 @@ const ScenarioComparison = ({
                   placeholder="e.g. 0"
                 />
               </div>
+              <div>
+                <label className="block text-xs font-medium text-muted mb-1">Max Investment % Increase</label>
+                <input
+                  type="number"
+                  step="0.1"
+                  value={maxInvestmentPct}
+                  onChange={(e) => setMaxInvestmentPct(e.target.value)}
+                  className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg"
+                  placeholder="e.g. 50"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-muted mb-1">Max CTS %</label>
+                <input
+                  type="number"
+                  step="0.1"
+                  value={maxCtsPct}
+                  onChange={(e) => setMaxCtsPct(e.target.value)}
+                  className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg"
+                  placeholder="e.g. 20"
+                />
+              </div>
             </div>
           </div>
 
           <div className="bg-white rounded-lg shadow-md p-4">
             <div className="flex items-center justify-between mb-3">
               <h4 className="text-base font-semibold text-body">TOTAL % Comparison (Volume / Revenue / Profit)</h4>
-              <button
-                type="button"
-                onClick={handleDownloadFilteredCsv}
-                disabled={sortedFilteredRows.length === 0}
-                className="inline-flex items-center gap-2 px-3 py-2 rounded-md border border-slate-300 bg-white text-sm font-semibold text-body disabled:opacity-40"
-              >
-                <Download size={14} />
-                Download CSV
-              </button>
+              <div className="flex items-center gap-2">
+                <select
+                  value={sortMetric}
+                  onChange={(e) => setSortMetric(String(e.target.value || 'revenue_pct'))}
+                  className="px-2.5 py-2 text-sm border border-slate-300 rounded-md bg-white"
+                  title="Sort metric"
+                >
+                  <option value="revenue_pct">Sort: Revenue %</option>
+                  <option value="profit_pct">Sort: Profit %</option>
+                  <option value="volume_pct">Sort: Volume %</option>
+                </select>
+                <button
+                  type="button"
+                  onClick={handleDownloadFilteredCsv}
+                  disabled={sortedFilteredRows.length === 0}
+                  className="inline-flex items-center gap-2 px-3 py-2 rounded-md border border-slate-300 bg-white text-sm font-semibold text-body disabled:opacity-40"
+                >
+                  <Download size={14} />
+                  Download CSV
+                </button>
+              </div>
             </div>
             <div className="text-xs text-muted mb-3">{data?.message || `${successfulRows.length}/${scenarios.length} scenarios computed`}</div>
             {chartData.length > 0 ? (
@@ -836,7 +1241,19 @@ const ScenarioComparison = ({
                 </div>
               </div>
             ) : (
-              <p className="text-sm text-muted">No scenario passed the filter thresholds.</p>
+              <div className="space-y-3">
+                <p className="text-sm text-muted">No scenario passed the current filters.</p>
+                {hasAnyFilterConstraint && typeof onGenerateForCurrentFilters === 'function' && (
+                  <button
+                    type="button"
+                    onClick={handleGenerateForCurrentFilters}
+                    disabled={isAIGenerating}
+                    className="px-3 py-2 rounded-md border border-primary text-primary bg-white text-sm font-semibold disabled:opacity-50"
+                  >
+                    {isAIGenerating ? 'Generating AI Scenarios...' : 'Generate AI for Current Filters'}
+                  </button>
+                )}
+              </div>
             )}
             <p className="text-xs text-muted mt-2">Click any bar to open scenario month-wise slab discounts.</p>
           </div>
@@ -860,7 +1277,7 @@ const ScenarioComparison = ({
                 </h4>
                 <p className="text-xs text-muted">Month-wise slab discount inputs for 12-ML and 18-ML</p>
                 <div className="mt-2 inline-flex items-center gap-2 rounded-md border border-slate-200 bg-white px-2.5 py-1">
-                  <span className="text-[11px] uppercase tracking-wide text-muted">Revenue Rank</span>
+                  <span className="text-[11px] uppercase tracking-wide text-muted">{rankLabel}</span>
                   <span className="text-sm font-bold text-body">
                     #{revenueRankMap[String(modalScenario?.key || modalScenario?.scenario || '')] || '-'}
                   </span>
@@ -897,18 +1314,54 @@ const ScenarioComparison = ({
                   placeholder="Enter custom scenario name"
                 />
               </div>
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+              <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
                 <div className="rounded-lg border border-slate-200 bg-white p-3">
                   <div className="text-[11px] uppercase text-muted">12-ML Volume %</div>
                   <div className="text-base font-semibold text-body">{fmtPct(readSummary(modalDraft || modalScenario, '12-ML').volume_pct)}</div>
+                </div>
+                <div className="rounded-lg border border-slate-200 bg-white p-3">
+                  <div className="text-[11px] uppercase text-muted">12-ML Revenue %</div>
+                  <div className="text-base font-semibold text-body">{fmtPct(readSummary(modalDraft || modalScenario, '12-ML').revenue_pct)}</div>
+                </div>
+                <div className="rounded-lg border border-slate-200 bg-white p-3">
+                  <div className="text-[11px] uppercase text-muted">12-ML Profit %</div>
+                  <div className="text-base font-semibold text-body">{fmtPct(readSummary(modalDraft || modalScenario, '12-ML').profit_pct)}</div>
+                </div>
+                <div className="rounded-lg border border-slate-200 bg-white p-3">
+                  <div className="text-[11px] uppercase text-muted">12-ML Investment %</div>
+                  <div className="text-base font-semibold text-body">{fmtPct(readSummary(modalDraft || modalScenario, '12-ML').investment_pct)}</div>
                 </div>
                 <div className="rounded-lg border border-slate-200 bg-white p-3">
                   <div className="text-[11px] uppercase text-muted">18-ML Volume %</div>
                   <div className="text-base font-semibold text-body">{fmtPct(readSummary(modalDraft || modalScenario, '18-ML').volume_pct)}</div>
                 </div>
                 <div className="rounded-lg border border-slate-200 bg-white p-3">
+                  <div className="text-[11px] uppercase text-muted">18-ML Revenue %</div>
+                  <div className="text-base font-semibold text-body">{fmtPct(readSummary(modalDraft || modalScenario, '18-ML').revenue_pct)}</div>
+                </div>
+                <div className="rounded-lg border border-slate-200 bg-white p-3">
+                  <div className="text-[11px] uppercase text-muted">18-ML Profit %</div>
+                  <div className="text-base font-semibold text-body">{fmtPct(readSummary(modalDraft || modalScenario, '18-ML').profit_pct)}</div>
+                </div>
+                <div className="rounded-lg border border-slate-200 bg-white p-3">
+                  <div className="text-[11px] uppercase text-muted">18-ML Investment %</div>
+                  <div className="text-base font-semibold text-body">{fmtPct(readSummary(modalDraft || modalScenario, '18-ML').investment_pct)}</div>
+                </div>
+                <div className="rounded-lg border border-slate-200 bg-white p-3">
                   <div className="text-[11px] uppercase text-muted">TOTAL Volume %</div>
                   <div className="text-base font-semibold text-body">{fmtPct(readSummary(modalDraft || modalScenario, 'TOTAL').volume_ml_pct || readSummary(modalDraft || modalScenario, 'TOTAL').volume_pct)}</div>
+                </div>
+                <div className="rounded-lg border border-slate-200 bg-white p-3">
+                  <div className="text-[11px] uppercase text-muted">TOTAL Revenue %</div>
+                  <div className="text-base font-semibold text-body">{fmtPct(readSummary(modalDraft || modalScenario, 'TOTAL').revenue_pct)}</div>
+                </div>
+                <div className="rounded-lg border border-slate-200 bg-white p-3">
+                  <div className="text-[11px] uppercase text-muted">TOTAL Profit %</div>
+                  <div className="text-base font-semibold text-body">{fmtPct(readSummary(modalDraft || modalScenario, 'TOTAL').profit_pct)}</div>
+                </div>
+                <div className="rounded-lg border border-slate-200 bg-white p-3">
+                  <div className="text-[11px] uppercase text-muted">TOTAL Investment %</div>
+                  <div className="text-base font-semibold text-body">{fmtPct(readSummary(modalDraft || modalScenario, 'TOTAL').investment_pct)}</div>
                 </div>
               </div>
               {modalError && <div className="text-xs text-danger mt-2">{modalError}</div>}

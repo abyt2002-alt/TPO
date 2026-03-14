@@ -463,6 +463,21 @@ const ModelingROI = ({
         <>
           {(overallCombinedRoiSummary || sizeOptions.length > 0 || slabOnlyResults.length > 0) && (
             <>
+              {overallCombinedRoiSummary && (
+                <div className="bg-white rounded-lg shadow-md p-4">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    <div className="bg-accent-light rounded-md p-3">
+                      <p className="text-muted">Subcategory Topline ROI</p>
+                      <p className="font-bold text-body">{fmt(overallCombinedRoiSummary.structural_roi_1mo)}x</p>
+                    </div>
+                    <div className="bg-accent-light rounded-md p-3">
+                      <p className="text-muted">Subcategory Gross Margin ROI</p>
+                      <p className="font-bold text-body">{fmt(overallCombinedRoiSummary.structural_profit_roi_1mo)}x</p>
+                    </div>
+                  </div>
+                </div>
+              )}
+
               <div className="bg-white rounded-lg shadow-md p-4">
                 <div className="grid grid-cols-1 xl:grid-cols-[240px_minmax(0,1fr)] gap-4 items-start">
                   <div>
@@ -486,58 +501,39 @@ const ModelingROI = ({
                       </div>
                     )}
                   </div>
-
-                  <div className="grid grid-cols-2 gap-3">
-                    {overallCombinedRoiSummary && (
-                      <>
-                        <div className="bg-accent-light rounded-md p-3">
-                          <p className="text-muted">Combined Topline ROI</p>
-                          <p className="font-bold text-body">{fmt(overallCombinedRoiSummary.structural_roi_1mo)}x</p>
-                        </div>
-                        <div className="bg-accent-light rounded-md p-3">
-                          <p className="text-muted">Combined Gross Margin ROI</p>
-                          <p className="font-bold text-body">{fmt(overallCombinedRoiSummary.structural_profit_roi_1mo)}x</p>
-                        </div>
-                      </>
-                    )}
-                  </div>
+                  {selectedSizeCombinedRoiSummary && (
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                      <div className="bg-accent-light rounded-md p-3">
+                        <p className="text-muted">{activeSize || slabSizeKey} Topline ROI</p>
+                        <p className="font-bold text-body">{fmt(selectedSizeCombinedRoiSummary.structural_roi_1mo)}x</p>
+                      </div>
+                      <div className="bg-accent-light rounded-md p-3">
+                        <p className="text-muted">{activeSize || slabSizeKey} Gross Margin ROI</p>
+                        <p className="font-bold text-body">{fmt(selectedSizeCombinedRoiSummary.structural_profit_roi_1mo)}x</p>
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
 
               {slabOnlyResults.length > 0 && (
                 <div className="bg-white rounded-lg shadow-md p-4">
-                  <div className="grid grid-cols-1 xl:grid-cols-[280px_minmax(0,1fr)] gap-4 items-start">
-                    <div>
-                      <p className="text-sm font-semibold text-body mb-2">ROI Slab Selection</p>
-                      <div className="flex flex-wrap gap-2">
-                        {slabOnlyResults.map((slab) => (
-                          <button
-                            key={slab.slab}
-                            type="button"
-                            onClick={() => setActiveSlab(slab.slab)}
-                            className={`px-3 py-1.5 text-sm rounded-md border ${
-                              activeSlab === slab.slab
-                                ? 'bg-primary text-white border-primary'
-                                : 'bg-white text-body border-gray-300'
-                            }`}
-                          >
-                            {slab.slab}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                    {selectedSizeCombinedRoiSummary && (
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                        <div className="bg-accent-light rounded-md p-3">
-                          <p className="text-muted">{activeSize || slabSizeKey} Topline ROI</p>
-                          <p className="font-bold text-body">{fmt(selectedSizeCombinedRoiSummary.structural_roi_1mo)}x</p>
-                        </div>
-                        <div className="bg-accent-light rounded-md p-3">
-                          <p className="text-muted">{activeSize || slabSizeKey} Gross Margin ROI</p>
-                          <p className="font-bold text-body">{fmt(selectedSizeCombinedRoiSummary.structural_profit_roi_1mo)}x</p>
-                        </div>
-                      </div>
-                    )}
+                  <p className="text-sm font-semibold text-body mb-2">ROI Slab Selection</p>
+                  <div className="flex flex-wrap gap-2">
+                    {slabOnlyResults.map((slab) => (
+                      <button
+                        key={slab.slab}
+                        type="button"
+                        onClick={() => setActiveSlab(slab.slab)}
+                        className={`px-3 py-1.5 text-sm rounded-md border ${
+                          activeSlab === slab.slab
+                            ? 'bg-primary text-white border-primary'
+                            : 'bg-white text-body border-gray-300'
+                        }`}
+                      >
+                        {slab.slab}
+                      </button>
+                    ))}
                   </div>
                 </div>
               )}
