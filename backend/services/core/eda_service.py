@@ -34,7 +34,8 @@ from models.rfm_models import (
     CrossSizePlannerRequest, CrossSizePlannerResponse, CrossSizePlannerSizeResult, CrossSizePlannerSlabState,
     BaselineForecastRequest, BaselineForecastResponse, BaselineForecastPoint,
     EDARequest, EDAResponse, EDAProductOption, EDAProductContribution,
-    EDAContributionRow, EDAOptionsResponse
+    EDAContributionRow, EDAOptionsResponse,
+    SlabTrendEDARequest, SlabTrendEDAResponse, SlabTrendEDASeries, SlabTrendEDAPoint
 )
 
 
@@ -455,4 +456,129 @@ class EDAServiceMixin:
             subcategory_within_category_mix=subcategory_within_category_mix,
             subcategory_within_category_sections=subcategory_within_category_sections,
             category_mix=category_mix,
+        )
+
+
+    async def get_slab_trend_eda(self, request: SlabTrendEDARequest) -> SlabTrendEDAResponse:
+        """Return month-wise slab discount and volume trends for 12-ML and 18-ML."""
+        scope = self._build_step2_scope(request)
+        if scope is None:
+            return SlabTrendEDAResponse(
+                success=False,
+                message="Data not loaded",
+                periods=[],
+                series=[],
+            )
+
+        df = scope.get("df_scope_all_slabs")
+        if df is None or df.empty:
+            return SlabTrendEDAResponse(
+                success=False,
+                message="No data matches selected filters",
+                periods=[],
+                series=[],
+            )
+
+        work = df.copy()
+        if "Date" not in work.columns or "Sizes" not in work.columns or "Slab" not in work.columns:
+            return SlabTrendEDAResponse(
+                success=False,
+                message="Required columns missing for slab trend EDA",
+                periods=[],
+                series=[],
+            )
+
+        work["Date"] = pd.to_datetime(work["Date"], errors="coerce")
+        work = work.dropna(subset=["Date"])
+        if work.empty:
+            return SlabTrendEDAResponse(
+                success=False,
+                message="No valid dated rows after filtering",
+                periods=[],
+                series=[],
+            )
+
+        work = work[work["Sizes"].astype(str).isin(["12-ML", "18-ML"])].copy()
+        work["Slab"] = work["Slab"].astype(str)
+        work = work[work["Slab"].map(self._is_step2_allowed_slab)]
+        selected_slabs = self._normalize_step2_slab_values(getattr(request, "slabs", []) or [])
+        if selected_slabs:
+            work = work[work["Slab"].isin(selected_slabs)]
+        if work.empty:
+            return SlabTrendEDAResponse(
+                success=False,
+                message="No slab rows available for selected filters",
+                periods=[],
+                series=[],
+            )
+
+        work["period"] = work["Date"].dt.to_period("M").astype(str)
+
+        grouped = (
+            work.groupby(["period", "Sizes", "Slab"], as_index=False)
+            .agg(
+                quantity=("Quantity", "sum"),
+                sales_value=("SalesValue_atBasicRate", "sum"),
+                discount_value=("TotalDiscount", "sum"),
+            )
+            .sort_values(["Sizes", "Slab", "period"], kind="mergesort")
+        )
+
+        grouped["discount_pct"] = np.where(
+            grouped["sales_value"] > 0,
+            grouped["discount_value"] / grouped["sales_value"] * 100.0,
+            0.0,
+        )
+        grouped["volume_change_pct"] = (
+            grouped.groupby(["Sizes", "Slab"])["quantity"]
+            .pct_change()
+            .replace([np.inf, -np.inf], np.nan)
+            .fillna(0.0)
+            * 100.0
+        )
+        grouped["revenue_change_pct"] = (
+            grouped.groupby(["Sizes", "Slab"])["sales_value"]
+            .pct_change()
+            .replace([np.inf, -np.inf], np.nan)
+            .fillna(0.0)
+            * 100.0
+        )
+
+        periods = sorted(grouped["period"].astype(str).unique().tolist())
+        series: List[SlabTrendEDASeries] = []
+
+        for size_key in ["12-ML", "18-ML"]:
+            size_df = grouped[grouped["Sizes"] == size_key].copy()
+            if size_df.empty:
+                continue
+            slab_order = sorted(size_df["Slab"].astype(str).unique().tolist(), key=self._slab_sort_key)
+            for slab_key in slab_order:
+                slab_df = size_df[size_df["Slab"].astype(str) == slab_key].copy()
+                if slab_df.empty:
+                    continue
+                point_map = {}
+                for _, row in slab_df.iterrows():
+                    point_map[str(row["period"])] = SlabTrendEDAPoint(
+                        period=str(row["period"]),
+                        discount_pct=float(row.get("discount_pct", 0.0) or 0.0),
+                        volume=float(row.get("quantity", 0.0) or 0.0),
+                        volume_change_pct=float(row.get("volume_change_pct", 0.0) or 0.0),
+                        revenue=float(row.get("sales_value", 0.0) or 0.0),
+                        revenue_change_pct=float(row.get("revenue_change_pct", 0.0) or 0.0),
+                    )
+                points = [point_map[p] for p in periods if p in point_map]
+                if points:
+                    series.append(
+                        SlabTrendEDASeries(
+                            size=size_key,
+                            slab=slab_key,
+                            points=points,
+                        )
+                    )
+
+        return SlabTrendEDAResponse(
+            success=True,
+            message="Slab trend EDA loaded successfully",
+            periods=periods,
+            series=series,
         )

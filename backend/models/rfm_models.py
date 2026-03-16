@@ -420,7 +420,7 @@ class CrossSizePlannerResponse(BaseModel):
 
 
 class AIScenarioGenerateRequest(CrossSizePlannerRequest):
-    scenario_count: int = Field(default=5, ge=1, le=1000)
+    scenario_count: int = Field(default=5, ge=1, le=10000)
     goal: str = Field(default="maximize_revenue")
     prompt: str = Field(default="")
     discount_constraints: List[Dict[str, Any]] = []
@@ -556,3 +556,29 @@ class EDAOptionsResponse(BaseModel):
     product_options: List[EDAProductOption] = []
     outlet_classifications: List[str] = []
     matching_rows: int = 0
+
+
+class SlabTrendEDARequest(DiscountOptionsRequest):
+    """Request model for slab-wise monthly discount/volume trend EDA."""
+
+
+class SlabTrendEDAPoint(BaseModel):
+    period: str
+    discount_pct: float
+    volume: float
+    volume_change_pct: float
+    revenue: float
+    revenue_change_pct: float
+
+
+class SlabTrendEDASeries(BaseModel):
+    size: str
+    slab: str
+    points: List[SlabTrendEDAPoint] = []
+
+
+class SlabTrendEDAResponse(BaseModel):
+    success: bool
+    message: str
+    periods: List[str] = []
+    series: List[SlabTrendEDASeries] = []

@@ -119,7 +119,7 @@ const ScenarioBarTooltip = ({ active, payload, label }) => {
       <div className="text-[11px] text-muted mb-1">{scenarioName}</div>
       <div className="text-blue-800">Volume: {fmtPct(read('volume_pct'))}</div>
       <div className="text-green-700">Revenue: {fmtPct(read('revenue_pct'))}</div>
-      <div className="text-orange-700">Profit: {fmtPct(read('profit_pct'))}</div>
+      <div className="text-orange-700">Gross Margin: {fmtPct(read('profit_pct'))}</div>
     </div>
   )
 }
@@ -213,6 +213,37 @@ const readSummary = (row, sizeKey) => {
     block?.revenue ??
     block?.scenarioRevenue
   )
+  const profitAbs = Number(
+    block?.scenario_profit ??
+    block?.profit ??
+    block?.scenarioProfit
+  )
+  const referenceRevenueAbs = Number(
+    block?.reference_revenue ??
+    block?.ref_revenue
+  )
+  const referenceProfitAbs = Number(
+    block?.reference_profit ??
+    block?.ref_profit
+  )
+  const scenarioGrossMargin = (
+    Number.isFinite(revenueAbs) &&
+    revenueAbs > 0 &&
+    Number.isFinite(profitAbs)
+  ) ? ((profitAbs / revenueAbs) * 100) : Number.NaN
+  const referenceGrossMargin = (
+    Number.isFinite(referenceRevenueAbs) &&
+    referenceRevenueAbs > 0 &&
+    Number.isFinite(referenceProfitAbs)
+  ) ? ((referenceProfitAbs / referenceRevenueAbs) * 100) : Number.NaN
+  const grossMarginDirect = Number(block?.gross_margin_pct)
+  const grossMarginPct = Number.isFinite(grossMarginDirect)
+    ? grossMarginDirect
+    : (
+      Number.isFinite(scenarioGrossMargin) && Number.isFinite(referenceGrossMargin)
+        ? (scenarioGrossMargin - referenceGrossMargin)
+        : toNum(block?.profit_pct || 0)
+    )
   const ctsPct = (
     Number.isFinite(invScenarioAbs) &&
     Number.isFinite(revenueAbs) &&
@@ -224,7 +255,8 @@ const readSummary = (row, sizeKey) => {
     profit: toNum(block?.profit || 0),
     volume_pct: toNum(block?.volume_pct || 0),
     revenue_pct: toNum(block?.revenue_pct || 0),
-    profit_pct: toNum(block?.profit_pct || 0),
+    gross_margin_pct: grossMarginPct,
+    profit_pct: grossMarginPct,
     volume_ml: toNum(block?.volume_ml || 0),
     volume_ml_pct: toNum(block?.volume_ml_pct || 0),
     investment_pct: invPctFinal,
@@ -371,7 +403,7 @@ const ScenarioComparison = ({
         Number(s18.volume_pct) >= min18Vol &&
         Number(total.volume_ml_pct || total.volume_pct) >= minVol &&
         Number(total.revenue_pct) >= minRev &&
-        Number(total.profit_pct) >= minProf &&
+        Number(total.gross_margin_pct ?? total.profit_pct) >= minProf &&
         (!hasMaxInvFilter || invPct <= maxInv) &&
         (!hasMaxCtsFilter || ctsPct <= maxCts)
       )
@@ -448,7 +480,7 @@ const ScenarioComparison = ({
         min_18_volume_pct: String(min18VolumePct).trim() === '' ? null : Number(min18VolumePct),
         min_total_volume_pct: String(minVolumePct).trim() === '' ? null : Number(minVolumePct),
         min_revenue_pct: String(minRevenuePct).trim() === '' ? null : Number(minRevenuePct),
-        min_profit_pct: String(minProfitPct).trim() === '' ? null : Number(minProfitPct),
+        min_gross_margin_pct: String(minProfitPct).trim() === '' ? null : Number(minProfitPct),
         min_investment_pct: null,
         max_investment_pct: String(maxInvestmentPct).trim() === '' ? null : Number(maxInvestmentPct),
         max_cts_pct: String(maxCtsPct).trim() === '' ? null : Number(maxCtsPct),
@@ -465,7 +497,7 @@ const ScenarioComparison = ({
         min_18_volume_pct: String(min18VolumePct).trim() === '' ? null : Number(min18VolumePct),
         min_total_volume_pct: String(minVolumePct).trim() === '' ? null : Number(minVolumePct),
         min_revenue_pct: String(minRevenuePct).trim() === '' ? null : Number(minRevenuePct),
-        min_profit_pct: String(minProfitPct).trim() === '' ? null : Number(minProfitPct),
+        min_gross_margin_pct: String(minProfitPct).trim() === '' ? null : Number(minProfitPct),
         min_investment_pct: null,
         max_investment_pct: String(maxInvestmentPct).trim() === '' ? null : Number(maxInvestmentPct),
         max_cts_pct: String(maxCtsPct).trim() === '' ? null : Number(maxCtsPct),
@@ -496,7 +528,7 @@ const ScenarioComparison = ({
           scenario_name: display,
           volume_pct: Number(total.volume_ml_pct || total.volume_pct || 0),
           revenue_pct: Number(total.revenue_pct || 0),
-          profit_pct: Number(total.profit_pct || 0),
+          profit_pct: Number((total.gross_margin_pct ?? total.profit_pct) || 0),
         }
       }),
     [sortedFilteredRows]
@@ -513,7 +545,7 @@ const ScenarioComparison = ({
 
   const rankLabel = useMemo(() => {
     if (sortMetric === 'volume_pct') return 'Volume Rank'
-    if (sortMetric === 'profit_pct') return 'Profit Rank'
+    if (sortMetric === 'profit_pct') return 'Gross Margin Rank'
     return 'Revenue Rank'
   }, [sortMetric])
 
@@ -593,13 +625,13 @@ const ScenarioComparison = ({
       'TOTAL Profit',
       '12-ML Volume %',
       '12-ML Revenue %',
-      '12-ML Profit %',
+      '12-ML Gross Margin %',
       '18-ML Volume %',
       '18-ML Revenue %',
-      '18-ML Profit %',
+      '18-ML Gross Margin %',
       'TOTAL Volume %',
       'TOTAL Revenue %',
-      'TOTAL Profit %',
+      'TOTAL Gross Margin %',
       ...discountColumnDefs.map((d) => d.header),
     ]
 
@@ -719,7 +751,24 @@ const ScenarioComparison = ({
       profit: Number(summaryBlock?.scenario_profit ?? 0) || 0,
       volume_pct: Number(summaryBlock?.vs_reference_volume_pct ?? 0) || 0,
       revenue_pct: Number(summaryBlock?.vs_reference_revenue_pct ?? 0) || 0,
-      profit_pct: Number(summaryBlock?.vs_reference_profit_pct ?? 0) || 0,
+      gross_margin_pct: (
+        Number(summaryBlock?.scenario_revenue ?? 0) > 0 &&
+        Number(summaryBlock?.reference_revenue ?? 0) > 0
+      )
+        ? (
+          ((Number(summaryBlock?.scenario_profit ?? 0) / Number(summaryBlock?.scenario_revenue ?? 0)) * 100) -
+          ((Number(summaryBlock?.reference_profit ?? 0) / Number(summaryBlock?.reference_revenue ?? 0)) * 100)
+        )
+        : (Number(summaryBlock?.vs_reference_profit_pct ?? 0) || 0),
+      profit_pct: (
+        Number(summaryBlock?.scenario_revenue ?? 0) > 0 &&
+        Number(summaryBlock?.reference_revenue ?? 0) > 0
+      )
+        ? (
+          ((Number(summaryBlock?.scenario_profit ?? 0) / Number(summaryBlock?.scenario_revenue ?? 0)) * 100) -
+          ((Number(summaryBlock?.reference_profit ?? 0) / Number(summaryBlock?.reference_revenue ?? 0)) * 100)
+        )
+        : (Number(summaryBlock?.vs_reference_profit_pct ?? 0) || 0),
       scenario_investment: Number(summaryBlock?.scenario_investment ?? 0) || 0,
       reference_investment: Number(summaryBlock?.reference_investment ?? 0) || 0,
       investment_pct: Number(
@@ -1046,7 +1095,7 @@ const ScenarioComparison = ({
           )}
 
           <div className="bg-white rounded-lg shadow-md p-4">
-            <h4 className="text-base font-semibold text-body mb-3">Scenario Filters (Volume / Revenue / Profit / Investment / CTS)</h4>
+            <h4 className="text-base font-semibold text-body mb-3">Scenario Filters (Volume / Revenue / Gross Margin / Investment / CTS)</h4>
             <div className="grid grid-cols-1 md:grid-cols-7 gap-3">
               <div>
                 <label className="block text-xs font-medium text-muted mb-1">Min 12-ML Volume %</label>
@@ -1093,7 +1142,7 @@ const ScenarioComparison = ({
                 />
               </div>
               <div>
-                <label className="block text-xs font-medium text-muted mb-1">Min Profit % Increase</label>
+                <label className="block text-xs font-medium text-muted mb-1">Min Gross Margin % Increase</label>
                 <input
                   type="number"
                   step="0.1"
@@ -1130,7 +1179,7 @@ const ScenarioComparison = ({
 
           <div className="bg-white rounded-lg shadow-md p-4">
             <div className="flex items-center justify-between mb-3">
-              <h4 className="text-base font-semibold text-body">TOTAL % Comparison (Volume / Revenue / Profit)</h4>
+              <h4 className="text-base font-semibold text-body">TOTAL % Comparison (Volume / Revenue / Gross Margin)</h4>
               <div className="flex items-center gap-2">
                 <select
                   value={sortMetric}
@@ -1139,7 +1188,7 @@ const ScenarioComparison = ({
                   title="Sort metric"
                 >
                   <option value="revenue_pct">Sort: Revenue %</option>
-                  <option value="profit_pct">Sort: Profit %</option>
+                  <option value="profit_pct">Sort: Gross Margin %</option>
                   <option value="volume_pct">Sort: Volume %</option>
                 </select>
                 <button
@@ -1226,7 +1275,7 @@ const ScenarioComparison = ({
                           fill="#0f172a"
                         />
                       </Bar>
-                      <Bar dataKey="profit_pct" name="Profit %" fill="#f59e0b" radius={[6, 6, 0, 0]} cursor="pointer" onClick={openScenarioModalFromChart}>
+                      <Bar dataKey="profit_pct" name="Gross Margin %" fill="#f59e0b" radius={[6, 6, 0, 0]} cursor="pointer" onClick={openScenarioModalFromChart}>
                         <LabelList
                           dataKey="profit_pct"
                           position="top"
@@ -1324,7 +1373,7 @@ const ScenarioComparison = ({
                   <div className="text-base font-semibold text-body">{fmtPct(readSummary(modalDraft || modalScenario, '12-ML').revenue_pct)}</div>
                 </div>
                 <div className="rounded-lg border border-slate-200 bg-white p-3">
-                  <div className="text-[11px] uppercase text-muted">12-ML Profit %</div>
+                  <div className="text-[11px] uppercase text-muted">12-ML Gross Margin %</div>
                   <div className="text-base font-semibold text-body">{fmtPct(readSummary(modalDraft || modalScenario, '12-ML').profit_pct)}</div>
                 </div>
                 <div className="rounded-lg border border-slate-200 bg-white p-3">
@@ -1340,7 +1389,7 @@ const ScenarioComparison = ({
                   <div className="text-base font-semibold text-body">{fmtPct(readSummary(modalDraft || modalScenario, '18-ML').revenue_pct)}</div>
                 </div>
                 <div className="rounded-lg border border-slate-200 bg-white p-3">
-                  <div className="text-[11px] uppercase text-muted">18-ML Profit %</div>
+                  <div className="text-[11px] uppercase text-muted">18-ML Gross Margin %</div>
                   <div className="text-base font-semibold text-body">{fmtPct(readSummary(modalDraft || modalScenario, '18-ML').profit_pct)}</div>
                 </div>
                 <div className="rounded-lg border border-slate-200 bg-white p-3">
@@ -1356,7 +1405,7 @@ const ScenarioComparison = ({
                   <div className="text-base font-semibold text-body">{fmtPct(readSummary(modalDraft || modalScenario, 'TOTAL').revenue_pct)}</div>
                 </div>
                 <div className="rounded-lg border border-slate-200 bg-white p-3">
-                  <div className="text-[11px] uppercase text-muted">TOTAL Profit %</div>
+                  <div className="text-[11px] uppercase text-muted">TOTAL Gross Margin %</div>
                   <div className="text-base font-semibold text-body">{fmtPct(readSummary(modalDraft || modalScenario, 'TOTAL').profit_pct)}</div>
                 </div>
                 <div className="rounded-lg border border-slate-200 bg-white p-3">

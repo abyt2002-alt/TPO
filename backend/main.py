@@ -17,7 +17,8 @@ from models.rfm_models import (
     AIScenarioGenerateRequest, AIScenarioGenerateResponse,
     AIScenarioJobCreateResponse, AIScenarioJobStatusResponse, AIScenarioJobResultsResponse,
     BaselineForecastRequest, BaselineForecastResponse,
-    EDARequest, EDAResponse, EDAOptionsResponse
+    EDARequest, EDAResponse, EDAOptionsResponse,
+    SlabTrendEDARequest, SlabTrendEDAResponse
 )
 
 app = FastAPI(title="Trade Promo Optimization API", version="1.0.0")
@@ -324,6 +325,15 @@ async def get_eda_overview(request: EDARequest):
                 },
             )
         return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/eda/slab-trend", response_model=SlabTrendEDAResponse)
+async def get_slab_trend_eda(request: SlabTrendEDARequest):
+    """Run slab-wise monthly discount/volume trend EDA for 12-ML and 18-ML."""
+    try:
+        return await rfm_service.get_slab_trend_eda(request)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

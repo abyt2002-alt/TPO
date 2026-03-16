@@ -142,6 +142,13 @@ export const getEDAOverview = async (payload) => {
   return response.data
 }
 
+export const getSlabTrendEDA = async (payload) => {
+  const response = await api.post('/api/eda/slab-trend', payload, {
+    timeout: 180000,
+  })
+  return response.data
+}
+
 export const createRun = async (runId = null) => {
   const response = await api.post('/api/runs/create', runId ? { run_id: runId } : {}, {
     timeout: 120000,

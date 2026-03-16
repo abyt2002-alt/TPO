@@ -15,6 +15,7 @@ import {
   getAIScenarioJobResults,
   getEDAOptions,
   getEDAOverview,
+  getSlabTrendEDA,
   getDiscountOptions,
   createRun,
   getRunState,
@@ -32,6 +33,7 @@ import CrossSizePlanner from '../components/rfm/CrossSizePlanner'
 import BaselineForecast from '../components/rfm/BaselineForecast'
 import ScenarioComparison from '../components/rfm/ScenarioComparison'
 import EDAInsights from '../components/rfm/EDAInsights'
+import SlabTrendEDA from '../components/rfm/SlabTrendEDA'
 import DiscountStepFilters from '../components/rfm/DiscountStepFilters'
 import { Step2SlabDefinitionPanel } from '../components/rfm/DiscountStepFilters'
 import { Loader2, AlertCircle, BarChart3, ChevronDown, ChevronUp, Search } from 'lucide-react'
@@ -274,7 +276,7 @@ const resolveStepTabFromQuery = (stepParam) => {
   if (stepParam === '3') return 'step3'
   if (stepParam === '4') return 'step4'
   if (stepParam === '5') return 'step5'
-  if (stepParam === '6') return 'step5'
+  if (stepParam === '6') return 'step_eda'
   return 'step1'
 }
 
@@ -283,6 +285,7 @@ const resolveStepQueryFromTab = (stepTab) => {
   if (stepTab === 'step3') return '3'
   if (stepTab === 'step4') return '4'
   if (stepTab === 'step5') return '5'
+  if (stepTab === 'step_eda') return '6'
   return null
 }
 
@@ -566,13 +569,15 @@ const RFMAnalysis = () => {
   const [isEdaOptionsLoading, setIsEdaOptionsLoading] = useState(false)
   const [edaResult, setEdaResult] = useState(null)
   const [edaErrorMessage, setEdaErrorMessage] = useState('')
+  const [slabTrendResult, setSlabTrendResult] = useState(null)
+  const [slabTrendErrorMessage, setSlabTrendErrorMessage] = useState('')
   const [modelingSettings, setModelingSettings] = useState({
     include_lag_discount: true,
     cogs_per_unit: 0,
     cogs_per_size: { ...DEFAULT_MODELING_COGS_BY_SIZE },
     ...FIXED_STAGE3_SETTINGS,
   })
-  const [step4DisplayReferenceMode, setStep4DisplayReferenceMode] = useState('last_3m_before_projection')
+  const [step4DisplayReferenceMode, setStep4DisplayReferenceMode] = useState('ly_same_3m')
   const step5ScenarioDefs = useMemo(() => buildStep5ScenarioDefinitions(step5ScenarioBuilder), [step5ScenarioBuilder])
 
   // Fetch initial available filters
@@ -718,7 +723,7 @@ const RFMAnalysis = () => {
         Object.keys(scenarioByPeriod).length > 0
       if (!hasScenarioOverride) {
         const referenceKey = String(
-          variables?.reference_mode || data?.reference_mode || 'last_3m_before_projection'
+          variables?.reference_mode || data?.reference_mode || 'ly_same_3m'
         )
         setPlannerDefaultByReference((prev) => ({
           ...prev,
@@ -749,7 +754,7 @@ const RFMAnalysis = () => {
       }
 
       const basePayload = buildPlannerPayload({
-        reference_mode: step4DisplayReferenceMode || 'last_3m_before_projection',
+        reference_mode: step4DisplayReferenceMode || 'ly_same_3m',
       })
 
       const defaultResponse = plannerResult?.success
@@ -767,7 +772,24 @@ const RFMAnalysis = () => {
         profit: Number(summaryBlock?.scenario_profit ?? 0),
         volume_pct: Number(summaryBlock?.vs_reference_volume_pct ?? 0),
         revenue_pct: Number(summaryBlock?.vs_reference_revenue_pct ?? 0),
-        profit_pct: Number(summaryBlock?.vs_reference_profit_pct ?? 0),
+        gross_margin_pct: (
+          Number(summaryBlock?.scenario_revenue ?? 0) > 0 &&
+          Number(summaryBlock?.reference_revenue ?? 0) > 0
+        )
+          ? (
+            ((Number(summaryBlock?.scenario_profit ?? 0) / Number(summaryBlock?.scenario_revenue ?? 0)) * 100) -
+            ((Number(summaryBlock?.reference_profit ?? 0) / Number(summaryBlock?.reference_revenue ?? 0)) * 100)
+          )
+          : Number(summaryBlock?.vs_reference_profit_pct ?? 0),
+        profit_pct: (
+          Number(summaryBlock?.scenario_revenue ?? 0) > 0 &&
+          Number(summaryBlock?.reference_revenue ?? 0) > 0
+        )
+          ? (
+            ((Number(summaryBlock?.scenario_profit ?? 0) / Number(summaryBlock?.scenario_revenue ?? 0)) * 100) -
+            ((Number(summaryBlock?.reference_profit ?? 0) / Number(summaryBlock?.reference_revenue ?? 0)) * 100)
+          )
+          : Number(summaryBlock?.vs_reference_profit_pct ?? 0),
         scenario_investment: Number(summaryBlock?.scenario_investment ?? 0),
         reference_investment: Number(summaryBlock?.reference_investment ?? 0),
         investment_pct: Number(
@@ -850,7 +872,7 @@ const RFMAnalysis = () => {
         success: successCount > 0,
         message: String(variables?.message || `${successLabel} ${scenarios.length} scenario(s); successful: ${successCount}.`),
         generation_mode: mode,
-        reference_mode: String(basePayload.reference_mode || defaultResponse?.reference_mode || 'last_3m_before_projection'),
+        reference_mode: String(basePayload.reference_mode || defaultResponse?.reference_mode || 'ly_same_3m'),
         periods,
         planner_base: defaultResponse,
         scenarios,
@@ -903,11 +925,11 @@ const RFMAnalysis = () => {
         throw new Error('Run Step 3 modeling before AI scenario generation.')
       }
       const basePayload = buildPlannerPayload({
-        reference_mode: step4DisplayReferenceMode || 'last_3m_before_projection',
+        reference_mode: step4DisplayReferenceMode || 'ly_same_3m',
       })
       const aiPayload = {
         ...basePayload,
-        scenario_count: Math.min(1000, Math.max(1, Number(variables?.scenario_count || step5AISettings.scenario_count || 5))),
+        scenario_count: Math.min(10000, Math.max(1, Number(variables?.scenario_count || step5AISettings.scenario_count || 5))),
         prompt: String(variables?.prompt || step5AISettings.prompt || ''),
         discount_constraints: Array.isArray(variables?.discount_constraints) ? variables.discount_constraints : [],
         metric_thresholds: variables?.metric_thresholds && typeof variables.metric_thresholds === 'object'
@@ -1030,6 +1052,17 @@ const RFMAnalysis = () => {
     },
   })
 
+  const slabTrendMutation = useMutation({
+    mutationFn: getSlabTrendEDA,
+    onSuccess: (data) => {
+      setSlabTrendResult(data)
+      setSlabTrendErrorMessage('')
+    },
+    onError: (error) => {
+      setSlabTrendErrorMessage(error?.message || 'Failed to run slab trend EDA')
+    },
+  })
+
   const setStepTab = useCallback((step) => {
     setActiveStepTab(step)
     const nextParams = new URLSearchParams(searchParams)
@@ -1135,7 +1168,7 @@ const RFMAnalysis = () => {
         setStep5AISettings((prev) => ({
           ...prev,
           ...restoredStep5AI,
-          scenario_count: Math.min(1000, Math.max(1, Number(restoredStep5AI?.scenario_count || prev.scenario_count || 5))),
+          scenario_count: Math.min(10000, Math.max(1, Number(restoredStep5AI?.scenario_count || prev.scenario_count || 5))),
           prompt: String(restoredStep5AI?.prompt || prev.prompt || ''),
         }))
         if (restored?.step1_result) {
@@ -1277,6 +1310,8 @@ const RFMAnalysis = () => {
     setForecastErrorMessage('')
     setScenarioResult(null)
     setScenarioErrorMessage('')
+    setSlabTrendResult(null)
+    setSlabTrendErrorMessage('')
     mutateRFM({ run_id: runId || undefined, ...baseFilters, ...initialQuery })
   }
 
@@ -1403,7 +1438,7 @@ const RFMAnalysis = () => {
       cogs_per_size: normalizeModelingCogsBySize(modelingSettings.cogs_per_size || {}),
       forecast_months: 3,
       planner_mode: 'additive_only',
-      reference_mode: 'last_3m_before_projection',
+      reference_mode: 'ly_same_3m',
       ...step2Filters,
       ...overrides,
     }
@@ -1770,7 +1805,7 @@ const RFMAnalysis = () => {
     pushMetricMin('18-ML volume change', thresholds?.min_18_volume_pct)
     pushMetricMin('TOTAL volume change', thresholds?.min_total_volume_pct)
     pushMetricMin('TOTAL revenue change', thresholds?.min_revenue_pct)
-    pushMetricMin('TOTAL profit change', thresholds?.min_profit_pct)
+    pushMetricMin('TOTAL gross margin change', thresholds?.min_gross_margin_pct ?? thresholds?.min_profit_pct)
     pushMetricMin('TOTAL investment change', thresholds?.min_investment_pct)
     pushMetricMax('TOTAL investment change', thresholds?.max_investment_pct)
     pushMetricMax('TOTAL CTS (investment/revenue)', thresholds?.max_cts_pct)
@@ -1807,7 +1842,9 @@ const RFMAnalysis = () => {
       min_18_volume_pct: Number.isFinite(Number(rawThresholds?.min_18_volume_pct)) ? Number(rawThresholds.min_18_volume_pct) : null,
       min_total_volume_pct: Number.isFinite(Number(rawThresholds?.min_total_volume_pct)) ? Number(rawThresholds.min_total_volume_pct) : null,
       min_revenue_pct: Number.isFinite(Number(rawThresholds?.min_revenue_pct)) ? Number(rawThresholds.min_revenue_pct) : null,
-      min_profit_pct: Number.isFinite(Number(rawThresholds?.min_profit_pct)) ? Number(rawThresholds.min_profit_pct) : null,
+      min_gross_margin_pct: Number.isFinite(Number(rawThresholds?.min_gross_margin_pct))
+        ? Number(rawThresholds.min_gross_margin_pct)
+        : (Number.isFinite(Number(rawThresholds?.min_profit_pct)) ? Number(rawThresholds.min_profit_pct) : null),
       min_investment_pct: Number.isFinite(Number(rawThresholds?.min_investment_pct)) ? Number(rawThresholds.min_investment_pct) : null,
       max_investment_pct: Number.isFinite(Number(rawThresholds?.max_investment_pct)) ? Number(rawThresholds.max_investment_pct) : null,
       max_cts_pct: Number.isFinite(Number(rawThresholds?.max_cts_pct)) ? Number(rawThresholds.max_cts_pct) : null,
@@ -1827,7 +1864,7 @@ const RFMAnalysis = () => {
     const structuredFilters = normalizeStep5FilterContextForAI(step5CurrentFilterContext)
     setScenarioErrorMessage('')
     aiScenarioJobMutation.mutate({
-      scenario_count: Math.min(1000, Math.max(1, Number(step5AISettings.scenario_count || 5))),
+      scenario_count: Math.min(10000, Math.max(1, Number(step5AISettings.scenario_count || 5))),
       prompt: promptWithConstraints,
       discount_constraints: structuredFilters.discount_constraints,
       metric_thresholds: structuredFilters.metric_thresholds,
@@ -1844,7 +1881,7 @@ const RFMAnalysis = () => {
 
     setScenarioErrorMessage('')
     aiScenarioJobMutation.mutate({
-      scenario_count: Math.min(1000, Math.max(1, Number(step5AISettings.scenario_count || 5))),
+      scenario_count: Math.min(10000, Math.max(1, Number(step5AISettings.scenario_count || 5))),
       prompt: promptWithConstraints,
       discount_constraints: structuredFilters.discount_constraints,
       metric_thresholds: structuredFilters.metric_thresholds,
@@ -1918,6 +1955,8 @@ const RFMAnalysis = () => {
     setForecastErrorMessage('')
     setScenarioResult(null)
     setScenarioErrorMessage('')
+    setSlabTrendResult(null)
+    setSlabTrendErrorMessage('')
     setBaseDepthConfig((prev) => ({ ...prev, time_aggregation: 'M' }))
     setStep2Filters((prev) => {
       let normalizedValue = value
@@ -1984,6 +2023,19 @@ const RFMAnalysis = () => {
 
   const handleRunEDA = () => {
     edaMutation.mutate(buildStep5Payload())
+  }
+
+  const buildSlabTrendPayload = () => {
+    const baseFilters = lastCalculatedFilters || filters
+    return {
+      run_id: runId || undefined,
+      ...baseFilters,
+      ...step2Filters,
+    }
+  }
+
+  const handleRunSlabTrendEDA = () => {
+    slabTrendMutation.mutate(buildSlabTrendPayload())
   }
 
   useEffect(() => {
@@ -2138,6 +2190,15 @@ const RFMAnalysis = () => {
   }, [edaOptions, availableFilters])
 
   useEffect(() => {
+    if (activeStepTab !== 'step_eda') return
+    if (!rfmData?.success) return
+    if (slabTrendMutation.isPending) return
+    if (slabTrendResult?.success) return
+    handleRunSlabTrendEDA()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeStepTab, rfmData?.success, slabTrendMutation.isPending, slabTrendResult?.success])
+
+  useEffect(() => {
     const validResults = (modelingResult?.slab_results || []).filter((x) => x?.valid)
     const firstValid = validResults[0]
     if (!firstValid) return
@@ -2204,6 +2265,8 @@ const RFMAnalysis = () => {
   }, [activeStepTab, modelingResult?.success, scenarioMutation.isPending, scenarioResult?.success, step5ScenarioDefs.length])
 
   const handleFilterChange = (key, value) => {
+    setSlabTrendResult(null)
+    setSlabTrendErrorMessage('')
     setFilters((prev) => {
       const newFilters = { ...prev, [key]: value }
       
@@ -2354,11 +2417,11 @@ const RFMAnalysis = () => {
             <label className="block text-sm font-medium text-gray-700 mb-1">Reference For % Comparison</label>
             <select
               value={step4DisplayReferenceMode}
-              onChange={(e) => setStep4DisplayReferenceMode(String(e.target.value || 'last_3m_before_projection'))}
+              onChange={(e) => setStep4DisplayReferenceMode(String(e.target.value || 'ly_same_3m'))}
               className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg"
             >
-              <option value="last_3m_before_projection">Last 3M Before Projection</option>
-              <option value="ly_same_3m">LY Same 3M</option>
+              <option value="ly_same_3m">Y-o-Y</option>
+              <option value="last_3m_before_projection">Q-o-Q</option>
             </select>
           </div>
           <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 space-y-2">
@@ -2381,16 +2444,16 @@ const RFMAnalysis = () => {
           <div className="rounded-lg border border-slate-200 bg-white p-3 space-y-2">
             <div className="text-xs font-semibold text-body">AI Scenario Generator (Append)</div>
             <div>
-              <label className="block text-[11px] font-medium text-gray-700 mb-1">Scenario Count (1-1000)</label>
+              <label className="block text-[11px] font-medium text-gray-700 mb-1">Scenario Count (1-10000)</label>
               <input
                 type="number"
                 min="1"
-                max="1000"
+                max="10000"
                 step="1"
                 value={step5AISettings.scenario_count}
                 onChange={(e) => setStep5AISettings((prev) => ({
                   ...prev,
-                  scenario_count: Math.min(1000, Math.max(1, Number(e.target.value || 1))),
+                  scenario_count: Math.min(10000, Math.max(1, Number(e.target.value || 1))),
                 }))}
                 className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg"
               />
@@ -2442,6 +2505,27 @@ const RFMAnalysis = () => {
               AI scenarios are appended to the default scenario set.
             </p>
           </div>
+        </div>
+      </div>
+    )
+  } else if (activeStepTab === 'step_eda') {
+    rightSidebarContent = (
+      <div className="bg-white rounded-lg shadow-md overflow-visible">
+        <div className="bg-primary text-white p-4">
+          <h3 className="text-lg font-semibold">Slab Trend EDA</h3>
+        </div>
+        <div className="p-4 space-y-3">
+          <p className="text-xs text-muted">
+            Uses current Step 1 filters and Step 2 slab definition to plot month-wise slab discount and volume trends.
+          </p>
+          <button
+            type="button"
+            onClick={handleRunSlabTrendEDA}
+            disabled={slabTrendMutation.isPending || !rfmData?.success}
+            className="w-full px-4 py-2 rounded-md bg-white border border-primary text-body text-sm font-semibold disabled:opacity-50"
+          >
+            {slabTrendMutation.isPending ? 'Loading...' : 'Refresh EDA'}
+          </button>
         </div>
       </div>
     )
@@ -2530,6 +2614,17 @@ const RFMAnalysis = () => {
               }`}
             >
               Step 5: Scenario Comparison
+            </button>
+            <button
+              type="button"
+              onClick={() => setStepTab('step_eda')}
+              className={`px-4 py-2 rounded-md text-sm font-semibold border ${
+                activeStepTab === 'step_eda'
+                  ? 'bg-white text-body border-primary'
+                  : 'bg-white text-muted border-gray-300'
+              }`}
+            >
+              Step 6: Slab Trend EDA
             </button>
           </div>
         </div>
@@ -2754,6 +2849,15 @@ const RFMAnalysis = () => {
           </div>
         )}
 
+        {activeStepTab === 'step_eda' && rfmData && rfmData.success && (
+          <SlabTrendEDA
+            data={slabTrendResult}
+            isLoading={slabTrendMutation.isPending}
+            isError={slabTrendMutation.isError || Boolean(slabTrendErrorMessage)}
+            errorMessage={slabTrendErrorMessage || slabTrendMutation.error?.message}
+          />
+        )}
+
         {activeStepTab === 'step1' && !rfmData && !calculateMutation.isPending && (
           <div className="bg-white rounded-lg shadow-md p-12 text-center">
             <div className="max-w-md mx-auto">
@@ -2823,6 +2927,22 @@ const RFMAnalysis = () => {
             <h3 className="text-xl font-semibold text-body mb-2">Step 5 Requires Step 1 Output</h3>
             <p className="text-muted mb-4">
               Run Store Segmentation first, then complete Steps 2-4 before scenario comparison.
+            </p>
+            <button
+              type="button"
+              onClick={() => setStepTab('step1')}
+              className="px-4 py-2 rounded-md bg-white text-body border border-primary text-sm font-semibold"
+            >
+              Go To Step 1
+            </button>
+          </div>
+        )}
+
+        {activeStepTab === 'step_eda' && !rfmData && !calculateMutation.isPending && (
+          <div className="bg-white rounded-lg shadow-md p-8">
+            <h3 className="text-xl font-semibold text-body mb-2">Step 6 Requires Step 1 Output</h3>
+            <p className="text-muted mb-4">
+              Run Store Segmentation first, then open Slab Trend EDA.
             </p>
             <button
               type="button"

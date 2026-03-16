@@ -3,8 +3,8 @@ import { AlertCircle, Loader2, RotateCcw } from 'lucide-react'
 
 const normalizeSizeKey = (value) => String(value || '').toUpperCase().replace(/\s+/g, '').trim()
 const REFERENCE_MODE_LABELS = {
-  ly_same_3m: 'LY same 3M',
-  last_3m_before_projection: 'last 3M before projection',
+  ly_same_3m: 'Y-o-Y',
+  last_3m_before_projection: 'Q-o-Q',
 }
 const slabSortKey = (value) => {
   const text = String(value || '').toLowerCase()
@@ -204,7 +204,7 @@ const CrossSizePlanner = ({
   isLoading,
   isError,
   errorMessage,
-  displayReferenceMode = 'last_3m_before_projection',
+  displayReferenceMode = 'ly_same_3m',
   onDisplayReferenceModeChange,
   referenceByMode = {},
   onInitialize,
@@ -235,8 +235,8 @@ const CrossSizePlanner = ({
 
   const selectedReferenceMode = REFERENCE_MODE_LABELS?.[displayReferenceMode]
     ? String(displayReferenceMode)
-    : 'last_3m_before_projection'
-  const referenceLabel = REFERENCE_MODE_LABELS[selectedReferenceMode] || REFERENCE_MODE_LABELS.last_3m_before_projection
+    : 'ly_same_3m'
+  const referenceLabel = REFERENCE_MODE_LABELS[selectedReferenceMode] || REFERENCE_MODE_LABELS.ly_same_3m
   const coeffBySizeSlab = useMemo(() => {
     const out = {}
     const rows = Array.isArray(data?.size_results) ? data.size_results : []
@@ -523,14 +523,18 @@ const CrossSizePlanner = ({
           const defaultDiscount = Number(slab?.default_discount_pct || 0)
           const scenarioDiscount = Number(slab?.scenario_discount_pct || 0)
           const cogs = Number(slab?.cogs_per_unit || 0)
-          const baselineRevenue = baseQty * basePrice * (1 - (defaultDiscount / 100))
-          const scenarioRevenue = finalQty * basePrice * (1 - (scenarioDiscount / 100))
-          const baselineProfit = baselineRevenue - (baseQty * cogs)
-          const scenarioProfit = scenarioRevenue - (finalQty * cogs)
+          const baselineRevenue = baseQty * basePrice
+          const scenarioRevenue = finalQty * basePrice
+          const baselineRevenueNet = baseQty * basePrice * (1 - (defaultDiscount / 100))
+          const scenarioRevenueNet = finalQty * basePrice * (1 - (scenarioDiscount / 100))
+          const baselineProfit = baselineRevenueNet - (baseQty * cogs)
+          const scenarioProfit = scenarioRevenueNet - (finalQty * cogs)
           const baselineInvestment = baseQty * basePrice * (defaultDiscount / 100)
           const scenarioInvestment = finalQty * basePrice * (scenarioDiscount / 100)
           slab.baseline_revenue = baselineRevenue
           slab.scenario_revenue = scenarioRevenue
+          slab.baseline_revenue_net = baselineRevenueNet
+          slab.scenario_revenue_net = scenarioRevenueNet
           slab.baseline_profit = baselineProfit
           slab.scenario_profit = scenarioProfit
           slab.baseline_investment = baselineInvestment
@@ -565,9 +569,10 @@ const CrossSizePlanner = ({
     const finalizeSizeSummary = (sizeKey) => {
       const s = summary[sizeKey]
       const refQty = Number(baseSummary?.[sizeKey]?.reference_qty || 0)
-      const refRev = Number(baseSummary?.[sizeKey]?.reference_revenue || 0)
+      const refRevNet = Number(baseSummary?.[sizeKey]?.reference_revenue || 0)
       const refProfit = Number(baseSummary?.[sizeKey]?.reference_profit || 0)
       const refInvestment = Number(baseSummary?.[sizeKey]?.reference_investment || 0)
+      const refRev = refRevNet + refInvestment
       const refAvail = Number(baseSummary?.[sizeKey]?.reference_available || 0)
       return {
         baseline_qty: s.baseline_qty,
@@ -586,6 +591,7 @@ const CrossSizePlanner = ({
         scenario_investment: s.scenario_investment,
         investment_delta_pct: s.baseline_investment > 0 ? ((s.scenario_investment - s.baseline_investment) / s.baseline_investment) * 100 : 0,
         reference_qty: refQty,
+        reference_revenue_net: refRevNet,
         reference_revenue: refRev,
         reference_profit: refProfit,
         reference_investment: refInvestment,
@@ -609,12 +615,13 @@ const CrossSizePlanner = ({
     const totalBaselineInvestment = s12.baseline_investment + s18.baseline_investment
     const totalScenarioInvestment = s12.scenario_investment + s18.scenario_investment
     const refTotalQty = Number(baseSummary?.TOTAL?.reference_qty || 0)
-    const refTotalRev = Number(baseSummary?.TOTAL?.reference_revenue || 0)
+    const refTotalRevNet = Number(baseSummary?.TOTAL?.reference_revenue || 0)
     const refTotalProfit = Number(baseSummary?.TOTAL?.reference_profit || 0)
     const ref12Investment = Number(baseSummary?.['12-ML']?.reference_investment || 0)
     const ref18Investment = Number(baseSummary?.['18-ML']?.reference_investment || 0)
     const refTotalInvestmentRaw = Number(baseSummary?.TOTAL?.reference_investment || 0)
     const refTotalInvestment = refTotalInvestmentRaw > 0 ? refTotalInvestmentRaw : (ref12Investment + ref18Investment)
+    const refTotalRev = refTotalRevNet + refTotalInvestment
     const refTotalAvailRaw = Number(baseSummary?.TOTAL?.reference_available || 0)
     const ref12Avail = Number(baseSummary?.['12-ML']?.reference_available || 0)
     const ref18Avail = Number(baseSummary?.['18-ML']?.reference_available || 0)
@@ -644,6 +651,7 @@ const CrossSizePlanner = ({
         scenario_investment: totalScenarioInvestment,
         investment_delta_pct: totalBaselineInvestment > 0 ? ((totalScenarioInvestment - totalBaselineInvestment) / totalBaselineInvestment) * 100 : 0,
         reference_qty: refTotalQty,
+        reference_revenue_net: refTotalRevNet,
         reference_revenue: refTotalRev,
         reference_profit: refTotalProfit,
         reference_investment: refTotalInvestment,
@@ -679,11 +687,11 @@ const CrossSizePlanner = ({
 
     return {
       ...data,
-      reference_mode: 'last_3m_before_projection',
+      reference_mode: selectedReferenceMode,
       monthly_results: monthlyResults,
       summary_3m: summary3m,
     }
-  }, [data, periods, scenarioDiscountsByPeriod])
+  }, [data, periods, scenarioDiscountsByPeriod, selectedReferenceMode])
 
   const summaryBySize = useMemo(() => computedPlannerData?.summary_3m || {}, [computedPlannerData?.summary_3m])
   const selectedReferenceSummary = useMemo(() => {
@@ -746,13 +754,13 @@ const CrossSizePlanner = ({
               value={selectedReferenceMode}
               onChange={(e) => {
                 if (typeof onDisplayReferenceModeChange === 'function') {
-                  onDisplayReferenceModeChange(String(e.target.value || 'last_3m_before_projection'))
+                  onDisplayReferenceModeChange(String(e.target.value || 'ly_same_3m'))
                 }
               }}
               className="px-3 py-2 rounded-md border border-slate-300 bg-white text-sm text-body"
             >
-              <option value="last_3m_before_projection">Last 3M</option>
-              <option value="ly_same_3m">LY same 3M</option>
+              <option value="ly_same_3m">Y-o-Y</option>
+              <option value="last_3m_before_projection">Q-o-Q</option>
             </select>
             <button
               type="button"
@@ -781,7 +789,7 @@ const CrossSizePlanner = ({
             const referenceQty = card.isTotal
               ? (Number(refSummary12?.reference_qty || 0) * 12) + (Number(refSummary18?.reference_qty || 0) * 18)
               : Number(refSummary?.reference_qty || 0)
-            const referenceRevenue = Number(refSummary?.reference_revenue || 0)
+            const referenceRevenueRaw = Number(refSummary?.reference_revenue || 0)
             const referenceProfit = Number(refSummary?.reference_profit || 0)
             const summary12 = summaryBySize?.['12-ML'] || {}
             const summary18 = summaryBySize?.['18-ML'] || {}
@@ -804,67 +812,74 @@ const CrossSizePlanner = ({
                   pickPositive(refSummary18?.reference_investment, summary18?.reference_investment)
                 ))
               : referenceInvestmentRaw
+            const referenceRevenue = Object.prototype.hasOwnProperty.call(refSummary || {}, 'reference_revenue_net')
+              ? referenceRevenueRaw
+              : (referenceRevenueRaw + referenceInvestment)
             const hasReference = Number(refSummary?.reference_available || 0) > 0 && referenceQty > 0
             const volumePct = hasReference
               ? Number(((volumeAbs - referenceQty) / referenceQty) * 100)
               : Number(summary.volume_delta_pct ?? summary.volume_delta_additive_pct ?? 0)
             const revenueAbs = Number(summary.scenario_revenue || 0)
             const profitAbs = Number(summary.scenario_profit || 0)
-            const investmentAbs = Number(
-              summary.investment_change_positive ??
-              summary.scenario_investment ??
-              0
-            )
+            const investmentAbs = Number(summary.scenario_investment ?? 0)
             const revenuePct = hasReference
               ? Number(referenceRevenue > 0 ? ((revenueAbs - referenceRevenue) / referenceRevenue) * 100 : 0)
               : Number(summary.revenue_delta_pct || 0)
-            const profitPct = hasReference
-              ? Number(Math.abs(referenceProfit) > 1e-9 ? ((profitAbs - referenceProfit) / Math.abs(referenceProfit)) * 100 : 0)
-              : Number(summary.profit_delta_pct || 0)
+            const grossMarginAbs = revenueAbs > 0 ? ((profitAbs / revenueAbs) * 100) : 0
+            const referenceGrossMargin = referenceRevenue > 0 ? ((referenceProfit / referenceRevenue) * 100) : 0
+            const grossMarginPct = hasReference
+              ? Number(grossMarginAbs - referenceGrossMargin)
+              : 0
             const hasReferenceInvestment = referenceInvestment > 0
-            const investmentChangeAbs = hasReferenceInvestment
-              ? Number(Math.max(0, investmentAbs - referenceInvestment))
-              : Number(investmentAbs)
             const investmentPct = hasReferenceInvestment
-              ? Number(investmentChangeAbs > 0 ? ((investmentAbs - referenceInvestment) / referenceInvestment) * 100 : 0)
+              ? Number(((investmentAbs - referenceInvestment) / referenceInvestment) * 100)
+              : 0
+            const ctsAbs = Number(revenueAbs > 0 ? (investmentAbs / revenueAbs) * 100 : 0)
+            const referenceCts = Number(referenceRevenue > 0 ? (referenceInvestment / referenceRevenue) * 100 : 0)
+            const hasReferenceCts = referenceCts > 0
+            const ctsPct = hasReferenceCts
+              ? Number(((ctsAbs - referenceCts) / referenceCts) * 100)
               : 0
             return (
               <div key={card.key} className="rounded-lg border border-slate-200 bg-slate-50 p-3">
                 <p className="text-sm font-semibold text-body">{card.title}</p>
-                <div className={`grid gap-3 mt-3 ${card.isTotal ? 'grid-cols-4' : 'grid-cols-3'}`}>
+                <div className={`grid gap-3 mt-3 ${card.isTotal ? 'grid-cols-2 md:grid-cols-3 xl:grid-cols-5' : 'grid-cols-3'}`}>
                   <div>
                     <p className="text-[10px] uppercase tracking-wide text-muted">{card.isTotal ? 'Volume (ML)' : 'Volume'}</p>
                     <p className="text-2xl leading-none mt-2 font-semibold text-body">{formatCompact(volumeAbs)}</p>
-                    <p className={`text-xs mt-1 ${pctToneClass(volumePct)}`}>
-                      {formatSignedPct(volumePct)} {hasReference ? `vs ${referenceLabel}` : 'vs baseline 3M'}
-                    </p>
-                    <p className="text-[11px] text-muted mt-1">
-                      {referenceLabel}: {hasReference ? formatCompact(referenceQty) : 'NA'}
+                    <p className={`text-sm font-semibold mt-1 ${pctToneClass(volumePct)}`}>
+                      {formatSignedPct(volumePct)}
                     </p>
                   </div>
                   <div>
                     <p className="text-[10px] uppercase tracking-wide text-muted">Revenue</p>
                     <p className="text-2xl leading-none mt-2 font-semibold text-body">{formatCompact(revenueAbs)}</p>
-                    <p className={`text-xs mt-1 ${pctToneClass(revenuePct)}`}>
-                      {formatSignedPct(revenuePct)} {hasReference ? `vs ${referenceLabel}` : 'vs baseline 3M'}
+                    <p className={`text-sm font-semibold mt-1 ${pctToneClass(revenuePct)}`}>
+                      {formatSignedPct(revenuePct)}
                     </p>
                   </div>
                   <div>
-                    <p className="text-[10px] uppercase tracking-wide text-muted">Profit</p>
-                    <p className="text-2xl leading-none mt-2 font-semibold text-body">{formatCompact(profitAbs)}</p>
-                    <p className={`text-xs mt-1 ${pctToneClass(profitPct)}`}>
-                      {formatSignedPct(profitPct)} {hasReference ? `vs ${referenceLabel}` : 'vs baseline 3M'}
+                    <p className="text-[10px] uppercase tracking-wide text-muted">Gross Margin %</p>
+                    <p className="text-2xl leading-none mt-2 font-semibold text-body">{formatFixed(grossMarginAbs, 2)}%</p>
+                    <p className={`text-sm font-semibold mt-1 ${pctToneClass(grossMarginPct)}`}>
+                      {formatSignedPct(grossMarginPct)}
                     </p>
                   </div>
                   {card.isTotal ? (
                     <div>
-                      <p className="text-[10px] uppercase tracking-wide text-muted">Investment Change</p>
-                      <p className="text-2xl leading-none mt-2 font-semibold text-body">{formatCompact(investmentChangeAbs)}</p>
-                      <p className={`text-xs mt-1 ${pctToneClass(investmentPct)}`}>
-                        {formatSignedPct(investmentPct)} {hasReferenceInvestment ? `vs ${referenceLabel}` : '(reference NA)'}
+                      <p className="text-[10px] uppercase tracking-wide text-muted">Investment</p>
+                      <p className="text-2xl leading-none mt-2 font-semibold text-body">{formatCompact(investmentAbs)}</p>
+                      <p className={`text-sm font-semibold mt-1 ${pctToneClass(investmentPct)}`}>
+                        {formatSignedPct(investmentPct)}
                       </p>
-                      <p className="text-[11px] text-muted mt-1">
-                        Scenario: {formatCompact(investmentAbs)} | Ref: {hasReferenceInvestment ? formatCompact(referenceInvestment) : 'NA'}
+                    </div>
+                  ) : null}
+                  {card.isTotal ? (
+                    <div>
+                      <p className="text-[10px] uppercase tracking-wide text-muted">CTS</p>
+                      <p className="text-2xl leading-none mt-2 font-semibold text-body">{formatFixed(ctsAbs, 2)}%</p>
+                      <p className={`text-sm font-semibold mt-1 ${pctToneClass(ctsPct)}`}>
+                        {formatSignedPct(ctsPct)}
                       </p>
                     </div>
                   ) : null}
