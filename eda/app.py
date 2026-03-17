@@ -33,6 +33,101 @@ def _find_data_dir() -> Path:
     raise FileNotFoundError("DATA folder not found. Expected DATA or ../DATA")
 
 
+def _round_discount_series(values, step: float = 0.5):
+    arr = pd.Series(values, dtype=float).replace([np.inf, -np.inf], np.nan).fillna(0.0).to_numpy(dtype=float)
+    step = float(step) if float(step) > 0 else 0.5
+    rounded = np.round(arr / step) * step
+    return np.clip(rounded, 0.0, 100.0)
+
+
+def _estimate_base_discount_monthly_blocks(
+    period_series,
+    discount_series,
+    min_upward_jump_pp: float = 1.0,
+    min_downward_drop_pp: float = 1.0,
+    round_step: float = 0.5,
+):
+    periods = pd.to_datetime(pd.Series(period_series), errors="coerce")
+    discounts = pd.Series(discount_series, copy=False).astype(float).replace([np.inf, -np.inf], np.nan)
+    valid = periods.notna() & discounts.notna()
+    if valid.sum() == 0:
+        return np.array([]), np.array([], dtype=bool)
+
+    work = pd.DataFrame(
+        {
+            "Period": periods[valid].to_numpy(),
+            "Discount": discounts[valid].to_numpy(dtype=float),
+        }
+    ).sort_values("Period", kind="stable").reset_index(drop=True)
+
+    if work.empty:
+        return np.array([]), np.array([], dtype=bool)
+
+    work["Month_Key"] = pd.to_datetime(work["Period"], errors="coerce").dt.to_period("M")
+    monthly = (
+        work.groupby("Month_Key", as_index=False)
+        .agg(
+            Period=("Period", "min"),
+            Discount=("Discount", "median"),
+        )
+        .sort_values("Period", kind="stable")
+        .reset_index(drop=True)
+    )
+
+    if monthly.empty:
+        return np.array([]), np.array([], dtype=bool)
+
+    discounts_month = pd.Series(monthly["Discount"], dtype=float).interpolate(limit_direction="both").bfill().ffill()
+    discounts_month = _round_discount_series(discounts_month, step=round_step)
+
+    n = len(discounts_month)
+    base = np.zeros(n, dtype=float)
+    transitions = np.zeros(n, dtype=bool)
+
+    min_upward_jump_pp = max(0.0, float(min_upward_jump_pp))
+    min_downward_drop_pp = max(0.0, float(min_downward_drop_pp))
+
+    prev_base = None
+    for i in range(n):
+        candidate = float(discounts_month[i]) if pd.notna(discounts_month[i]) else np.nan
+        if not np.isfinite(candidate):
+            candidate = prev_base if prev_base is not None else 0.0
+
+        if prev_base is None:
+            block_base = candidate
+        else:
+            if candidate > prev_base and (candidate - prev_base) < min_upward_jump_pp:
+                block_base = prev_base
+            elif candidate < prev_base and (prev_base - candidate) < min_downward_drop_pp:
+                block_base = prev_base
+            else:
+                block_base = candidate
+            if abs(block_base - prev_base) > 1e-9:
+                transitions[i] = True
+
+        base[i] = np.clip(float(block_base), 0.0, 100.0)
+        prev_base = float(block_base)
+
+    return base, transitions
+
+
+def _apply_step2_base_discount_monthly(grp: pd.DataFrame) -> pd.DataFrame:
+    out = grp.sort_values("PeriodStart", kind="stable").reset_index(drop=True).copy()
+    out["Discount_Level_%"] = np.where(out["Sales"] != 0, out["Discount"] / out["Sales"] * 100.0, np.nan)
+    base_monthly, _ = _estimate_base_discount_monthly_blocks(
+        out["PeriodStart"],
+        out["Discount_Level_%"],
+        min_upward_jump_pp=1.0,
+        min_downward_drop_pp=1.0,
+        round_step=0.5,
+    )
+    if len(base_monthly) == len(out):
+        out["Base_Discount_%"] = _round_discount_series(base_monthly, step=0.5)
+    else:
+        out["Base_Discount_%"] = np.nan
+    return out
+
+
 @st.cache_data(show_spinner=True)
 def load_data() -> pd.DataFrame:
     data_dir = _find_data_dir()
@@ -207,7 +302,7 @@ def make_monthly(df: pd.DataFrame) -> pd.DataFrame:
         .reset_index(drop=True)
     )
 
-    grp["Discount_Level_%"] = np.where(grp["Sales"] != 0, grp["Discount"] / grp["Sales"] * 100.0, np.nan)
+    grp = _apply_step2_base_discount_monthly(grp)
     grp["Base_Price"] = np.where(grp["Volume"] != 0, grp["Sales"] / grp["Volume"], np.nan)
     grp["MRP"] = np.where(grp["Volume"] != 0, grp["MRP_x_Vol"] / grp["Volume"], np.nan)
 
@@ -233,7 +328,12 @@ def make_monthly_by(df: pd.DataFrame, group_col: str) -> pd.DataFrame:
         .sort_values(["PeriodStart", group_col])
         .reset_index(drop=True)
     )
-    grp["Discount_Level_%"] = np.where(grp["Sales"] != 0, grp["Discount"] / grp["Sales"] * 100.0, np.nan)
+    out_parts = []
+    for gval, part in grp.groupby(group_col, sort=False):
+        part2 = _apply_step2_base_discount_monthly(part)
+        part2[group_col] = gval
+        out_parts.append(part2)
+    grp = pd.concat(out_parts, ignore_index=True) if out_parts else grp
     grp["Base_Price"] = np.where(grp["Volume"] != 0, grp["Sales"] / grp["Volume"], np.nan)
     grp["MRP"] = np.where(grp["Volume"] != 0, grp["MRP_x_Vol"] / grp["Volume"], np.nan)
     return grp
@@ -362,7 +462,7 @@ def render_size_tab(
     l1, l2, l3, l4 = st.columns(4)
     l1.metric("Sales (Latest Month)", f"{latest['Sales']:,.0f}")
     l2.metric("Volume (Latest Month)", f"{latest['Volume']:,.0f}")
-    l3.metric("Discount Level % (Latest)", "NA" if pd.isna(latest["Discount_Level_%"]) else f"{latest['Discount_Level_%']:.2f}%")
+    l3.metric("Base Discount % (Latest)", "NA" if pd.isna(latest["Base_Discount_%"]) else f"{latest['Base_Discount_%']:.2f}%")
     l4.metric("Base Price (Latest)", "NA" if pd.isna(latest["Base_Price"]) else f"{latest['Base_Price']:.2f}")
 
     st.markdown("### Trends")
@@ -375,10 +475,10 @@ def render_size_tab(
     c1.plotly_chart(
         line_chart_single(
             monthly["PeriodStart"],
-            monthly["Discount_Level_%"],
-            f"{size_label} Discount Level %",
+            monthly["Base_Discount_%"],
+            f"{size_label} Base Discount %",
             "#2ca02c",
-            title_text=f"{size_label} Discount Level %",
+            title_text=f"{size_label} Base Discount % (Step 2 logic)",
         ),
         use_container_width=True,
         config=PLOT_CONFIG,
@@ -465,7 +565,7 @@ def render_size_tab(
             "Volume",
             "Sales_Growth_%",
             "Volume_Growth_%",
-            "Discount_Level_%",
+            "Base_Discount_%",
             "Base_Price",
             "MRP",
         ]
@@ -474,13 +574,13 @@ def render_size_tab(
     st.dataframe(size_table, use_container_width=True, height=240)
 
     state_table = by_state[
-        ["Period", "State_Use", "Sales", "Volume", "Discount_Level_%", "Base_Price", "MRP"]
+        ["Period", "State_Use", "Sales", "Volume", "Base_Discount_%", "Base_Price", "MRP"]
     ].copy()
     st.markdown("#### State Level Monthly")
     st.dataframe(state_table, use_container_width=True, height=240)
 
     slab_table = by_slab[
-        ["Period", "Slab", "Sales", "Volume", "Discount_Level_%", "Base_Price", "MRP"]
+        ["Period", "Slab", "Sales", "Volume", "Base_Discount_%", "Base_Price", "MRP"]
     ].copy()
     st.markdown("#### Slab Level Monthly")
     st.dataframe(slab_table, use_container_width=True, height=240)
@@ -495,7 +595,7 @@ def main():
         """,
         unsafe_allow_html=True,
     )
-    st.caption("Professional EDA | Fixed scope: STX INSTA SHAMPOO + STREAX INSTA SHAMPOO | Slab: monthly outlet quantity logic")
+    st.caption("Professional EDA | Fixed scope: STX INSTA SHAMPOO + STREAX INSTA SHAMPOO | Slab: monthly outlet quantity logic | Discount: Step 2 monthly base-discount logic")
     st.markdown(
         """
         <style>
@@ -566,7 +666,7 @@ def main():
         )
         p3, p4 = st.columns(2)
         p3.plotly_chart(
-            multi_line_chart(by_size, "Sizes", "Discount_Level_%", "Discount Level % by Pack Size", "Discount %"),
+            multi_line_chart(by_size, "Sizes", "Base_Discount_%", "Base Discount % by Pack Size (Step 2 logic)", "Base Discount %"),
             use_container_width=True,
             config=PLOT_CONFIG,
         )

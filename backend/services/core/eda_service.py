@@ -513,6 +513,9 @@ class EDAServiceMixin:
             )
 
         work["period"] = work["Date"].dt.to_period("M").astype(str)
+        work["MRP"] = pd.to_numeric(work.get("MRP"), errors="coerce").fillna(0.0)
+        work["Quantity"] = pd.to_numeric(work.get("Quantity"), errors="coerce").fillna(0.0)
+        work["mrp_x_qty"] = work["MRP"] * work["Quantity"]
 
         grouped = (
             work.groupby(["period", "Sizes", "Slab"], as_index=False)
@@ -520,6 +523,7 @@ class EDAServiceMixin:
                 quantity=("Quantity", "sum"),
                 sales_value=("SalesValue_atBasicRate", "sum"),
                 discount_value=("TotalDiscount", "sum"),
+                mrp_x_qty=("mrp_x_qty", "sum"),
             )
             .sort_values(["Sizes", "Slab", "period"], kind="mergesort")
         )
@@ -543,6 +547,11 @@ class EDAServiceMixin:
             .fillna(0.0)
             * 100.0
         )
+        grouped["mrp"] = np.where(
+            grouped["quantity"] > 0,
+            grouped["mrp_x_qty"] / grouped["quantity"],
+            0.0,
+        )
 
         periods = sorted(grouped["period"].astype(str).unique().tolist())
         series: List[SlabTrendEDASeries] = []
@@ -565,6 +574,7 @@ class EDAServiceMixin:
                         volume_change_pct=float(row.get("volume_change_pct", 0.0) or 0.0),
                         revenue=float(row.get("sales_value", 0.0) or 0.0),
                         revenue_change_pct=float(row.get("revenue_change_pct", 0.0) or 0.0),
+                        mrp=float(row.get("mrp", 0.0) or 0.0),
                     )
                 points = [point_map[p] for p in periods if p in point_map]
                 if points:

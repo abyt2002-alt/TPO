@@ -569,6 +569,7 @@ class SlabTrendEDAPoint(BaseModel):
     volume_change_pct: float
     revenue: float
     revenue_change_pct: float
+    mrp: float = 0.0
 
 
 class SlabTrendEDASeries(BaseModel):

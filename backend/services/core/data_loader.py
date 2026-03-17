@@ -83,6 +83,7 @@ class DataLoaderMixin:
             "Sizes",
             "Slab",
             "Quantity",
+            "MRP",
             "Net_Amt",
             "SalesValue_atBasicRate",
             "TotalDiscount",
@@ -107,7 +108,7 @@ class DataLoaderMixin:
         df = df.reindex(columns=keep_cols).copy()
 
         # Downcast numerics early to keep startup memory bounded.
-        for c in ["Quantity", "Net_Amt", "SalesValue_atBasicRate", "TotalDiscount"]:
+        for c in ["Quantity", "MRP", "Net_Amt", "SalesValue_atBasicRate", "TotalDiscount"]:
             if c in df.columns:
                 df[c] = pd.to_numeric(df[c], errors="coerce").astype("float32")
 
