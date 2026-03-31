@@ -2,7 +2,6 @@ import { useEffect, useMemo, useState } from 'react'
 import { AlertCircle, Loader2, Maximize2, X } from 'lucide-react'
 import {
   CartesianGrid,
-  ComposedChart,
   Line,
   LineChart,
   ResponsiveContainer,
@@ -23,6 +22,32 @@ const formatDate = (value) => {
 const formatPct = (value) => Number(value || 0).toFixed(2)
 const formatMetric = (value) => Number(value || 0).toLocaleString(undefined, { maximumFractionDigits: 2 })
 const formatWhole = (value) => Number(value || 0).toLocaleString(undefined, { maximumFractionDigits: 0 })
+const normalizeSizeKey = (value) => String(value || '').toUpperCase().replace(/\s+/g, '').trim()
+const parseSlabIndex = (value) => {
+  const match = String(value || '').trim().toLowerCase().match(/(\d+)/)
+  if (!match) return null
+  const idx = Number(match[1])
+  return Number.isFinite(idx) ? idx : null
+}
+
+const parseSlabResultLabel = (label, idx) => {
+  const text = String(label || `Slab ${idx + 1}`).trim()
+  const parts = text.split('|').map((part) => part.trim()).filter(Boolean)
+  if (parts.length >= 2) {
+    return {
+      sizeKey: normalizeSizeKey(parts[0]),
+      sizeLabel: parts[0],
+      slabLabel: parts.slice(1).join(' | '),
+      fullLabel: text,
+    }
+  }
+  return {
+    sizeKey: '',
+    sizeLabel: '',
+    slabLabel: text,
+    fullLabel: text,
+  }
+}
 
 const BaseDepthEstimator = ({
   config,
@@ -33,12 +58,75 @@ const BaseDepthEstimator = ({
   isError,
   errorMessage,
   showControls = true,
+  definedSlabProfiles = {},
 }) => {
   const [isChartModalOpen, setIsChartModalOpen] = useState(false)
   const [activeTabId, setActiveTabId] = useState('all')
-  const [showActualDiscount, setShowActualDiscount] = useState(true)
+  const [activeSizeKey, setActiveSizeKey] = useState('')
+  const [showActualDiscount, setShowActualDiscount] = useState(false)
+
+  const parsedSlabResults = useMemo(() => {
+    return (data?.slab_results || []).map((item, idx) => {
+      const parsed = parseSlabResultLabel(item?.slab, idx)
+      return {
+        id: `slab-${idx}-${parsed.fullLabel || 'unknown'}`,
+        ...parsed,
+        data: {
+          success: item?.success,
+          message: item?.message,
+          points: item?.points || [],
+          summary: item?.summary || {},
+        },
+      }
+    }).filter((item) => {
+      const sizeKey = normalizeSizeKey(item.sizeKey)
+      if (!sizeKey) return true
+      const profile = definedSlabProfiles?.[sizeKey]
+      const definedCount = Number(profile?.defined_slab_count || 0)
+      if (!Number.isFinite(definedCount) || definedCount < 2) return true
+      const slabIdx = parseSlabIndex(item.slabLabel)
+      if (slabIdx === null) return true
+      return slabIdx >= 1 && slabIdx < definedCount
+    })
+  }, [data, definedSlabProfiles])
+
+  useEffect(() => {
+    const sizeKeys = Array.from(new Set(parsedSlabResults.map((item) => item.sizeKey).filter(Boolean)))
+    if (sizeKeys.length > 1) {
+      if (!activeSizeKey || !sizeKeys.includes(activeSizeKey)) {
+        setActiveSizeKey(sizeKeys[0] || '')
+      }
+    } else {
+      setActiveSizeKey('')
+    }
+  }, [parsedSlabResults, activeSizeKey])
+
+  const sizeTabItems = useMemo(() => {
+    const items = Array.from(
+      new Map(
+        parsedSlabResults
+          .filter((item) => item.sizeKey)
+          .map((item) => [item.sizeKey, { id: item.sizeKey, label: item.sizeLabel || item.sizeKey }])
+      ).values()
+    )
+    return items
+  }, [parsedSlabResults])
+
+  const isSizeSplitMode = sizeTabItems.length > 1
+  const resolvedSizeKey = activeSizeKey || sizeTabItems[0]?.id || ''
 
   const tabItems = useMemo(() => {
+    if (isSizeSplitMode) {
+      return parsedSlabResults
+        .filter((item) => item.sizeKey === resolvedSizeKey)
+        .map((item) => ({
+          id: item.id,
+          label: item.slabLabel,
+          sizeLabel: item.sizeLabel,
+          data: item.data,
+        }))
+    }
+
     const allTab = {
       id: 'all',
       label: 'All Slabs',
@@ -50,19 +138,15 @@ const BaseDepthEstimator = ({
       },
     }
 
-    const slabTabs = (data?.slab_results || []).map((item, idx) => ({
-      id: `slab-${idx}-${item?.slab || 'unknown'}`,
-      label: String(item?.slab || `Slab ${idx + 1}`),
-      data: {
-        success: item?.success,
-        message: item?.message,
-        points: item?.points || [],
-        summary: item?.summary || {},
-      },
+    const slabTabs = parsedSlabResults.map((item) => ({
+      id: item.id,
+      label: item.fullLabel,
+      sizeLabel: item.sizeLabel,
+      data: item.data,
     }))
 
     return slabTabs.length > 0 ? [allTab, ...slabTabs] : [allTab]
-  }, [data])
+  }, [data, parsedSlabResults, isSizeSplitMode, resolvedSizeKey])
 
   useEffect(() => {
     if (!tabItems.find((t) => t.id === activeTabId)) {
@@ -74,6 +158,37 @@ const BaseDepthEstimator = ({
   const points = activeTab?.data?.points || []
   const summaryBySlab = Array.isArray(data?.summary_by_slab) ? data.summary_by_slab : []
   const visibleSummaryRows = useMemo(() => {
+    if (isSizeSplitMode) {
+      const selected = parsedSlabResults.filter((item) => item.sizeKey === resolvedSizeKey)
+      if (!selected.length) return []
+
+      const rows = selected.map((item) => {
+        const pts = item.data?.points || []
+        const invoices = pts.reduce((acc, p) => acc + Number(p?.orders || 0), 0)
+        const quantity = pts.reduce((acc, p) => acc + Number(p?.quantity || 0), 0)
+        const sales = pts.reduce((acc, p) => acc + Number(p?.sales_value || 0), 0)
+        const totalDiscount = pts.reduce((acc, p) => acc + (Number(p?.actual_discount_pct || 0) * Number(p?.sales_value || 0) / 100), 0)
+        return {
+          Slab: item.slabLabel || item.fullLabel,
+          Invoices: invoices,
+          Quantity: quantity,
+          AOQ: invoices > 0 ? quantity / invoices : 0,
+          AOV: invoices > 0 ? sales / invoices : 0,
+          Sales_Value: sales,
+          Total_Discount: totalDiscount,
+          Discount_Pct: sales > 0 ? (totalDiscount / sales) * 100 : 0,
+        }
+      })
+
+      const totalInvoices = rows.reduce((acc, r) => acc + Number(r?.Invoices || 0), 0)
+      const totalSales = rows.reduce((acc, r) => acc + Number(r?.Sales_Value || 0), 0)
+      return rows.map((r) => ({
+        ...r,
+        'Invoice_Contribution_%': totalInvoices > 0 ? (Number(r.Invoices || 0) / totalInvoices) * 100 : 0,
+        'Sales_Contribution_%': totalSales > 0 ? (Number(r.Sales_Value || 0) / totalSales) * 100 : 0,
+      }))
+    }
+
     if (Array.isArray(summaryBySlab) && summaryBySlab.length > 0) return summaryBySlab
     const slabs = (data?.slab_results || []).filter((item) => item?.success && Array.isArray(item?.points) && item.points.length > 0)
     if (!slabs.length) return []
@@ -104,9 +219,10 @@ const BaseDepthEstimator = ({
       'Invoice_Contribution_%': totalInvoices > 0 ? (Number(r.Invoices || 0) / totalInvoices) * 100 : 0,
       'Sales_Contribution_%': totalSales > 0 ? (Number(r.Sales_Value || 0) / totalSales) * 100 : 0,
     }))
-  }, [summaryBySlab, data])
-  const hasSlabTabs = (data?.slab_results || []).length > 0
-  const showSlabOnlyCharts = hasSlabTabs && activeTabId !== 'all' && points.length > 0
+  }, [summaryBySlab, data, isSizeSplitMode, parsedSlabResults, resolvedSizeKey])
+  const activeDisplayLabel = activeTab?.sizeLabel
+    ? `${activeTab.sizeLabel} - ${activeTab.label}`
+    : activeTab?.label
 
   const renderChart = (height = 380) => (
     <div style={{ width: '100%', height }}>
@@ -134,7 +250,7 @@ const BaseDepthEstimator = ({
             />
           )}
           <Line
-            type="monotone"
+            type="stepAfter"
             dataKey="base_discount_pct"
             name="Estimated Base Discount %"
             stroke="#0F766E"
@@ -144,72 +260,6 @@ const BaseDepthEstimator = ({
             connectNulls
           />
         </LineChart>
-      </ResponsiveContainer>
-    </div>
-  )
-
-  const renderComposedChart = ({ dataKey, metricLabel, lineColor, height = 360 }) => (
-    <div style={{ width: '100%', height }}>
-      <ResponsiveContainer>
-        <ComposedChart data={points} margin={{ top: 10, right: 20, left: 8, bottom: 0 }}>
-          <CartesianGrid strokeDasharray="4 4" stroke="#d8e0ea" />
-          <XAxis dataKey="period" tickFormatter={formatDate} minTickGap={28} tick={{ fill: '#4a5568', fontSize: 12 }} />
-          <YAxis
-            yAxisId="left"
-            tick={{ fill: '#4a5568', fontSize: 12 }}
-            tickFormatter={(value) => formatMetric(value)}
-          />
-          <YAxis
-            yAxisId="right"
-            orientation="right"
-            tick={{ fill: '#4a5568', fontSize: 12 }}
-            tickFormatter={(value) => `${formatPct(value)}%`}
-          />
-          <Tooltip
-            labelFormatter={formatDate}
-            formatter={(value, name) => {
-              if (name === metricLabel) return [formatMetric(value), name]
-              return [`${formatPct(value)}%`, name]
-            }}
-            contentStyle={{ borderRadius: 10, border: '1px solid #d6dee8', boxShadow: '0 8px 24px rgba(15, 23, 42, 0.12)' }}
-          />
-          <Legend wrapperStyle={{ paddingTop: 8 }} />
-          <Line
-            yAxisId="left"
-            dataKey={dataKey}
-            name={metricLabel}
-            type="monotone"
-            stroke={lineColor}
-            strokeWidth={2.5}
-            dot={false}
-            activeDot={{ r: 4 }}
-            connectNulls
-          />
-          {showActualDiscount && (
-            <Line
-              yAxisId="right"
-              type="linear"
-              dataKey="actual_discount_pct"
-              name="Actual Discount %"
-              stroke="#93C5FD"
-              strokeWidth={1.5}
-              dot={false}
-              activeDot={{ r: 3, fill: '#60A5FA', stroke: '#60A5FA' }}
-              connectNulls={false}
-            />
-          )}
-          <Line
-            yAxisId="right"
-            type="monotone"
-            dataKey="base_discount_pct"
-            name="Estimated Base Discount %"
-            stroke="#0F766E"
-            strokeWidth={4}
-            dot={false}
-            activeDot={{ r: 4 }}
-            connectNulls
-          />
-        </ComposedChart>
       </ResponsiveContainer>
     </div>
   )
@@ -309,25 +359,53 @@ const BaseDepthEstimator = ({
         </div>
       )}
 
-      {data?.success && tabItems.length > 1 && (
-        <div className="bg-white rounded-lg shadow-md p-4">
-          <h4 className="text-base font-semibold text-body mb-3">Slab Tabs</h4>
-          <div className="flex flex-wrap gap-2">
-            {tabItems.map((tab) => (
-              <button
-                key={tab.id}
-                type="button"
-                onClick={() => setActiveTabId(tab.id)}
-                className={`px-3 py-1.5 text-sm rounded-md border ${
-                  activeTabId === tab.id
-                    ? 'bg-primary text-white border-primary'
-                    : 'bg-white text-body border-gray-300'
-                }`}
-              >
-                {tab.label}
-              </button>
-            ))}
-          </div>
+      {data?.success && (sizeTabItems.length > 0 || tabItems.length > 1) && (
+        <div className="bg-white rounded-lg shadow-md p-4 space-y-4">
+          {isSizeSplitMode && (
+            <div>
+              <h4 className="text-base font-semibold text-body mb-3">Pack Size</h4>
+              <div className="flex flex-wrap gap-2">
+                {sizeTabItems.map((tab) => (
+                  <button
+                    key={tab.id}
+                    type="button"
+                    onClick={() => setActiveSizeKey(tab.id)}
+                    className={`px-3 py-1.5 text-sm rounded-md border ${
+                      activeSizeKey === tab.id
+                        ? 'bg-primary text-white border-primary'
+                        : 'bg-white text-body border-gray-300'
+                    }`}
+                  >
+                    {tab.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {tabItems.length > 1 && (
+            <div>
+              <h4 className="text-base font-semibold text-body mb-3">
+                {isSizeSplitMode ? `${activeTab?.sizeLabel || activeSizeKey} Slabs` : 'Slab Tabs'}
+              </h4>
+              <div className="flex flex-wrap gap-2">
+                {tabItems.map((tab) => (
+                  <button
+                    key={tab.id}
+                    type="button"
+                    onClick={() => setActiveTabId(tab.id)}
+                    className={`px-3 py-1.5 text-sm rounded-md border ${
+                      activeTabId === tab.id
+                        ? 'bg-primary text-white border-primary'
+                        : 'bg-white text-body border-gray-300'
+                    }`}
+                  >
+                    {tab.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       )}
 
@@ -385,7 +463,7 @@ const BaseDepthEstimator = ({
                   <div className="bg-white rounded-lg shadow-md p-6">
                     <div className="flex items-center justify-between mb-4">
                       <h4 className="text-lg font-semibold text-body">
-                        Actual vs Estimated Base Discount {activeTab?.label ? `- ${activeTab.label}` : ''}
+                        Actual vs Estimated Base Discount {activeDisplayLabel ? `- ${activeDisplayLabel}` : ''}
                       </h4>
                       <div className="flex items-center gap-3">
                         <label className="inline-flex items-center gap-2 text-sm text-body">
@@ -412,37 +490,6 @@ const BaseDepthEstimator = ({
                     </div>
                   </div>
 
-                  {showSlabOnlyCharts && (
-                    <>
-                      <div className="bg-white rounded-lg shadow-md p-6">
-                        <h4 className="text-lg font-semibold text-body mb-4">
-                          Quantity vs Discount % - {activeTab?.label}
-                        </h4>
-                        <div className="rounded-lg border border-slate-200 bg-gradient-to-br from-indigo-50 via-white to-cyan-50 p-3">
-                          {renderComposedChart({
-                            dataKey: 'quantity',
-                            metricLabel: 'Quantity',
-                            lineColor: '#6366F1',
-                            height: 360,
-                          })}
-                        </div>
-                      </div>
-
-                      <div className="bg-white rounded-lg shadow-md p-6">
-                        <h4 className="text-lg font-semibold text-body mb-4">
-                          Sales Value vs Discount % - {activeTab?.label}
-                        </h4>
-                        <div className="rounded-lg border border-slate-200 bg-gradient-to-br from-amber-50 via-white to-orange-50 p-3">
-                          {renderComposedChart({
-                            dataKey: 'sales_value',
-                            metricLabel: 'Sales Value',
-                            lineColor: '#F59E0B',
-                            height: 360,
-                          })}
-                        </div>
-                      </div>
-                    </>
-                  )}
               </div>
             ) : (
               <div className="bg-white rounded-lg shadow-md p-6">
@@ -464,7 +511,7 @@ const BaseDepthEstimator = ({
           <div className="relative w-[94vw] max-w-6xl h-[85vh] bg-white rounded-lg shadow-2xl p-4">
             <div className="flex items-center justify-between mb-3">
               <h4 className="text-lg font-semibold text-body">
-                Actual vs Estimated Base Discount {activeTab?.label ? `- ${activeTab.label}` : ''}
+                Actual vs Estimated Base Discount {activeDisplayLabel ? `- ${activeDisplayLabel}` : ''}
               </h4>
               <button
                 type="button"

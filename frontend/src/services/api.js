@@ -11,7 +11,7 @@ const API_BASE_URL = (import.meta.env.VITE_API_URL || '').trim() || resolveDefau
 
 const api = axios.create({
   baseURL: API_BASE_URL,
-  timeout: 30000,
+  timeout: 120000,
   headers: {
     'Content-Type': 'application/json',
   },
@@ -47,7 +47,9 @@ export const exportRFMOutlets = async (filters) => {
 }
 
 export const calculateBaseDepth = async (payload) => {
-  const response = await api.post('/api/discount/base-depth', payload)
+  const response = await api.post('/api/discount/base-depth', payload, {
+    timeout: 180000,
+  })
   return response.data
 }
 
@@ -57,12 +59,28 @@ export const getDiscountOptions = async (payload) => {
 }
 
 export const calculateModeling = async (payload) => {
-  const response = await api.post('/api/discount/modeling', payload)
+  const response = await api.post('/api/discount/modeling', payload, {
+    timeout: 180000,
+  })
   return response.data
 }
 
 export const calculate12MonthPlanner = async (payload) => {
   const response = await api.post('/api/planner/12-month', payload, {
+    timeout: 180000,
+  })
+  return response.data
+}
+
+export const calculateCrossSizePlanner = async (payload) => {
+  const response = await api.post('/api/planner/cross-size', payload, {
+    timeout: 180000,
+  })
+  return response.data
+}
+
+export const calculateBaselineForecast = async (payload) => {
+  const response = await api.post('/api/forecast/baseline', payload, {
     timeout: 180000,
   })
   return response.data
@@ -81,6 +99,35 @@ export const comparePlannerScenarios = async ({ payload, file }) => {
   return response.data
 }
 
+export const generateAIScenarios = async (payload) => {
+  const response = await api.post('/api/planner/scenario-ai-generate', payload, {
+    timeout: 180000,
+  })
+  return response.data
+}
+
+export const startAIScenarioJob = async (payload) => {
+  const response = await api.post('/api/planner/scenario-ai-generate/jobs', payload, {
+    timeout: 120000,
+  })
+  return response.data
+}
+
+export const getAIScenarioJobStatus = async (jobId) => {
+  const response = await api.get(`/api/planner/scenario-ai-generate/jobs/${jobId}`, {
+    timeout: 120000,
+  })
+  return response.data
+}
+
+export const getAIScenarioJobResults = async (jobId, { offset = 0, limit = 200 } = {}) => {
+  const response = await api.get(`/api/planner/scenario-ai-generate/jobs/${jobId}/results`, {
+    params: { offset, limit },
+    timeout: 180000,
+  })
+  return response.data
+}
+
 export const getEDAOptions = async (payload) => {
   const response = await api.post('/api/eda/options', payload, {
     timeout: 120000,
@@ -95,18 +142,31 @@ export const getEDAOverview = async (payload) => {
   return response.data
 }
 
+export const getSlabTrendEDA = async (payload) => {
+  const response = await api.post('/api/eda/slab-trend', payload, {
+    timeout: 180000,
+  })
+  return response.data
+}
+
 export const createRun = async (runId = null) => {
-  const response = await api.post('/api/runs/create', runId ? { run_id: runId } : {})
+  const response = await api.post('/api/runs/create', runId ? { run_id: runId } : {}, {
+    timeout: 120000,
+  })
   return response.data
 }
 
 export const getRunState = async (runId) => {
-  const response = await api.get(`/api/runs/${runId}/state`)
+  const response = await api.get(`/api/runs/${runId}/state`, {
+    timeout: 120000,
+  })
   return response.data
 }
 
 export const saveRunState = async (runId, payload) => {
-  const response = await api.post(`/api/runs/${runId}/state`, payload)
+  const response = await api.post(`/api/runs/${runId}/state`, payload, {
+    timeout: 120000,
+  })
   return response.data
 }
 

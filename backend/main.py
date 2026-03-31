@@ -13,7 +13,12 @@ from models.rfm_models import (
     RunStateUpdateRequest, RunStateResponse,
     ModelingRequest, ModelingResponse,
     PlannerRequest, PlannerResponse, PlannerScenarioComparisonResponse,
-    EDARequest, EDAResponse, EDAOptionsResponse
+    CrossSizePlannerRequest, CrossSizePlannerResponse,
+    AIScenarioGenerateRequest, AIScenarioGenerateResponse,
+    AIScenarioJobCreateResponse, AIScenarioJobStatusResponse, AIScenarioJobResultsResponse,
+    BaselineForecastRequest, BaselineForecastResponse,
+    EDARequest, EDAResponse, EDAOptionsResponse,
+    SlabTrendEDARequest, SlabTrendEDAResponse
 )
 
 app = FastAPI(title="Trade Promo Optimization API", version="1.0.0")
@@ -185,6 +190,42 @@ async def run_12_month_planner(request: PlannerRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.post("/api/planner/cross-size", response_model=CrossSizePlannerResponse)
+async def run_cross_size_planner(request: CrossSizePlannerRequest):
+    """Run Step 4: combined cross-size side-by-side scenario planner."""
+    try:
+        result = await rfm_service.calculate_cross_size_planner(request)
+        if request.run_id:
+            rfm_service.save_run_state(
+                run_id=request.run_id,
+                state_update={
+                    "active_step": "step4",
+                    "step4_result": jsonable_encoder(result),
+                },
+            )
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/forecast/baseline", response_model=BaselineForecastResponse)
+async def run_baseline_forecast(request: BaselineForecastRequest):
+    """Run Step 5: size-wise baseline forecast for 12-ML, 18-ML, and total."""
+    try:
+        result = await rfm_service.calculate_baseline_forecast(request)
+        if request.run_id:
+            rfm_service.save_run_state(
+                run_id=request.run_id,
+                state_update={
+                    "active_step": "step5",
+                    "step5_result": jsonable_encoder(result),
+                },
+            )
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.post("/api/planner/scenario-compare", response_model=PlannerScenarioComparisonResponse)
 async def compare_planner_scenarios(
     payload_json: str = Form(...),
@@ -204,11 +245,57 @@ async def compare_planner_scenarios(
             rfm_service.save_run_state(
                 run_id=request.run_id,
                 state_update={
-                    "active_step": "step5",
-                    "step5_result": jsonable_encoder(result),
+                    "active_step": "step6",
+                    "step6_result": jsonable_encoder(result),
                 },
             )
         return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/planner/scenario-ai-generate", response_model=AIScenarioGenerateResponse)
+async def generate_ai_scenarios(request: AIScenarioGenerateRequest):
+    """Generate AI scenario discount matrices for Step 5 using Gemini."""
+    try:
+        return await rfm_service.generate_ai_scenarios(request)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/planner/scenario-ai-generate/jobs", response_model=AIScenarioJobCreateResponse)
+async def create_ai_scenario_job(request: AIScenarioGenerateRequest):
+    """Start async AI scenario generation job for Step 5."""
+    try:
+        return await rfm_service.create_ai_scenario_job(request)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/planner/scenario-ai-generate/jobs/{job_id}", response_model=AIScenarioJobStatusResponse)
+async def get_ai_scenario_job_status(job_id: str):
+    """Fetch async AI scenario job status and progress."""
+    try:
+        status = rfm_service.get_ai_scenario_job_status(job_id)
+        if status is None:
+            raise HTTPException(status_code=404, detail="AI scenario job not found")
+        return status
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/planner/scenario-ai-generate/jobs/{job_id}/results", response_model=AIScenarioJobResultsResponse)
+async def get_ai_scenario_job_results(job_id: str, offset: int = 0, limit: int = 200):
+    """Fetch paged AI scenarios for a completed/partial async job."""
+    try:
+        results = rfm_service.get_ai_scenario_job_results(job_id=job_id, offset=offset, limit=limit)
+        if results is None:
+            raise HTTPException(status_code=404, detail="AI scenario job not found")
+        return results
     except HTTPException:
         raise
     except Exception as e:
@@ -242,6 +329,15 @@ async def get_eda_overview(request: EDARequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.post("/api/eda/slab-trend", response_model=SlabTrendEDAResponse)
+async def get_slab_trend_eda(request: SlabTrendEDARequest):
+    """Run slab-wise monthly discount/volume trend EDA for 12-ML and 18-ML."""
+    try:
+        return await rfm_service.get_slab_trend_eda(request)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.post("/api/runs/create", response_model=RunCreateResponse)
 async def create_run(request: RunCreateRequest = RunCreateRequest()):
     try:
@@ -267,6 +363,7 @@ async def get_run_state(run_id: str):
             step3_result=(state.get("state") or {}).get("step3_result"),
             step4_result=(state.get("state") or {}).get("step4_result"),
             step5_result=(state.get("state") or {}).get("step5_result"),
+            step6_result=(state.get("state") or {}).get("step6_result"),
         )
     except HTTPException:
         raise
@@ -290,6 +387,7 @@ async def save_run_state(run_id: str, request: RunStateUpdateRequest):
             step3_result=((state.get("state") or {}).get("step3_result") if state else None),
             step4_result=((state.get("state") or {}).get("step4_result") if state else None),
             step5_result=((state.get("state") or {}).get("step5_result") if state else None),
+            step6_result=((state.get("state") or {}).get("step6_result") if state else None),
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
