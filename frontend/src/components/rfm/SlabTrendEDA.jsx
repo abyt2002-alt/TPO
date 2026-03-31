@@ -417,6 +417,7 @@ const SlabTrendEDA = ({ data, isLoading, isError, errorMessage }) => {
   const [hiddenPackSales, setHiddenPackSales] = useState(new Set())
   const [hiddenPackDiscount, setHiddenPackDiscount] = useState(new Set())
   const [hiddenPackMrpVol, setHiddenPackMrpVol] = useState(new Set())
+  const [hiddenPackVolumeOnly, setHiddenPackVolumeOnly] = useState(new Set())
 
   const toggleSetKey = (setter, key) => {
     setter((prev) => {
@@ -581,6 +582,51 @@ const SlabTrendEDA = ({ data, isLoading, isError, errorMessage }) => {
                     <Line yAxisId="mrp" type="monotone" dataKey="mrp_18" name="18-ML MRP" stroke="#ea580c" strokeWidth={2} dot={{ r: 2 }} connectNulls hide={hiddenPackMrpVol.has('mrp_18')} />
                     <Line yAxisId="vol" type="monotone" dataKey="volume_12" name="12-ML Volume" stroke="#2563eb" strokeDasharray="5 3" strokeWidth={2} dot={{ r: 2 }} connectNulls hide={hiddenPackMrpVol.has('volume_12')} />
                     <Line yAxisId="vol" type="monotone" dataKey="volume_18" name="18-ML Volume" stroke="#f97316" strokeDasharray="5 3" strokeWidth={2} dot={{ r: 2 }} connectNulls hide={hiddenPackMrpVol.has('volume_18')} />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+
+            <div className="bg-slate-50 rounded-md p-3">
+              <h5 className="text-sm font-semibold text-body mb-2">Volume by Pack Size</h5>
+              <SeriesToggleLegend
+                items={[
+                  { key: 'volume_12_only', label: '12-ML Volume', color: '#2563eb' },
+                  { key: 'volume_18_only', label: '18-ML Volume', color: '#f97316' },
+                ]}
+                hiddenKeys={hiddenPackVolumeOnly}
+                onToggle={(key) => toggleSetKey(setHiddenPackVolumeOnly, key)}
+              />
+              <div className="h-72">
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart data={packCombinedRows} margin={{ top: 8, right: 16, left: 0, bottom: 8 }}>
+                    <CartesianGrid strokeDasharray="3 3" />
+                    <XAxis dataKey="period" tickFormatter={monthLabel} />
+                    <YAxis width={64} tickFormatter={compactFmt} />
+                    <Tooltip
+                      formatter={(value) => numFmt(value)}
+                      labelFormatter={(label) => monthLabel(label)}
+                    />
+                    <Line
+                      type="monotone"
+                      dataKey="volume_12"
+                      name="12-ML Volume"
+                      stroke="#2563eb"
+                      strokeWidth={2}
+                      dot={{ r: 2 }}
+                      connectNulls
+                      hide={hiddenPackVolumeOnly.has('volume_12_only')}
+                    />
+                    <Line
+                      type="monotone"
+                      dataKey="volume_18"
+                      name="18-ML Volume"
+                      stroke="#f97316"
+                      strokeWidth={2}
+                      dot={{ r: 2 }}
+                      connectNulls
+                      hide={hiddenPackVolumeOnly.has('volume_18_only')}
+                    />
                   </LineChart>
                 </ResponsiveContainer>
               </div>
