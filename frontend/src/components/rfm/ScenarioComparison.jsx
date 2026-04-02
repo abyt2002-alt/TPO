@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
-import { AlertCircle, Download, Loader2, Save, X } from 'lucide-react'
+import { AlertCircle, Download, FolderOpen, Loader2, Save, X } from 'lucide-react'
 import {
   ResponsiveContainer,
   BarChart,
@@ -1258,6 +1258,18 @@ const ScenarioComparison = ({
               </option>
             ))}
           </select>
+          <button
+            type="button"
+            onClick={() => {
+              if (!selectedSavedReportKey) return
+              openSavedScenarioModal(selectedSavedReportKey)
+            }}
+            disabled={!selectedSavedReportKey}
+            className="inline-flex items-center gap-1 px-2.5 py-2 rounded-lg border border-slate-300 text-body hover:bg-slate-50 text-sm disabled:opacity-40"
+          >
+            <FolderOpen size={14} />
+            Open
+          </button>
           <button
             type="button"
             onClick={() => {
