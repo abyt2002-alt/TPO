@@ -1532,6 +1532,12 @@ class Step4CrossSizePlannerMixin:
             return {}
 
         work = df_scope.copy()
+        work, missing = self._prepare_step2_discount_basis(work)
+        if missing:
+            raise ValueError(
+                "Step 4 requires Q1 discount columns. Missing: "
+                + ", ".join(missing)
+            )
         if 'Date' not in work.columns:
             return {}
 
@@ -1543,8 +1549,14 @@ class Step4CrossSizePlannerMixin:
         work['Month_Key'] = work['Date'].dt.to_period('M').astype(str)
         work['Size_Key'] = work.get('Sizes', pd.Series(index=work.index, dtype='object')).astype(str).map(self._normalize_step2_size_key)
         work['Quantity_Num'] = pd.to_numeric(work.get('Quantity', 0.0), errors='coerce').fillna(0.0)
-        work['Sales_Num'] = pd.to_numeric(work.get('SalesValue_atBasicRate', 0.0), errors='coerce').fillna(0.0)
-        work['Discount_Num'] = pd.to_numeric(work.get('TotalDiscount', 0.0), errors='coerce').fillna(0.0)
+        # Revenue convention:
+        # Gross Revenue = DSP * Qty, Net Revenue = CLP * Qty
+        work['Sales_Num'] = pd.to_numeric(
+            work.get('_step2_clp_sales', work.get('_step2_dsp_sales', 0.0)),
+            errors='coerce'
+        ).fillna(0.0)
+        work['Sales_Gross_Num'] = pd.to_numeric(work.get('_step2_dsp_sales', 0.0), errors='coerce').fillna(0.0)
+        work['Discount_Num'] = pd.to_numeric(work.get('_step2_scheme_amount', 0.0), errors='coerce').fillna(0.0)
         work['Net_Revenue'] = work['Sales_Num'] - work['Discount_Num']
 
         ref_periods: List[str] = []
@@ -1584,13 +1596,16 @@ class Step4CrossSizePlannerMixin:
                 continue
 
             qty = float(size_part['Quantity_Num'].sum())
-            revenue = float(size_part['Net_Revenue'].sum())
+            revenue_net = float(size_part['Sales_Num'].sum())
+            revenue_gross = float(size_part['Sales_Gross_Num'].sum())
             investment = float(size_part['Discount_Num'].sum())
             cogs = float(pair_state.get(size_key, {}).get('cogs_per_unit', 0.0))
-            profit = float(revenue - (qty * cogs))
+            profit = float(revenue_net - (qty * cogs))
             out[size_key] = {
                 'reference_qty': qty,
-                'reference_revenue': revenue,
+                'reference_revenue': revenue_gross,
+                'reference_revenue_gross': revenue_gross,
+                'reference_revenue_net': revenue_net,
                 'reference_profit': profit,
                 'reference_investment': investment,
                 'reference_available': 1.0,
@@ -1598,12 +1613,16 @@ class Step4CrossSizePlannerMixin:
 
         total_qty = float(sum(out.get(size, {}).get('reference_qty', 0.0) for size in ['12-ML', '18-ML']))
         total_revenue = float(sum(out.get(size, {}).get('reference_revenue', 0.0) for size in ['12-ML', '18-ML']))
+        total_revenue_gross = float(sum(out.get(size, {}).get('reference_revenue_gross', 0.0) for size in ['12-ML', '18-ML']))
+        total_revenue_net = float(sum(out.get(size, {}).get('reference_revenue_net', 0.0) for size in ['12-ML', '18-ML']))
         total_profit = float(sum(out.get(size, {}).get('reference_profit', 0.0) for size in ['12-ML', '18-ML']))
         total_investment = float(sum(out.get(size, {}).get('reference_investment', 0.0) for size in ['12-ML', '18-ML']))
         total_available = 1.0 if any(out.get(size, {}).get('reference_available', 0.0) > 0 for size in ['12-ML', '18-ML']) else 0.0
         out['TOTAL'] = {
             'reference_qty': total_qty,
             'reference_revenue': total_revenue,
+            'reference_revenue_gross': total_revenue_gross,
+            'reference_revenue_net': total_revenue_net,
             'reference_profit': total_profit,
             'reference_investment': total_investment,
             'reference_available': total_available,
@@ -2713,11 +2732,31 @@ class Step4CrossSizePlannerMixin:
 
                     last_row = model_df.iloc[-1]
                     coeff = modeled['coefficients']
-                    default_discount = float(last_row.get('base_discount_pct', 0.0))
+                    base_discount_hist = pd.to_numeric(
+                        model_df.get('base_discount_pct', pd.Series(dtype=float)),
+                        errors='coerce',
+                    ).ffill().bfill().fillna(0.0).to_numpy(dtype=float)
+                    if base_discount_hist.size >= forecast_months:
+                        default_discount_series = base_discount_hist[-forecast_months:].tolist()
+                    elif base_discount_hist.size > 0:
+                        pad = [float(base_discount_hist[0])] * max(0, forecast_months - int(base_discount_hist.size))
+                        default_discount_series = (pad + base_discount_hist.tolist())[:forecast_months]
+                    else:
+                        default_discount_series = [0.0] * forecast_months
+
+                    default_discount = float(default_discount_series[-1]) if default_discount_series else float(last_row.get('base_discount_pct', 0.0))
                     anchor_qty = max(float(last_row.get('quantity', 0.0)), 1.0)
                     base_price_series = pd.to_numeric(model_df.get('base_price', pd.Series(dtype=float)), errors='coerce').dropna()
                     default_base_price = float(base_price_series.iloc[-1]) if not base_price_series.empty else 0.0
                     base_price_for_slab = float(last_row.get('base_price', default_base_price)) if pd.notna(last_row.get('base_price', np.nan)) else default_base_price
+                    slab_df_q1, missing_q1_slab = self._prepare_step2_discount_basis(slab_df)
+                    clp_price_for_slab = float(base_price_for_slab)
+                    if not missing_q1_slab:
+                        qty_series_slab = pd.to_numeric(slab_df_q1.get('Quantity', 0.0), errors='coerce').fillna(0.0)
+                        clp_sales_series = pd.to_numeric(slab_df_q1.get('_step2_clp_sales', 0.0), errors='coerce').fillna(0.0)
+                        clp_unit_series = (clp_sales_series / qty_series_slab.replace(0, np.nan)).replace([np.inf, -np.inf], np.nan).dropna()
+                        if not clp_unit_series.empty:
+                            clp_price_for_slab = float(clp_unit_series.iloc[-1])
                     cogs_for_slab = float(self._resolve_modeling_cogs_for_size(request, size_key, 0.0))
 
                     baseline_series = pd.to_numeric(
@@ -2741,6 +2780,7 @@ class Step4CrossSizePlannerMixin:
                             lag1_base_discount_pct=float(last_row.get('lag1_base_discount_pct', 0.0)),
                             anchor_qty=float(anchor_qty),
                             base_price=float(base_price_for_slab),
+                            clp_price=float(clp_price_for_slab),
                             cogs_per_unit=float(cogs_for_slab),
                             stage2_intercept=float(coeff.get('stage2_intercept', 0.0)),
                             coef_residual_store=float(coeff.get('coef_residual_store', 0.0)),
@@ -2760,9 +2800,11 @@ class Step4CrossSizePlannerMixin:
                             ),
                         },
                         'default_discount_pct': float(default_discount),
+                        'default_discount_series': [float(v) for v in default_discount_series],
                         'anchor_qty': float(anchor_qty),
                         'baseline_forecast': baseline_forecast.tolist(),
                         'base_price': float(base_price_for_slab),
+                        'clp_price': float(clp_price_for_slab),
                         'cogs_per_unit': float(cogs_for_slab),
                     }
 
@@ -2779,7 +2821,13 @@ class Step4CrossSizePlannerMixin:
                     )
                 )
                 total_qty_scope = float(pd.to_numeric(size_df.get('Quantity', pd.Series(dtype=float)), errors='coerce').fillna(0.0).sum())
-                total_sales_scope = float(pd.to_numeric(size_df.get('SalesValue_atBasicRate', pd.Series(dtype=float)), errors='coerce').fillna(0.0).sum())
+                size_df_q1, missing_q1 = self._prepare_step2_discount_basis(size_df)
+                if missing_q1:
+                    raise ValueError(
+                        "Step 4 requires Q1 discount columns. Missing: "
+                        + ", ".join(missing_q1)
+                    )
+                total_sales_scope = float(pd.to_numeric(size_df_q1.get('_step2_dsp_sales', pd.Series(dtype=float)), errors='coerce').fillna(0.0).sum())
                 avg_base_price_scope = (total_sales_scope / total_qty_scope) if total_qty_scope > 0 else 0.0
                 cogs_scope = self._resolve_modeling_cogs_for_size(request, size_key, avg_base_price_scope * 0.5 if avg_base_price_scope > 0 else 0.0)
                 pair_state[size_key] = {
@@ -2807,8 +2855,13 @@ class Step4CrossSizePlannerMixin:
                 defaults_matrix[size_key] = {}
                 baseline_slab_matrix[size_key] = {}
                 for slab_key, slab_payload in block.get('slab_state', {}).items():
-                    default_discount = float(slab_payload.get('default_discount_pct', 0.0))
-                    defaults_matrix[size_key][str(slab_key)] = [default_discount for _ in range(forecast_months)]
+                    default_discount_series = [
+                        float(v) for v in (slab_payload.get('default_discount_series') or [])
+                    ]
+                    if len(default_discount_series) < forecast_months:
+                        fill_val = float(default_discount_series[-1]) if default_discount_series else float(slab_payload.get('default_discount_pct', 0.0))
+                        default_discount_series.extend([fill_val] * (forecast_months - len(default_discount_series)))
+                    defaults_matrix[size_key][str(slab_key)] = default_discount_series[:forecast_months]
                     base_series = [
                         max(float(v), 0.0)
                         for v in (slab_payload.get('baseline_forecast') or [0.0] * forecast_months)
@@ -2919,6 +2972,7 @@ class Step4CrossSizePlannerMixin:
                                 'pre_cross_qty': float(pre_cross_qty),
                                 'final_qty': float(pre_cross_qty),
                                 'base_price': float(slab_payload.get('base_price', 0.0)),
+                                'clp_price': float(slab_payload.get('clp_price', slab_payload.get('base_price', 0.0))),
                                 'cogs_per_unit': float(slab_payload.get('cogs_per_unit', 0.0)),
                             }
                         )
@@ -3014,6 +3068,10 @@ class Step4CrossSizePlannerMixin:
                     'final_qty': 0.0,
                     'baseline_revenue': 0.0,
                     'scenario_revenue': 0.0,
+                    'baseline_revenue_gross': 0.0,
+                    'scenario_revenue_gross': 0.0,
+                    'baseline_revenue_net': 0.0,
+                    'scenario_revenue_net': 0.0,
                     'baseline_profit': 0.0,
                     'scenario_profit': 0.0,
                     'baseline_investment': 0.0,
@@ -3026,6 +3084,10 @@ class Step4CrossSizePlannerMixin:
                     'final_qty': 0.0,
                     'baseline_revenue': 0.0,
                     'scenario_revenue': 0.0,
+                    'baseline_revenue_gross': 0.0,
+                    'scenario_revenue_gross': 0.0,
+                    'baseline_revenue_net': 0.0,
+                    'scenario_revenue_net': 0.0,
                     'baseline_profit': 0.0,
                     'scenario_profit': 0.0,
                     'baseline_investment': 0.0,
@@ -3047,6 +3109,10 @@ class Step4CrossSizePlannerMixin:
 
                     baseline_revenue_total = 0.0
                     scenario_revenue_total = 0.0
+                    baseline_revenue_gross_total = 0.0
+                    scenario_revenue_gross_total = 0.0
+                    baseline_revenue_net_total = 0.0
+                    scenario_revenue_net_total = 0.0
                     baseline_profit_total = 0.0
                     scenario_profit_total = 0.0
                     baseline_investment_total = 0.0
@@ -3054,22 +3120,31 @@ class Step4CrossSizePlannerMixin:
                     scenario_investment_positive_total = 0.0
                     for slab_row in slabs_for_month:
                         final_qty = max(float(slab_row.get('final_qty', 0.0)), 0.0)
-                        base_price = float(slab_row.get('base_price', 0.0))
+                        dsp_price = float(slab_row.get('base_price', 0.0))
+                        clp_price = float(slab_row.get('clp_price', dsp_price))
                         cogs_per_unit = float(slab_row.get('cogs_per_unit', 0.0))
                         default_discount = float(slab_row.get('default_discount_pct', 0.0))
                         scenario_discount = float(slab_row.get('scenario_discount_pct', 0.0))
                         baseline_qty = float(slab_row.get('non_discount_baseline_qty', 0.0))
 
-                        baseline_revenue = baseline_qty * base_price * (1.0 - (default_discount / 100.0))
-                        scenario_revenue = final_qty * base_price * (1.0 - (scenario_discount / 100.0))
-                        baseline_profit = baseline_revenue - (baseline_qty * cogs_per_unit)
-                        scenario_profit = scenario_revenue - (final_qty * cogs_per_unit)
-                        baseline_investment = baseline_qty * base_price * (default_discount / 100.0)
-                        scenario_investment = final_qty * base_price * (scenario_discount / 100.0)
-                        scenario_investment_positive = final_qty * base_price * (max(0.0, scenario_discount - default_discount) / 100.0)
+                        baseline_revenue_gross = baseline_qty * dsp_price
+                        scenario_revenue_gross = final_qty * dsp_price
+                        baseline_revenue_net = baseline_qty * clp_price
+                        scenario_revenue_net = final_qty * clp_price
+                        baseline_revenue = baseline_revenue_gross
+                        scenario_revenue = scenario_revenue_gross
+                        baseline_profit = baseline_revenue_net - (baseline_qty * cogs_per_unit)
+                        scenario_profit = scenario_revenue_net - (final_qty * cogs_per_unit)
+                        baseline_investment = baseline_qty * dsp_price * (default_discount / 100.0)
+                        scenario_investment = final_qty * dsp_price * (scenario_discount / 100.0)
+                        scenario_investment_positive = final_qty * dsp_price * (max(0.0, scenario_discount - default_discount) / 100.0)
 
                         slab_row['baseline_revenue'] = float(baseline_revenue)
                         slab_row['scenario_revenue'] = float(scenario_revenue)
+                        slab_row['baseline_revenue_gross'] = float(baseline_revenue_gross)
+                        slab_row['scenario_revenue_gross'] = float(scenario_revenue_gross)
+                        slab_row['baseline_revenue_net'] = float(baseline_revenue_net)
+                        slab_row['scenario_revenue_net'] = float(scenario_revenue_net)
                         slab_row['baseline_profit'] = float(baseline_profit)
                         slab_row['scenario_profit'] = float(scenario_profit)
                         slab_row['baseline_investment'] = float(baseline_investment)
@@ -3078,6 +3153,10 @@ class Step4CrossSizePlannerMixin:
 
                         baseline_revenue_total += baseline_revenue
                         scenario_revenue_total += scenario_revenue
+                        baseline_revenue_gross_total += baseline_revenue_gross
+                        scenario_revenue_gross_total += scenario_revenue_gross
+                        baseline_revenue_net_total += baseline_revenue_net
+                        scenario_revenue_net_total += scenario_revenue_net
                         baseline_profit_total += baseline_profit
                         scenario_profit_total += scenario_profit
                         baseline_investment_total += baseline_investment
@@ -3088,6 +3167,10 @@ class Step4CrossSizePlannerMixin:
                     size_payload['volume_delta_pct'] = ((final_total_qty - baseline_total_qty_non_discount) / baseline_total_qty_non_discount * 100.0) if baseline_total_qty_non_discount > 0 else 0.0
                     size_payload['baseline_revenue_total'] = float(baseline_revenue_total)
                     size_payload['scenario_revenue_total'] = float(scenario_revenue_total)
+                    size_payload['baseline_revenue_gross_total'] = float(baseline_revenue_gross_total)
+                    size_payload['scenario_revenue_gross_total'] = float(scenario_revenue_gross_total)
+                    size_payload['baseline_revenue_net_total'] = float(baseline_revenue_net_total)
+                    size_payload['scenario_revenue_net_total'] = float(scenario_revenue_net_total)
                     size_payload['revenue_delta_pct'] = ((scenario_revenue_total - baseline_revenue_total) / baseline_revenue_total * 100.0) if baseline_revenue_total > 0 else 0.0
                     size_payload['baseline_profit_total'] = float(baseline_profit_total)
                     size_payload['scenario_profit_total'] = float(scenario_profit_total)
@@ -3102,6 +3185,10 @@ class Step4CrossSizePlannerMixin:
                     summary_acc[size_key]['final_qty'] += final_total_qty
                     summary_acc[size_key]['baseline_revenue'] += baseline_revenue_total
                     summary_acc[size_key]['scenario_revenue'] += scenario_revenue_total
+                    summary_acc[size_key]['baseline_revenue_gross'] += baseline_revenue_gross_total
+                    summary_acc[size_key]['scenario_revenue_gross'] += scenario_revenue_gross_total
+                    summary_acc[size_key]['baseline_revenue_net'] += baseline_revenue_net_total
+                    summary_acc[size_key]['scenario_revenue_net'] += scenario_revenue_net_total
                     summary_acc[size_key]['baseline_profit'] += baseline_profit_total
                     summary_acc[size_key]['scenario_profit'] += scenario_profit_total
                     summary_acc[size_key]['baseline_investment'] += baseline_investment_total
@@ -3129,6 +3216,10 @@ class Step4CrossSizePlannerMixin:
                 final_qty = float(agg.get('final_qty', 0.0))
                 baseline_revenue = float(agg.get('baseline_revenue', 0.0))
                 scenario_revenue = float(agg.get('scenario_revenue', 0.0))
+                baseline_revenue_gross = float(agg.get('baseline_revenue_gross', baseline_revenue))
+                scenario_revenue_gross = float(agg.get('scenario_revenue_gross', scenario_revenue))
+                baseline_revenue_net = float(agg.get('baseline_revenue_net', 0.0))
+                scenario_revenue_net = float(agg.get('scenario_revenue_net', 0.0))
                 baseline_profit = float(agg.get('baseline_profit', 0.0))
                 scenario_profit = float(agg.get('scenario_profit', 0.0))
                 baseline_investment = float(agg.get('baseline_investment', 0.0))
@@ -3136,6 +3227,8 @@ class Step4CrossSizePlannerMixin:
                 scenario_investment_positive = float(agg.get('scenario_investment_positive', 0.0))
                 reference_qty = float(reference_3m.get(size_key, {}).get('reference_qty', 0.0))
                 reference_revenue = float(reference_3m.get(size_key, {}).get('reference_revenue', 0.0))
+                reference_revenue_gross = float(reference_3m.get(size_key, {}).get('reference_revenue_gross', reference_revenue))
+                reference_revenue_net = float(reference_3m.get(size_key, {}).get('reference_revenue_net', 0.0))
                 reference_profit = float(reference_3m.get(size_key, {}).get('reference_profit', 0.0))
                 reference_investment = float(reference_3m.get(size_key, {}).get('reference_investment', 0.0))
                 reference_available = float(reference_3m.get(size_key, {}).get('reference_available', 0.0))
@@ -3148,7 +3241,13 @@ class Step4CrossSizePlannerMixin:
                     'volume_delta_additive_pct': ((pre_cross_qty - baseline_qty) / baseline_qty * 100.0) if baseline_qty > 0 else 0.0,
                     'baseline_revenue': baseline_revenue,
                     'scenario_revenue': scenario_revenue,
+                    'baseline_revenue_gross': baseline_revenue_gross,
+                    'scenario_revenue_gross': scenario_revenue_gross,
+                    'baseline_revenue_net': baseline_revenue_net,
+                    'scenario_revenue_net': scenario_revenue_net,
                     'revenue_delta_pct': ((scenario_revenue - baseline_revenue) / baseline_revenue * 100.0) if baseline_revenue > 0 else 0.0,
+                    'revenue_gross_delta_pct': ((scenario_revenue_gross - baseline_revenue_gross) / baseline_revenue_gross * 100.0) if baseline_revenue_gross > 0 else 0.0,
+                    'revenue_net_delta_pct': ((scenario_revenue_net - baseline_revenue_net) / baseline_revenue_net * 100.0) if baseline_revenue_net > 0 else 0.0,
                     'baseline_profit': baseline_profit,
                     'scenario_profit': scenario_profit,
                     'profit_delta_pct': ((scenario_profit - baseline_profit) / abs(baseline_profit) * 100.0) if abs(baseline_profit) > 1e-9 else 0.0,
@@ -3158,12 +3257,16 @@ class Step4CrossSizePlannerMixin:
                     'investment_delta_pct': ((scenario_investment - baseline_investment) / baseline_investment * 100.0) if baseline_investment > 0 else 0.0,
                     'reference_qty': reference_qty,
                     'reference_revenue': reference_revenue,
+                    'reference_revenue_gross': reference_revenue_gross,
+                    'reference_revenue_net': reference_revenue_net,
                     'reference_profit': reference_profit,
                     'reference_investment': reference_investment,
                     'own_delta_vs_reference_pct': ((pre_cross_qty - reference_qty) / reference_qty * 100.0) if reference_qty > 0 else 0.0,
                     'adjusted_delta_vs_reference_pct': ((final_qty - reference_qty) / reference_qty * 100.0) if reference_qty > 0 else 0.0,
                     'vs_reference_volume_pct': ((final_qty - reference_qty) / reference_qty * 100.0) if reference_qty > 0 else 0.0,
                     'vs_reference_revenue_pct': ((scenario_revenue - reference_revenue) / reference_revenue * 100.0) if reference_revenue > 0 else 0.0,
+                    'vs_reference_revenue_gross_pct': ((scenario_revenue_gross - reference_revenue_gross) / reference_revenue_gross * 100.0) if reference_revenue_gross > 0 else 0.0,
+                    'vs_reference_revenue_net_pct': ((scenario_revenue_net - reference_revenue_net) / reference_revenue_net * 100.0) if reference_revenue_net > 0 else 0.0,
                     'vs_reference_profit_pct': ((scenario_profit - reference_profit) / abs(reference_profit) * 100.0) if abs(reference_profit) > 1e-9 else 0.0,
                     'vs_reference_investment_pct': ((scenario_investment - reference_investment) / reference_investment * 100.0) if reference_investment > 0 else 0.0,
                     'investment_change_positive_vs_reference_pct': (
@@ -3178,6 +3281,10 @@ class Step4CrossSizePlannerMixin:
             total_final_qty = float(sum(summary_3m.get(size, {}).get('final_qty', 0.0) for size in ['12-ML', '18-ML']))
             total_baseline_revenue = float(sum(summary_3m.get(size, {}).get('baseline_revenue', 0.0) for size in ['12-ML', '18-ML']))
             total_scenario_revenue = float(sum(summary_3m.get(size, {}).get('scenario_revenue', 0.0) for size in ['12-ML', '18-ML']))
+            total_baseline_revenue_gross = float(sum(summary_3m.get(size, {}).get('baseline_revenue_gross', 0.0) for size in ['12-ML', '18-ML']))
+            total_scenario_revenue_gross = float(sum(summary_3m.get(size, {}).get('scenario_revenue_gross', 0.0) for size in ['12-ML', '18-ML']))
+            total_baseline_revenue_net = float(sum(summary_3m.get(size, {}).get('baseline_revenue_net', 0.0) for size in ['12-ML', '18-ML']))
+            total_scenario_revenue_net = float(sum(summary_3m.get(size, {}).get('scenario_revenue_net', 0.0) for size in ['12-ML', '18-ML']))
             total_baseline_profit = float(sum(summary_3m.get(size, {}).get('baseline_profit', 0.0) for size in ['12-ML', '18-ML']))
             total_scenario_profit = float(sum(summary_3m.get(size, {}).get('scenario_profit', 0.0) for size in ['12-ML', '18-ML']))
             total_baseline_investment = float(sum(summary_3m.get(size, {}).get('baseline_investment', 0.0) for size in ['12-ML', '18-ML']))
@@ -3185,6 +3292,8 @@ class Step4CrossSizePlannerMixin:
             total_scenario_investment_positive = float(sum(summary_3m.get(size, {}).get('investment_change_positive', 0.0) for size in ['12-ML', '18-ML']))
             reference_total_qty = float(reference_3m.get('TOTAL', {}).get('reference_qty', 0.0))
             reference_total_revenue = float(reference_3m.get('TOTAL', {}).get('reference_revenue', 0.0))
+            reference_total_revenue_gross = float(reference_3m.get('TOTAL', {}).get('reference_revenue_gross', reference_total_revenue))
+            reference_total_revenue_net = float(reference_3m.get('TOTAL', {}).get('reference_revenue_net', 0.0))
             reference_total_profit = float(reference_3m.get('TOTAL', {}).get('reference_profit', 0.0))
             reference_total_investment = float(reference_3m.get('TOTAL', {}).get('reference_investment', 0.0))
             baseline_volume_ml = float(
@@ -3220,7 +3329,13 @@ class Step4CrossSizePlannerMixin:
                 'volume_delta_additive_pct': ((total_pre_cross_qty - total_baseline_qty) / total_baseline_qty * 100.0) if total_baseline_qty > 0 else 0.0,
                 'baseline_revenue': total_baseline_revenue,
                 'scenario_revenue': total_scenario_revenue,
+                'baseline_revenue_gross': total_baseline_revenue_gross,
+                'scenario_revenue_gross': total_scenario_revenue_gross,
+                'baseline_revenue_net': total_baseline_revenue_net,
+                'scenario_revenue_net': total_scenario_revenue_net,
                 'revenue_delta_pct': ((total_scenario_revenue - total_baseline_revenue) / total_baseline_revenue * 100.0) if total_baseline_revenue > 0 else 0.0,
+                'revenue_gross_delta_pct': ((total_scenario_revenue_gross - total_baseline_revenue_gross) / total_baseline_revenue_gross * 100.0) if total_baseline_revenue_gross > 0 else 0.0,
+                'revenue_net_delta_pct': ((total_scenario_revenue_net - total_baseline_revenue_net) / total_baseline_revenue_net * 100.0) if total_baseline_revenue_net > 0 else 0.0,
                 'baseline_profit': total_baseline_profit,
                 'scenario_profit': total_scenario_profit,
                 'profit_delta_pct': ((total_scenario_profit - total_baseline_profit) / abs(total_baseline_profit) * 100.0) if abs(total_baseline_profit) > 1e-9 else 0.0,
@@ -3230,6 +3345,8 @@ class Step4CrossSizePlannerMixin:
                 'investment_delta_pct': ((total_scenario_investment - total_baseline_investment) / total_baseline_investment * 100.0) if total_baseline_investment > 0 else 0.0,
                 'reference_qty': reference_total_qty,
                 'reference_revenue': reference_total_revenue,
+                'reference_revenue_gross': reference_total_revenue_gross,
+                'reference_revenue_net': reference_total_revenue_net,
                 'reference_profit': reference_total_profit,
                 'reference_investment': reference_total_investment,
                 'vs_reference_volume_pct': (
@@ -3239,6 +3356,14 @@ class Step4CrossSizePlannerMixin:
                 'vs_reference_revenue_pct': (
                     ((total_scenario_revenue - reference_total_revenue) / reference_total_revenue * 100.0)
                     if reference_total_revenue > 0 else 0.0
+                ),
+                'vs_reference_revenue_gross_pct': (
+                    ((total_scenario_revenue_gross - reference_total_revenue_gross) / reference_total_revenue_gross * 100.0)
+                    if reference_total_revenue_gross > 0 else 0.0
+                ),
+                'vs_reference_revenue_net_pct': (
+                    ((total_scenario_revenue_net - reference_total_revenue_net) / reference_total_revenue_net * 100.0)
+                    if reference_total_revenue_net > 0 else 0.0
                 ),
                 'vs_reference_profit_pct': (
                     ((total_scenario_profit - reference_total_profit) / abs(reference_total_profit) * 100.0)

@@ -3,7 +3,7 @@
 import pandas as pd
 import numpy as np
 from pathlib import Path
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Tuple
 from sklearn.cluster import KMeans
 from sklearn.preprocessing import StandardScaler
 from sklearn.linear_model import LinearRegression
@@ -40,15 +40,86 @@ from models.rfm_models import (
 
 class Step2DiscountMixin:
 
+    def _resolve_step2_discount_columns(self, df: pd.DataFrame) -> Dict[str, Optional[str]]:
+        cols = list(df.columns)
+        colset = set(cols)
+        return {
+            "scheme_col": "Scheme_Discount" if "Scheme_Discount" in colset else ("scheme_discount" if "scheme_discount" in colset else None),
+            "qps_col": "Staggered_qps" if "Staggered_qps" in colset else ("staggered_qps" if "staggered_qps" in colset else None),
+            "dsp_col": (
+                "Basic_Rate_Per_PC_without_GST"
+                if "Basic_Rate_Per_PC_without_GST" in colset
+                else (
+                    "basic_rate_per_pc_without_gst"
+                    if "basic_rate_per_pc_without_gst" in colset
+                    else (
+                        "Basic_Rate_Per_PC"
+                        if "Basic_Rate_Per_PC" in colset
+                        else ("basic_rate_per_pc" if "basic_rate_per_pc" in colset else None)
+                    )
+                )
+            ),
+            "clp_col": (
+                "Selling_Rate_Per_PC_without_GST_CLP"
+                if "Selling_Rate_Per_PC_without_GST_CLP" in colset
+                else (
+                    "selling_rate_per_pc_without_gst_clp"
+                    if "selling_rate_per_pc_without_gst_clp" in colset
+                    else None
+                )
+            ),
+        }
+
+    def _prepare_step2_discount_basis(self, df: pd.DataFrame) -> Tuple[pd.DataFrame, List[str]]:
+        work = df.copy()
+        colmap = self._resolve_step2_discount_columns(work)
+        dsp_col = colmap.get("dsp_col")
+        # Prefer Basic_Rate_Per_PC_without_GST when present with usable values,
+        # otherwise fallback to Basic_Rate_Per_PC.
+        if dsp_col in {"Basic_Rate_Per_PC_without_GST", "basic_rate_per_pc_without_gst"}:
+            alt_dsp = "Basic_Rate_Per_PC" if "Basic_Rate_Per_PC" in work.columns else ("basic_rate_per_pc" if "basic_rate_per_pc" in work.columns else None)
+            if alt_dsp is not None:
+                dsp_series = pd.to_numeric(work[dsp_col], errors='coerce').fillna(0.0)
+                if float(dsp_series.abs().sum()) <= 1e-12:
+                    dsp_col = alt_dsp
+        colmap["dsp_col"] = dsp_col
+
+        missing = []
+        if 'Quantity' not in work.columns:
+            missing.append('Quantity')
+        if colmap.get("scheme_col") is None:
+            missing.append('Scheme_Discount')
+        if colmap.get("qps_col") is None:
+            missing.append('Staggered_qps')
+        if colmap.get("dsp_col") is None:
+            missing.append('Basic_Rate_Per_PC_without_GST (or Basic_Rate_Per_PC)')
+        if missing:
+            return work, missing
+
+        qty = pd.to_numeric(work['Quantity'], errors='coerce').fillna(0.0)
+        scheme = pd.to_numeric(work[colmap["scheme_col"]], errors='coerce').fillna(0.0)
+        qps = pd.to_numeric(work[colmap["qps_col"]], errors='coerce').fillna(0.0)
+        dsp = pd.to_numeric(work[colmap["dsp_col"]], errors='coerce').fillna(0.0)
+        clp_col = colmap.get("clp_col")
+        if clp_col is not None:
+            clp = pd.to_numeric(work[clp_col], errors='coerce').fillna(0.0)
+            clp = clp.where(clp > 0, dsp)
+        else:
+            clp = dsp
+
+        work['Quantity'] = qty
+        work['_step2_scheme_amount'] = scheme + qps
+        work['_step2_dsp_sales'] = qty * dsp
+        work['_step2_clp_sales'] = qty * clp
+        return work, []
+
     def _build_summary_by_slab(self, df_scope: pd.DataFrame) -> List[Dict[str, Any]]:
         if df_scope is None or df_scope.empty or 'Slab' not in df_scope.columns:
             return []
 
-        required_numeric = ['Quantity', 'SalesValue_atBasicRate', 'TotalDiscount']
-        if any(col not in df_scope.columns for col in required_numeric):
+        work, missing = self._prepare_step2_discount_basis(df_scope)
+        if missing:
             return []
-
-        work = df_scope.copy()
         outlet_col = 'Outlet_ID' if 'Outlet_ID' in work.columns else ('Store_ID' if 'Store_ID' in work.columns else None)
         if outlet_col is None:
             return []
@@ -66,9 +137,6 @@ class Step2DiscountMixin:
             work['Size_Key'] = work['Sizes'].astype(str).map(self._normalize_step2_size_key)
         else:
             work['Size_Key'] = ''
-        work['Quantity'] = pd.to_numeric(work['Quantity'], errors='coerce').fillna(0.0)
-        work['SalesValue_atBasicRate'] = pd.to_numeric(work['SalesValue_atBasicRate'], errors='coerce').fillna(0.0)
-        work['TotalDiscount'] = pd.to_numeric(work['TotalDiscount'], errors='coerce').fillna(0.0)
 
         date_part = pd.to_datetime(work.get('Date'), errors='coerce').dt.strftime('%Y-%m-%d').fillna('')
         work['Invoice_Key'] = (
@@ -90,8 +158,8 @@ class Step2DiscountMixin:
                 Invoices=('Invoice_Key', 'nunique'),
                 Quantity=('Quantity', 'sum'),
                 AOQ=('Quantity', 'mean'),
-                Sales_Value=('SalesValue_atBasicRate', 'sum'),
-                Total_Discount=('TotalDiscount', 'sum'),
+                Sales_Value=('_step2_dsp_sales', 'sum'),
+                Total_Discount=('_step2_scheme_amount', 'sum'),
             )
         )
         slab_summary['AOV'] = (
@@ -534,7 +602,9 @@ class Step2DiscountMixin:
 
 
     def _compute_base_depth_result(self, df: pd.DataFrame, request: BaseDepthRequest):
-        work = df.copy()
+        work, missing = self._prepare_step2_discount_basis(df)
+        if missing:
+            raise ValueError(f"Missing required columns for estimator: {', '.join(missing)}")
         work['Period'] = work['Date'].dt.floor('D')
 
         if 'Bill_No' in work.columns:
@@ -543,8 +613,8 @@ class Step2DiscountMixin:
                 .agg(
                     orders=('Bill_No', 'nunique'),
                     quantity=('Quantity', 'sum'),
-                    total_discount=('TotalDiscount', 'sum'),
-                    sales_value=('SalesValue_atBasicRate', 'sum'),
+                    total_discount=('_step2_scheme_amount', 'sum'),
+                    sales_value=('_step2_dsp_sales', 'sum'),
                 )
                 .sort_values('Period')
             )
@@ -554,8 +624,8 @@ class Step2DiscountMixin:
                 .agg(
                     orders=('Outlet_ID', 'count'),
                     quantity=('Quantity', 'sum'),
-                    total_discount=('TotalDiscount', 'sum'),
-                    sales_value=('SalesValue_atBasicRate', 'sum'),
+                    total_discount=('_step2_scheme_amount', 'sum'),
+                    sales_value=('_step2_dsp_sales', 'sum'),
                 )
                 .sort_values('Period')
             )
@@ -735,8 +805,10 @@ class Step2DiscountMixin:
                     summary={}
                 )
 
-            required_cols = ['Date', 'TotalDiscount', 'SalesValue_atBasicRate', 'Quantity']
+            required_cols = ['Date', 'Quantity']
             missing_cols = [c for c in required_cols if c not in df.columns]
+            _, step2_missing = self._prepare_step2_discount_basis(df)
+            missing_cols.extend([c for c in step2_missing if c not in missing_cols])
             if missing_cols:
                 return BaseDepthResponse(
                     success=False,

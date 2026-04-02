@@ -275,6 +275,12 @@ const ScenarioComparison = ({
   onGenerateForCurrentFilters = null,
   isAIGenerating = false,
   onFilterContextChange = null,
+  onSaveReport = null,
+  isSavingReport = false,
+  saveReportMessage = '',
+  savedReports = [],
+  isSavedReportsLoading = false,
+  onLoadSavedReport = null,
 }) => {
   const VISIBLE_SCENARIOS = 5
   const [minVolumePct, setMinVolumePct] = useState('')
@@ -292,6 +298,7 @@ const ScenarioComparison = ({
   const [modalDraft, setModalDraft] = useState(null)
   const [modalInputDraft, setModalInputDraft] = useState({})
   const [modalError, setModalError] = useState('')
+  const [selectedSavedReportKey, setSelectedSavedReportKey] = useState('')
 
   const [scenarios, setScenarios] = useState([])
   const [isCreateMode, setIsCreateMode] = useState(false)
@@ -936,8 +943,8 @@ const ScenarioComparison = ({
     })
   }
 
-  const saveModalScenario = () => {
-    if (!modalScenario || !modalDraft) return
+  const buildModalDraftForSave = () => {
+    if (!modalDraft) return null
     const draftForSave = JSON.parse(JSON.stringify(modalDraft))
     Object.entries(modalInputDraft || {}).forEach(([key, raw]) => {
       const [periodKey, sizeKey, slabKey] = key.split('|')
@@ -953,11 +960,18 @@ const ScenarioComparison = ({
         draftForSave.scenario_discounts_by_period[periodKey][sizeKey] = enforceNonDecreasingLadder(slabMap || {})
       })
     })
+    return draftForSave
+  }
+
+  const saveModalScenario = () => {
+    if (!modalScenario || !modalDraft) return
+    const draftForSave = buildModalDraftForSave()
+    if (!draftForSave) return
 
     const recomputed = recomputeScenario(draftForSave)
     if (!recomputed.success) {
       setModalError(recomputed.message || 'Scenario recomputation failed.')
-      return
+      return null
     }
     const updated = recomputed.scenario
     setScenarios((prev) => {
@@ -980,10 +994,90 @@ const ScenarioComparison = ({
     setModalDraft(JSON.parse(JSON.stringify(updated)))
     setModalError('')
     setIsCreateMode(false)
+    return updated
+  }
+
+  const saveModalScenarioToReports = async () => {
+    if (typeof onSaveReport !== 'function') return
+    const updated = saveModalScenario()
+    if (!updated) return
+    const name = String(updated?.custom_name || updated?.scenario || '').trim()
+    if (!name) {
+      setModalError('Scenario name is required before saving report.')
+      return
+    }
+    const summary12 = readSummary(updated, '12-ML')
+    const summary18 = readSummary(updated, '18-ML')
+    const summaryTotal = readSummary(updated, 'TOTAL')
+    const records = []
+    const scenarioByPeriod = normalizeScenarioDiscountsByPeriod(updated, data?.periods || [])
+    Object.entries(scenarioByPeriod || {}).forEach(([periodKey, bySize]) => {
+      ;['12-ML', '18-ML'].forEach((sizeKey) => {
+        const slabMap = bySize?.[sizeKey] || {}
+        sortSlabEntries(slabMap).forEach(([slabKey, discount]) => {
+          records.push({
+            period: periodKey,
+            size: sizeKey,
+            slab: slabKey,
+            scenario_discount_pct: Number(discount || 0),
+          })
+        })
+      })
+    })
+
+    onSaveReport({
+      name,
+      reference_mode: String(data?.reference_mode || plannerBase?.reference_mode || 'ly_same_3m'),
+      metadata: {
+        source: 'step5_scenario_modal',
+        scenario_key: String(updated?.key || updated?.scenario || ''),
+      },
+      payload: {
+        scenario: updated,
+        records,
+        totals: {
+          '12-ML': summary12,
+          '18-ML': summary18,
+          TOTAL: summaryTotal,
+        },
+      },
+    })
   }
 
   return (
     <div className="space-y-6">
+      <div className="bg-white rounded-lg shadow-md p-3 sticky top-0 z-20">
+        <div className="flex items-center gap-3">
+          <span className="text-sm font-semibold text-body whitespace-nowrap">Saved Reports</span>
+          <select
+            value={selectedSavedReportKey}
+            onChange={(e) => {
+              const key = String(e.target.value || '').trim()
+              setSelectedSavedReportKey(key)
+              if (key && typeof onLoadSavedReport === 'function') onLoadSavedReport(key)
+            }}
+            disabled={isSavedReportsLoading}
+            className="min-w-[280px] max-w-[460px] px-3 py-2 text-sm border border-slate-300 rounded-lg bg-white"
+          >
+            <option value="">Select saved Step 5 scenario</option>
+            {(Array.isArray(savedReports) ? savedReports : []).slice(0, 300).map((row) => (
+              <option key={String(row?.report_key || '')} value={String(row?.report_key || '')}>
+                {String(row?.name || '').trim() || 'Saved Scenario'}
+              </option>
+            ))}
+          </select>
+          {isSavedReportsLoading ? (
+            <span className="text-xs text-muted inline-flex items-center gap-1">
+              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              Loading...
+            </span>
+          ) : null}
+          {saveReportMessage ? (
+            <span className="text-xs text-muted truncate">{saveReportMessage}</span>
+          ) : null}
+        </div>
+      </div>
+
       <div className="bg-white rounded-lg shadow-md p-4">
         <div className="flex items-center justify-between gap-3 mb-2">
           <h3 className="text-base font-bold text-body">Input Filters (Discount %)</h3>
@@ -1336,6 +1430,15 @@ const ScenarioComparison = ({
               <div className="flex items-center gap-2">
                 <button
                   type="button"
+                  onClick={saveModalScenarioToReports}
+                  disabled={isSavingReport}
+                  className="inline-flex items-center gap-1 px-3 py-2 rounded-lg border border-slate-300 text-body hover:bg-slate-50 text-sm disabled:opacity-40"
+                >
+                  <Save size={14} />
+                  {isSavingReport ? 'Saving...' : 'Save Report'}
+                </button>
+                <button
+                  type="button"
                   onClick={saveModalScenario}
                   className="inline-flex items-center gap-1 px-3 py-2 rounded-lg border border-primary text-primary hover:bg-primary hover:text-white text-sm"
                 >
@@ -1413,7 +1516,11 @@ const ScenarioComparison = ({
                   <div className="text-base font-semibold text-body">{fmtPct(readSummary(modalDraft || modalScenario, 'TOTAL').investment_pct)}</div>
                 </div>
               </div>
-              {modalError && <div className="text-xs text-danger mt-2">{modalError}</div>}
+              {(modalError || saveReportMessage) && (
+                <div className={`text-xs mt-2 ${modalError ? 'text-danger' : 'text-muted'}`}>
+                  {modalError || saveReportMessage}
+                </div>
+              )}
             </div>
 
             <div className="p-5 overflow-auto">

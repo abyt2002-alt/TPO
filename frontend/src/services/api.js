@@ -128,6 +128,39 @@ export const getAIScenarioJobResults = async (jobId, { offset = 0, limit = 200 }
   return response.data
 }
 
+export const saveGlobalReport = async (payload) => {
+  const response = await api.post('/api/reports/save', payload, {
+    timeout: 120000,
+  })
+  return response.data
+}
+
+export const listGlobalReports = async ({ limit = 200 } = {}) => {
+  const response = await api.get('/api/reports', {
+    params: { limit },
+    timeout: 120000,
+  })
+  return response.data
+}
+
+export const getGlobalReport = async (reportKey) => {
+  const response = await api.get(`/api/reports/${reportKey}`, {
+    timeout: 120000,
+  })
+  return response.data
+}
+
+export const downloadGlobalReportsExcel = async ({ reportKeys = [] } = {}) => {
+  const response = await api.get('/api/reports/download', {
+    params: {
+      report_keys: Array.isArray(reportKeys) ? reportKeys.filter(Boolean).join(',') : '',
+    },
+    responseType: 'blob',
+    timeout: 300000,
+  })
+  return response
+}
+
 export const getEDAOptions = async (payload) => {
   const response = await api.post('/api/eda/options', payload, {
     timeout: 120000,
