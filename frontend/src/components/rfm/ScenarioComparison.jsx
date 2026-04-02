@@ -276,11 +276,10 @@ const ScenarioComparison = ({
   isAIGenerating = false,
   onFilterContextChange = null,
   onSaveReport = null,
-  isSavingReport = false,
   saveReportMessage = '',
   savedReports = [],
-  isSavedReportsLoading = false,
   onLoadSavedReport = null,
+  onDeleteSavedReport = null,
 }) => {
   const VISIBLE_SCENARIOS = 5
   const [minVolumePct, setMinVolumePct] = useState('')
@@ -738,7 +737,7 @@ const ScenarioComparison = ({
   const recomputeScenario = (scenarioLike) => {
     const baseForRecompute = (data?.planner_base?.success ? data.planner_base : null) || (plannerBase?.success ? plannerBase : null)
     if (!baseForRecompute?.success) {
-      return { success: false, message: 'Planner base data missing. Run Step 4 once, then Save & Recalculate.' }
+      return { success: false, message: 'Planner base data missing. Run Step 4 once, then Recalculate.' }
     }
     const periods = normalizePlannerPeriodsFromData(baseForRecompute)
     const scenarioByPeriod = scenarioLike?.scenario_discounts_by_period || {}
@@ -997,7 +996,7 @@ const ScenarioComparison = ({
     return updated
   }
 
-  const saveModalScenarioToReports = async () => {
+  const saveModalScenarioToSession = () => {
     if (typeof onSaveReport !== 'function') return
     const updated = saveModalScenario()
     if (!updated) return
@@ -1044,11 +1043,19 @@ const ScenarioComparison = ({
     })
   }
 
+  useEffect(() => {
+    if (!selectedSavedReportKey) return
+    const exists = (Array.isArray(savedReports) ? savedReports : []).some(
+      (row) => String(row?.report_key || '') === selectedSavedReportKey
+    )
+    if (!exists) setSelectedSavedReportKey('')
+  }, [savedReports, selectedSavedReportKey])
+
   return (
     <div className="space-y-6">
       <div className="bg-white rounded-lg shadow-md p-3 sticky top-0 z-20">
-        <div className="flex items-center gap-3">
-          <span className="text-sm font-semibold text-body whitespace-nowrap">Saved Reports</span>
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className="text-sm font-semibold text-body whitespace-nowrap">Saved Scenarios</span>
           <select
             value={selectedSavedReportKey}
             onChange={(e) => {
@@ -1056,8 +1063,7 @@ const ScenarioComparison = ({
               setSelectedSavedReportKey(key)
               if (key && typeof onLoadSavedReport === 'function') onLoadSavedReport(key)
             }}
-            disabled={isSavedReportsLoading}
-            className="min-w-[280px] max-w-[460px] px-3 py-2 text-sm border border-slate-300 rounded-lg bg-white"
+            className="min-w-[240px] max-w-[420px] px-3 py-2 text-sm border border-slate-300 rounded-lg bg-white"
           >
             <option value="">Select saved Step 5 scenario</option>
             {(Array.isArray(savedReports) ? savedReports : []).slice(0, 300).map((row) => (
@@ -1066,12 +1072,18 @@ const ScenarioComparison = ({
               </option>
             ))}
           </select>
-          {isSavedReportsLoading ? (
-            <span className="text-xs text-muted inline-flex items-center gap-1">
-              <Loader2 className="w-3.5 h-3.5 animate-spin" />
-              Loading...
-            </span>
-          ) : null}
+          <button
+            type="button"
+            onClick={() => {
+              if (!selectedSavedReportKey || typeof onDeleteSavedReport !== 'function') return
+              onDeleteSavedReport(selectedSavedReportKey)
+            }}
+            disabled={!selectedSavedReportKey}
+            className="inline-flex items-center gap-1 px-2.5 py-2 rounded-lg border border-slate-300 text-body hover:bg-slate-50 text-sm disabled:opacity-40"
+          >
+            <X size={14} />
+            Delete
+          </button>
           {saveReportMessage ? (
             <span className="text-xs text-muted truncate">{saveReportMessage}</span>
           ) : null}
@@ -1430,12 +1442,11 @@ const ScenarioComparison = ({
               <div className="flex items-center gap-2">
                 <button
                   type="button"
-                  onClick={saveModalScenarioToReports}
-                  disabled={isSavingReport}
+                  onClick={saveModalScenarioToSession}
                   className="inline-flex items-center gap-1 px-3 py-2 rounded-lg border border-slate-300 text-body hover:bg-slate-50 text-sm disabled:opacity-40"
                 >
                   <Save size={14} />
-                  {isSavingReport ? 'Saving...' : 'Save Report'}
+                  Save
                 </button>
                 <button
                   type="button"
@@ -1443,7 +1454,7 @@ const ScenarioComparison = ({
                   className="inline-flex items-center gap-1 px-3 py-2 rounded-lg border border-primary text-primary hover:bg-primary hover:text-white text-sm"
                 >
                   <Save size={14} />
-                  {isCreateMode ? 'Create & Recalculate' : 'Save & Recalculate'}
+                  Recalculate
                 </button>
                 <button
                   type="button"

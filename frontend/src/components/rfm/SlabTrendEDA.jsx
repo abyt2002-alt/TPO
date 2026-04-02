@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 import {
   AlertCircle,
   Loader2,
@@ -132,54 +132,6 @@ const buildPackCombinedData = (series = []) => {
     })
 }
 
-const toPackMonthlyCsv = (rows = []) => {
-  const header = [
-    'Month',
-    '12-ML Volume',
-    '18-ML Volume',
-    '12-ML Revenue (Basic Rate)',
-    '18-ML Revenue (Basic Rate)',
-  ]
-  const lines = [header.join(',')]
-  rows.forEach((row) => {
-    const month = monthLabel(row.period)
-    const vals = [
-      month,
-      Number(row.volume_12 || 0),
-      Number(row.volume_18 || 0),
-      Number(row.sales_12 || 0),
-      Number(row.sales_18 || 0),
-    ]
-    lines.push(vals.join(','))
-  })
-  return lines.join('\n')
-}
-
-const buildTableRows = (series = [], slabFilter = '') => {
-  const rows = []
-  const slabNeedle = String(slabFilter || '')
-  series.forEach((s) => {
-    const slab = String(s?.slab || '')
-    if (!slab) return
-    if (slabNeedle && slab !== slabNeedle) return
-    ;(s?.points || []).forEach((pt) => {
-      const period = String(pt?.period || '')
-      if (!period) return
-      rows.push({
-        period,
-        slab,
-        volume: Number(pt?.volume || 0),
-        volume_change_pct: Number(pt?.volume_change_pct || 0),
-      })
-    })
-  })
-  rows.sort((a, b) => {
-    if (a.period !== b.period) return String(a.period).localeCompare(String(b.period))
-    return slabSort(a.slab, b.slab)
-  })
-  return rows
-}
-
 const SlabLegend = ({ slabs, hiddenSlabs, onToggle }) => (
   <div className="flex flex-wrap gap-2 mb-2">
     {slabs.map((slab, idx) => {
@@ -224,85 +176,10 @@ const SeriesToggleLegend = ({ items, hiddenKeys, onToggle }) => (
   </div>
 )
 
-const EdaTable = ({ rows }) => {
-  if (!rows.length) {
-    return <p className="text-sm text-muted">No table rows available for selected filters.</p>
-  }
-  return (
-    <div className="overflow-auto border border-gray-200 rounded-md">
-      <table className="min-w-full text-xs">
-        <thead className="bg-slate-50 sticky top-0">
-          <tr>
-            <th className="px-3 py-2 text-left font-semibold text-body">Month</th>
-            <th className="px-3 py-2 text-left font-semibold text-body">Slab</th>
-            <th className="px-3 py-2 text-right font-semibold text-body">Volume</th>
-            <th className="px-3 py-2 text-right font-semibold text-body">Volume Change %</th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((row, idx) => (
-            <tr key={`${row.period}-${row.slab}-${idx}`} className="border-t border-gray-100">
-              <td className="px-3 py-2 text-body">{monthLabel(row.period)}</td>
-              <td className="px-3 py-2 text-body">{row.slab}</td>
-              <td className="px-3 py-2 text-right text-body">{numFmt(row.volume)}</td>
-              <td className="px-3 py-2 text-right text-body">{pctFmt(row.volume_change_pct)}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  )
-}
-
-const PackMonthlyTable = ({ rows }) => {
-  if (!rows.length) {
-    return <p className="text-sm text-muted">No monthly pack rows available.</p>
-  }
-  return (
-    <div className="overflow-auto border border-gray-200 rounded-md">
-      <table className="min-w-full text-xs">
-        <thead className="bg-slate-50 sticky top-0">
-          <tr>
-            <th className="px-3 py-2 text-left font-semibold text-body">Month</th>
-            <th className="px-3 py-2 text-right font-semibold text-body">12-ML Volume</th>
-            <th className="px-3 py-2 text-right font-semibold text-body">18-ML Volume</th>
-            <th className="px-3 py-2 text-right font-semibold text-body">12-ML Revenue (Basic Rate)</th>
-            <th className="px-3 py-2 text-right font-semibold text-body">18-ML Revenue (Basic Rate)</th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((row) => (
-            <tr key={`pack-row-${row.period}`} className="border-t border-gray-100">
-              <td className="px-3 py-2 text-body">{monthLabel(row.period)}</td>
-              <td className="px-3 py-2 text-right text-body">{numFmt(row.volume_12)}</td>
-              <td className="px-3 py-2 text-right text-body">{numFmt(row.volume_18)}</td>
-              <td className="px-3 py-2 text-right text-body">{numFmt(row.sales_12)}</td>
-              <td className="px-3 py-2 text-right text-body">{numFmt(row.sales_18)}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  )
-}
-
 const SizePanel = ({ title, series }) => {
   const discountData = mapSizeChartData(series, 'discount_pct')
   const volumeChangeData = mapSizeChartData(series, 'volume_change_pct')
-  const slabOptions = discountData.slabs
-  const [selectedSlab, setSelectedSlab] = useState('')
-  const tableRows = useMemo(() => buildTableRows(series, selectedSlab), [series, selectedSlab])
   const [hiddenSlabs, setHiddenSlabs] = useState(new Set())
-
-  useEffect(() => {
-    if (!slabOptions.length) {
-      setSelectedSlab('')
-      return
-    }
-    if (!selectedSlab || !slabOptions.includes(selectedSlab)) {
-      setSelectedSlab(slabOptions[0])
-    }
-  }, [selectedSlab, slabOptions])
 
   const handleToggleSlab = (slab) => {
     setHiddenSlabs((prev) => {
@@ -378,32 +255,6 @@ const SizePanel = ({ title, series }) => {
           </ResponsiveContainer>
         </div>
       </div>
-
-      <div className="bg-slate-50 rounded-md p-3">
-        <div className="flex items-center justify-between mb-2 gap-2 flex-wrap">
-          <h5 className="text-sm font-semibold text-body">Monthly Slab Table (Actual)</h5>
-          <div className="flex items-center gap-2 flex-wrap">
-            {slabOptions.map((slab) => (
-              <button
-                key={`table-slab-${title}-${slab}`}
-                type="button"
-                onClick={() => setSelectedSlab(slab)}
-                className={`px-2 py-1 rounded-md border text-xs font-semibold ${
-                  selectedSlab === slab ? 'bg-primary text-white border-primary' : 'bg-white text-body border-gray-300'
-                }`}
-              >
-                {slab}
-              </button>
-            ))}
-          </div>
-        </div>
-        {selectedSlab && (
-          <p className="text-xs text-muted mb-2">
-            Showing rows for <span className="font-semibold text-body">{selectedSlab}</span>
-          </p>
-        )}
-        <EdaTable rows={tableRows} />
-      </div>
     </div>
   )
 }
@@ -426,20 +277,6 @@ const SlabTrendEDA = ({ data, isLoading, isError, errorMessage }) => {
       else next.add(key)
       return next
     })
-  }
-
-  const handleDownloadPackCsv = () => {
-    if (!packCombinedRows.length) return
-    const csv = toPackMonthlyCsv(packCombinedRows)
-    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = 'pack_monthly_volume_revenue.csv'
-    document.body.appendChild(a)
-    a.click()
-    document.body.removeChild(a)
-    URL.revokeObjectURL(url)
   }
 
   return (
@@ -631,26 +468,6 @@ const SlabTrendEDA = ({ data, isLoading, isError, errorMessage }) => {
                 </ResponsiveContainer>
               </div>
             </div>
-
-            <details className="bg-slate-50 rounded-md p-3">
-              <summary className="text-sm font-semibold text-body cursor-pointer select-none">
-                Monthly Volume & Revenue by Pack
-              </summary>
-              <p className="text-xs text-muted mt-2 mb-2">
-                Revenue shown here is SalesValue_atBasicRate (pre-discount basic-rate sales value).
-              </p>
-              <div className="flex justify-end mb-2">
-                <button
-                  type="button"
-                  className="btn btn-secondary text-xs px-3 py-1"
-                  onClick={handleDownloadPackCsv}
-                  disabled={!packCombinedRows.length}
-                >
-                  Download CSV
-                </button>
-              </div>
-              <PackMonthlyTable rows={packCombinedRows} />
-            </details>
           </div>
 
           <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">

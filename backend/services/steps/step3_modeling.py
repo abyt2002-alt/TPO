@@ -39,8 +39,8 @@ from models.rfm_models import (
 from services.core.shared_math import CustomConstrainedRidge
 
 DEFAULT_COGS_BY_SIZE = {
-    "12-ML": 8.0,
-    "18-ML": 10.0,
+    "12-ML": 6.0,
+    "18-ML": 8.0,
 }
 
 

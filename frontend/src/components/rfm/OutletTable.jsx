@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { Search, Download, ChevronDown, ChevronUp, Loader2 } from 'lucide-react'
+import { Download, ChevronDown, ChevronUp, Loader2 } from 'lucide-react'
 
 const OutletTable = ({
   outlets = [],
@@ -11,7 +11,6 @@ const OutletTable = ({
   onQueryChange,
   onExport,
 }) => {
-  const [searchTerm, setSearchTerm] = useState('')
   const [sortConfig, setSortConfig] = useState({ key: 'total_net_amt', direction: 'desc' })
   const [currentPage, setCurrentPage] = useState(page)
   const [rowsPerPage, setRowsPerPage] = useState(pageSize)
@@ -46,26 +45,11 @@ const OutletTable = ({
     emitQuery({
       page: currentPage,
       page_size: rowsPerPage,
-      search: searchTerm,
+      search: '',
       sort_key: sortConfig.key,
       sort_direction: sortConfig.direction,
     })
   }, [currentPage, emitQuery, rowsPerPage, sortConfig.direction, sortConfig.key])
-
-  useEffect(() => {
-    const handle = setTimeout(() => {
-      if (!firstSyncDone.current) return
-      emitQuery({
-        page: 1,
-        page_size: rowsPerPage,
-        search: searchTerm,
-        sort_key: sortConfig.key,
-        sort_direction: sortConfig.direction,
-      })
-      setCurrentPage(1)
-    }, 350)
-    return () => clearTimeout(handle)
-  }, [emitQuery, rowsPerPage, searchTerm, sortConfig.direction, sortConfig.key])
 
   const handleSort = (key) => {
     setSortConfig((prev) => ({
@@ -88,7 +72,7 @@ const OutletTable = ({
   return (
     <div className="bg-white rounded-lg shadow-md overflow-hidden flex flex-col" style={{ height: '600px' }}>
       <div className="flex-shrink-0 border-b border-gray-200 bg-gradient-to-r from-primary to-secondary p-4">
-        <div className="flex items-center justify-between mb-3">
+        <div className="flex items-center justify-between">
           <h3 className="text-xl font-bold text-white">
             Outlet Details ({totalOutlets.toLocaleString()} outlets)
           </h3>
@@ -101,20 +85,6 @@ const OutletTable = ({
             Download Full CSV
           </button>
         </div>
-        <div className="relative">
-          <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-subtle w-5 h-5" />
-          <input
-            type="text"
-            placeholder="Search by outlet ID, segment, or state..."
-            value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
-            className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-white"
-          />
-        </div>
-      </div>
-
-      <div className="px-4 py-2 bg-accent-light text-xs text-muted border-b border-gray-200">
-        Server-side mode: only the current page is sent to browser.
       </div>
 
       <div className="flex-1 overflow-auto relative">

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { AlertCircle, Download, Loader2, RotateCcw, Save } from 'lucide-react'
+import { AlertCircle, Loader2, RotateCcw, Save, Trash2 } from 'lucide-react'
 
 const normalizeSizeKey = (value) => String(value || '').toUpperCase().replace(/\s+/g, '').trim()
 const REFERENCE_MODE_LABELS = {
@@ -209,13 +209,10 @@ const CrossSizePlanner = ({
   referenceByMode = {},
   onInitialize,
   onSaveReport,
-  isSavingReport = false,
   saveReportMessage = '',
-  onDownloadReports,
-  isDownloadingReports = false,
   savedReports = [],
   onLoadSavedReport,
-  isSavedReportsLoading = false,
+  onDeleteSavedReport,
 }) => {
   const [scenarioDiscountsByPeriod, setScenarioDiscountsByPeriod] = useState({})
   const [draftDiscountsByPeriod, setDraftDiscountsByPeriod] = useState({})
@@ -279,6 +276,13 @@ const CrossSizePlanner = ({
     setScenarioDiscountsByPeriod(scenarioByPeriod)
     setDraftDiscountsByPeriod(draftByPeriod)
   }, [data, periods])
+
+  useEffect(() => {
+    const rows = Array.isArray(savedReports) ? savedReports : []
+    if (!selectedSavedReportKey) return
+    const exists = rows.some((row) => String(row?.report_key || '') === String(selectedSavedReportKey))
+    if (!exists) setSelectedSavedReportKey('')
+  }, [savedReports, selectedSavedReportKey])
 
   useEffect(() => {
     const hasNewPayload = periods.length > 0 && Object.keys(monthlyByPeriod).length > 0
@@ -906,7 +910,7 @@ const CrossSizePlanner = ({
                 if (key && typeof onLoadSavedReport === 'function') onLoadSavedReport(key)
               }}
               className="w-56 px-3 py-2 rounded-md border border-slate-300 bg-white text-sm text-body"
-              disabled={isSavedReportsLoading || !Array.isArray(savedReports) || savedReports.length === 0}
+              disabled={!Array.isArray(savedReports) || savedReports.length === 0}
             >
               <option value="">Saved scenarios</option>
               {(Array.isArray(savedReports) ? savedReports : []).slice(0, 200).map((report) => (
@@ -918,22 +922,24 @@ const CrossSizePlanner = ({
             <button
               type="button"
               onClick={handleSaveReportClick}
-              disabled={isSavingReport}
               className="inline-flex items-center justify-center gap-2 px-3 py-2 rounded-md border border-slate-300 bg-white text-sm font-semibold text-body disabled:opacity-40"
             >
-              {isSavingReport ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+              <Save className="w-4 h-4" />
               Save
             </button>
             <button
               type="button"
               onClick={() => {
-                if (typeof onDownloadReports === 'function') onDownloadReports()
+                if (selectedSavedReportKey && typeof onDeleteSavedReport === 'function') {
+                  onDeleteSavedReport(selectedSavedReportKey)
+                  setSelectedSavedReportKey('')
+                }
               }}
-              disabled={isDownloadingReports}
+              disabled={!selectedSavedReportKey}
               className="inline-flex items-center justify-center gap-2 px-3 py-2 rounded-md border border-slate-300 bg-white text-sm font-semibold text-body disabled:opacity-40"
             >
-              {isDownloadingReports ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
-              Download
+              <Trash2 className="w-4 h-4" />
+              Delete
             </button>
             <button
               type="button"
@@ -1255,10 +1261,10 @@ const CrossSizePlanner = ({
               <button
                 type="button"
                 onClick={handleConfirmSaveReport}
-                disabled={isSavingReport || !String(saveNameDraft || '').trim()}
+                disabled={!String(saveNameDraft || '').trim()}
                 className="inline-flex items-center gap-2 px-3 py-2 rounded-md border border-primary text-primary bg-white text-sm font-semibold disabled:opacity-40"
               >
-                {isSavingReport ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+                <Save className="w-4 h-4" />
                 Save
               </button>
             </div>
