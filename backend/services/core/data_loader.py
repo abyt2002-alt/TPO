@@ -60,6 +60,11 @@ class DataLoaderMixin:
             "final_outlet_classification": "Final_Outlet_Classification",
             "state": "State",
             "mrp": "MRP",
+            "scheme_discount": "Scheme_Discount",
+            "staggered_qps": "Staggered_qps",
+            "basic_rate_per_pc_without_gst": "Basic_Rate_Per_PC_without_GST",
+            "basic_rate_per_pc": "Basic_Rate_Per_PC",
+            "selling_rate_without_gst_clp": "Selling_Rate_Per_PC_without_GST_CLP",
         }
         rename_map = {}
         for src, dst in alias_map.items():
@@ -87,6 +92,11 @@ class DataLoaderMixin:
             "Net_Amt",
             "SalesValue_atBasicRate",
             "TotalDiscount",
+            "Scheme_Discount",
+            "Staggered_qps",
+            "Basic_Rate_Per_PC_without_GST",
+            "Basic_Rate_Per_PC",
+            "Selling_Rate_Per_PC_without_GST_CLP",
             "Sku_Code",
             "Sku_Name",
         ]
@@ -108,7 +118,18 @@ class DataLoaderMixin:
         df = df.reindex(columns=keep_cols).copy()
 
         # Downcast numerics early to keep startup memory bounded.
-        for c in ["Quantity", "MRP", "Net_Amt", "SalesValue_atBasicRate", "TotalDiscount"]:
+        for c in [
+            "Quantity",
+            "MRP",
+            "Net_Amt",
+            "SalesValue_atBasicRate",
+            "TotalDiscount",
+            "Scheme_Discount",
+            "Staggered_qps",
+            "Basic_Rate_Per_PC_without_GST",
+            "Basic_Rate_Per_PC",
+            "Selling_Rate_Per_PC_without_GST_CLP",
+        ]:
             if c in df.columns:
                 df[c] = pd.to_numeric(df[c], errors="coerce").astype("float32")
 

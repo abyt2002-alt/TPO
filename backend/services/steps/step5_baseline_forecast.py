@@ -205,9 +205,18 @@ class Step5BaselineForecastMixin:
                 hist_values = full_history[f'baseline_{size_key}'].tolist()
                 forecast_values = self._forecast_baseline_series(hist_values, forecast_months)
                 forecast_df[f'baseline_{size_key}'] = forecast_values
-                last_disc = float(pd.to_numeric(full_history[f'discount_component_{size_key}'], errors='coerce').fillna(0.0).iloc[-1]) \
-                    if len(full_history) > 0 else 0.0
-                forecast_df[f'discount_component_{size_key}'] = last_disc
+                hist_disc_series = pd.to_numeric(
+                    full_history[f'discount_component_{size_key}'],
+                    errors='coerce',
+                ).fillna(0.0).to_numpy(dtype=float)
+                if hist_disc_series.size >= forecast_months:
+                    forecast_disc_series = hist_disc_series[-forecast_months:]
+                elif hist_disc_series.size > 0:
+                    pad = np.repeat(float(hist_disc_series[0]), max(0, forecast_months - int(hist_disc_series.size)))
+                    forecast_disc_series = np.concatenate([pad, hist_disc_series])[:forecast_months]
+                else:
+                    forecast_disc_series = np.zeros(int(forecast_months), dtype=float)
+                forecast_df[f'discount_component_{size_key}'] = np.asarray(forecast_disc_series, dtype=float)
 
             points: List[BaselineForecastPoint] = []
             for _, row in full_history.iterrows():

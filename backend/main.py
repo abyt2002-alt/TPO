@@ -1,8 +1,10 @@
 from fastapi import FastAPI, HTTPException, Response, UploadFile, File, Form
+from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.encoders import jsonable_encoder
 from typing import List, Dict
 import json
+from io import BytesIO
 
 from services.rfm_service import RFMService
 from models.rfm_models import (
@@ -18,7 +20,8 @@ from models.rfm_models import (
     AIScenarioJobCreateResponse, AIScenarioJobStatusResponse, AIScenarioJobResultsResponse,
     BaselineForecastRequest, BaselineForecastResponse,
     EDARequest, EDAResponse, EDAOptionsResponse,
-    SlabTrendEDARequest, SlabTrendEDAResponse
+    SlabTrendEDARequest, SlabTrendEDAResponse,
+    ReportSaveRequest, ReportSaveResponse, ReportListResponse, ReportDetailResponse
 )
 
 app = FastAPI(title="Trade Promo Optimization API", version="1.0.0")
@@ -389,6 +392,90 @@ async def save_run_state(run_id: str, request: RunStateUpdateRequest):
             step5_result=((state.get("state") or {}).get("step5_result") if state else None),
             step6_result=((state.get("state") or {}).get("step6_result") if state else None),
         )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/reports/save", response_model=ReportSaveResponse)
+async def save_global_report(request: ReportSaveRequest):
+    """Save a global report snapshot from Step 4 or Step 5."""
+    try:
+        summary = rfm_service.save_global_report(
+            step=request.step,
+            name=request.name,
+            run_id=request.run_id,
+            reference_mode=request.reference_mode,
+            metadata=request.metadata or {},
+            payload=request.payload or {},
+        )
+        return ReportSaveResponse(
+            success=True,
+            message="Report saved successfully",
+            report=summary,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/reports", response_model=ReportListResponse)
+async def list_global_reports(limit: int = 200):
+    """List global saved reports."""
+    try:
+        reports = rfm_service.list_global_reports(limit=limit)
+        return ReportListResponse(
+            success=True,
+            message=f"Loaded {len(reports)} report(s)",
+            reports=reports,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/reports/{report_key}", response_model=ReportDetailResponse)
+async def get_global_report(report_key: str):
+    """Fetch one global saved report with payload."""
+    try:
+        report = rfm_service.get_global_report(report_key)
+        if report is None:
+            raise HTTPException(status_code=404, detail="Report not found")
+        summary = {
+            "report_key": report.get("report_key"),
+            "run_id": report.get("run_id"),
+            "step": report.get("step"),
+            "name": report.get("name"),
+            "reference_mode": report.get("reference_mode"),
+            "metadata": report.get("metadata") or {},
+            "created_at": report.get("created_at"),
+            "updated_at": report.get("updated_at"),
+        }
+        return ReportDetailResponse(
+            success=True,
+            message="Report loaded",
+            report=summary,
+            payload=report.get("payload") or {},
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/reports/download")
+async def download_global_reports(report_keys: str = ""):
+    """Download global saved reports as one Excel workbook (one sheet per report)."""
+    try:
+        keys = [v.strip() for v in str(report_keys or "").split(",") if v.strip()]
+        content = rfm_service.export_global_reports_excel(report_keys=keys or None)
+        filename = "saved_reports.xlsx"
+        return StreamingResponse(
+            BytesIO(content),
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f'attachment; filename=\"{filename}\"'},
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

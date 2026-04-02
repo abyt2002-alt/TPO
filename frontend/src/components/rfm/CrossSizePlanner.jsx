@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { AlertCircle, Loader2, RotateCcw } from 'lucide-react'
+import { AlertCircle, Download, Loader2, RotateCcw, Save } from 'lucide-react'
 
 const normalizeSizeKey = (value) => String(value || '').toUpperCase().replace(/\s+/g, '').trim()
 const REFERENCE_MODE_LABELS = {
@@ -208,9 +208,21 @@ const CrossSizePlanner = ({
   onDisplayReferenceModeChange,
   referenceByMode = {},
   onInitialize,
+  onSaveReport,
+  isSavingReport = false,
+  saveReportMessage = '',
+  onDownloadReports,
+  isDownloadingReports = false,
+  savedReports = [],
+  onLoadSavedReport,
+  isSavedReportsLoading = false,
 }) => {
   const [scenarioDiscountsByPeriod, setScenarioDiscountsByPeriod] = useState({})
   const [draftDiscountsByPeriod, setDraftDiscountsByPeriod] = useState({})
+  const [reportName, setReportName] = useState('')
+  const [selectedSavedReportKey, setSelectedSavedReportKey] = useState('')
+  const [isSaveModalOpen, setIsSaveModalOpen] = useState(false)
+  const [saveNameDraft, setSaveNameDraft] = useState('')
   const initRequestSentRef = useRef(false)
 
   const periods = useMemo(() => normalizePeriodsFromData(data), [data])
@@ -399,6 +411,7 @@ const CrossSizePlanner = ({
           const coefLag = Number(model?.coef_lag1_base_discount_pct || 0)
           const coefOther = Number(model?.coef_other_slabs_weighted_base_discount_pct || 0)
           const basePrice = Number(model?.base_price || 0)
+          const clpPrice = Number(model?.clp_price || basePrice)
           const cogsPerUnit = Number(model?.cogs_per_unit || 0)
           const nonDiscountBaseline = Number(baselineSlabMatrix?.[sizeKey]?.[slabKey]?.[monthIdx] || 0)
           const discountComponentScenario = (coefBase * scenarioDiscount) + (coefLag * lagUsed) + (coefOther * otherWeighted)
@@ -419,9 +432,14 @@ const CrossSizePlanner = ({
             pre_cross_qty: preCrossQty,
             final_qty: preCrossQty,
             base_price: basePrice,
+            clp_price: clpPrice,
             cogs_per_unit: cogsPerUnit,
             baseline_revenue: 0,
             scenario_revenue: 0,
+            baseline_revenue_gross: 0,
+            scenario_revenue_gross: 0,
+            baseline_revenue_net: 0,
+            scenario_revenue_net: 0,
             baseline_profit: 0,
             scenario_profit: 0,
           }
@@ -494,12 +512,16 @@ const CrossSizePlanner = ({
       '12-ML': {
         baseline_qty: 0, scenario_qty_additive: 0, final_qty: 0,
         baseline_revenue: 0, scenario_revenue: 0,
+        baseline_revenue_gross: 0, scenario_revenue_gross: 0,
+        baseline_revenue_net: 0, scenario_revenue_net: 0,
         baseline_profit: 0, scenario_profit: 0,
         baseline_investment: 0, scenario_investment: 0,
       },
       '18-ML': {
         baseline_qty: 0, scenario_qty_additive: 0, final_qty: 0,
         baseline_revenue: 0, scenario_revenue: 0,
+        baseline_revenue_gross: 0, scenario_revenue_gross: 0,
+        baseline_revenue_net: 0, scenario_revenue_net: 0,
         baseline_profit: 0, scenario_profit: 0,
         baseline_investment: 0, scenario_investment: 0,
       },
@@ -511,6 +533,10 @@ const CrossSizePlanner = ({
         if (!block) return
         let baselineRevenueTotal = 0
         let scenarioRevenueTotal = 0
+        let baselineRevenueGrossTotal = 0
+        let scenarioRevenueGrossTotal = 0
+        let baselineRevenueNetTotal = 0
+        let scenarioRevenueNetTotal = 0
         let baselineProfitTotal = 0
         let scenarioProfitTotal = 0
         let baselineInvestmentTotal = 0
@@ -519,20 +545,25 @@ const CrossSizePlanner = ({
         slabs.forEach((slab) => {
           const baseQty = Number(slab?.non_discount_baseline_qty || 0)
           const finalQty = Number(slab?.final_qty || 0)
-          const basePrice = Number(slab?.base_price || 0)
+          const dspPrice = Number(slab?.base_price || 0)
+          const clpPrice = Number(slab?.clp_price || dspPrice)
           const defaultDiscount = Number(slab?.default_discount_pct || 0)
           const scenarioDiscount = Number(slab?.scenario_discount_pct || 0)
           const cogs = Number(slab?.cogs_per_unit || 0)
-          const baselineRevenue = baseQty * basePrice
-          const scenarioRevenue = finalQty * basePrice
-          const baselineRevenueNet = baseQty * basePrice * (1 - (defaultDiscount / 100))
-          const scenarioRevenueNet = finalQty * basePrice * (1 - (scenarioDiscount / 100))
+          const baselineRevenueGross = baseQty * dspPrice
+          const scenarioRevenueGross = finalQty * dspPrice
+          const baselineRevenueNet = baseQty * clpPrice
+          const scenarioRevenueNet = finalQty * clpPrice
+          const baselineRevenue = baselineRevenueGross
+          const scenarioRevenue = scenarioRevenueGross
           const baselineProfit = baselineRevenueNet - (baseQty * cogs)
           const scenarioProfit = scenarioRevenueNet - (finalQty * cogs)
-          const baselineInvestment = baseQty * basePrice * (defaultDiscount / 100)
-          const scenarioInvestment = finalQty * basePrice * (scenarioDiscount / 100)
+          const baselineInvestment = baseQty * dspPrice * (defaultDiscount / 100)
+          const scenarioInvestment = finalQty * dspPrice * (scenarioDiscount / 100)
           slab.baseline_revenue = baselineRevenue
           slab.scenario_revenue = scenarioRevenue
+          slab.baseline_revenue_gross = baselineRevenueGross
+          slab.scenario_revenue_gross = scenarioRevenueGross
           slab.baseline_revenue_net = baselineRevenueNet
           slab.scenario_revenue_net = scenarioRevenueNet
           slab.baseline_profit = baselineProfit
@@ -541,6 +572,10 @@ const CrossSizePlanner = ({
           slab.scenario_investment = scenarioInvestment
           baselineRevenueTotal += baselineRevenue
           scenarioRevenueTotal += scenarioRevenue
+          baselineRevenueGrossTotal += baselineRevenueGross
+          scenarioRevenueGrossTotal += scenarioRevenueGross
+          baselineRevenueNetTotal += baselineRevenueNet
+          scenarioRevenueNetTotal += scenarioRevenueNet
           baselineProfitTotal += baselineProfit
           scenarioProfitTotal += scenarioProfit
           baselineInvestmentTotal += baselineInvestment
@@ -549,6 +584,10 @@ const CrossSizePlanner = ({
         block.final_total_qty = slabs.reduce((s, slab) => s + Number(slab?.final_qty || 0), 0)
         block.baseline_revenue_total = baselineRevenueTotal
         block.scenario_revenue_total = scenarioRevenueTotal
+        block.baseline_revenue_gross_total = baselineRevenueGrossTotal
+        block.scenario_revenue_gross_total = scenarioRevenueGrossTotal
+        block.baseline_revenue_net_total = baselineRevenueNetTotal
+        block.scenario_revenue_net_total = scenarioRevenueNetTotal
         block.baseline_profit_total = baselineProfitTotal
         block.scenario_profit_total = scenarioProfitTotal
         block.baseline_investment_total = baselineInvestmentTotal
@@ -559,6 +598,10 @@ const CrossSizePlanner = ({
         summary[sizeKey].final_qty += Number(block?.final_total_qty || 0)
         summary[sizeKey].baseline_revenue += baselineRevenueTotal
         summary[sizeKey].scenario_revenue += scenarioRevenueTotal
+        summary[sizeKey].baseline_revenue_gross += baselineRevenueGrossTotal
+        summary[sizeKey].scenario_revenue_gross += scenarioRevenueGrossTotal
+        summary[sizeKey].baseline_revenue_net += baselineRevenueNetTotal
+        summary[sizeKey].scenario_revenue_net += scenarioRevenueNetTotal
         summary[sizeKey].baseline_profit += baselineProfitTotal
         summary[sizeKey].scenario_profit += scenarioProfitTotal
         summary[sizeKey].baseline_investment += baselineInvestmentTotal
@@ -569,10 +612,10 @@ const CrossSizePlanner = ({
     const finalizeSizeSummary = (sizeKey) => {
       const s = summary[sizeKey]
       const refQty = Number(baseSummary?.[sizeKey]?.reference_qty || 0)
-      const refRevNet = Number(baseSummary?.[sizeKey]?.reference_revenue || 0)
+      const refRevGross = Number((baseSummary?.[sizeKey]?.reference_revenue_gross ?? baseSummary?.[sizeKey]?.reference_revenue) || 0)
+      const refRevNet = Number(baseSummary?.[sizeKey]?.reference_revenue_net ?? 0)
       const refProfit = Number(baseSummary?.[sizeKey]?.reference_profit || 0)
       const refInvestment = Number(baseSummary?.[sizeKey]?.reference_investment || 0)
-      const refRev = refRevNet + refInvestment
       const refAvail = Number(baseSummary?.[sizeKey]?.reference_available || 0)
       return {
         baseline_qty: s.baseline_qty,
@@ -583,7 +626,13 @@ const CrossSizePlanner = ({
         volume_delta_additive_pct: s.baseline_qty > 0 ? ((s.scenario_qty_additive - s.baseline_qty) / s.baseline_qty) * 100 : 0,
         baseline_revenue: s.baseline_revenue,
         scenario_revenue: s.scenario_revenue,
+        baseline_revenue_gross: s.baseline_revenue_gross,
+        scenario_revenue_gross: s.scenario_revenue_gross,
+        baseline_revenue_net: s.baseline_revenue_net,
+        scenario_revenue_net: s.scenario_revenue_net,
         revenue_delta_pct: s.baseline_revenue > 0 ? ((s.scenario_revenue - s.baseline_revenue) / s.baseline_revenue) * 100 : 0,
+        revenue_gross_delta_pct: s.baseline_revenue_gross > 0 ? ((s.scenario_revenue_gross - s.baseline_revenue_gross) / s.baseline_revenue_gross) * 100 : 0,
+        revenue_net_delta_pct: s.baseline_revenue_net > 0 ? ((s.scenario_revenue_net - s.baseline_revenue_net) / s.baseline_revenue_net) * 100 : 0,
         baseline_profit: s.baseline_profit,
         scenario_profit: s.scenario_profit,
         profit_delta_pct: Math.abs(s.baseline_profit) > 1e-9 ? ((s.scenario_profit - s.baseline_profit) / Math.abs(s.baseline_profit)) * 100 : 0,
@@ -591,12 +640,15 @@ const CrossSizePlanner = ({
         scenario_investment: s.scenario_investment,
         investment_delta_pct: s.baseline_investment > 0 ? ((s.scenario_investment - s.baseline_investment) / s.baseline_investment) * 100 : 0,
         reference_qty: refQty,
+        reference_revenue_gross: refRevGross,
         reference_revenue_net: refRevNet,
-        reference_revenue: refRev,
+        reference_revenue: refRevGross,
         reference_profit: refProfit,
         reference_investment: refInvestment,
         vs_reference_volume_pct: refQty > 0 ? ((s.final_qty - refQty) / refQty) * 100 : 0,
-        vs_reference_revenue_pct: refRev > 0 ? ((s.scenario_revenue - refRev) / refRev) * 100 : 0,
+        vs_reference_revenue_pct: refRevGross > 0 ? ((s.scenario_revenue - refRevGross) / refRevGross) * 100 : 0,
+        vs_reference_revenue_gross_pct: refRevGross > 0 ? ((s.scenario_revenue_gross - refRevGross) / refRevGross) * 100 : 0,
+        vs_reference_revenue_net_pct: refRevNet > 0 ? ((s.scenario_revenue_net - refRevNet) / refRevNet) * 100 : 0,
         vs_reference_profit_pct: Math.abs(refProfit) > 1e-9 ? ((s.scenario_profit - refProfit) / Math.abs(refProfit)) * 100 : 0,
         vs_reference_investment_pct: refInvestment > 0 ? ((s.scenario_investment - refInvestment) / refInvestment) * 100 : 0,
         reference_available: refAvail,
@@ -610,18 +662,22 @@ const CrossSizePlanner = ({
     const totalFinalQty = s12.final_qty + s18.final_qty
     const totalBaselineRevenue = s12.baseline_revenue + s18.baseline_revenue
     const totalScenarioRevenue = s12.scenario_revenue + s18.scenario_revenue
+    const totalBaselineRevenueGross = s12.baseline_revenue_gross + s18.baseline_revenue_gross
+    const totalScenarioRevenueGross = s12.scenario_revenue_gross + s18.scenario_revenue_gross
+    const totalBaselineRevenueNet = s12.baseline_revenue_net + s18.baseline_revenue_net
+    const totalScenarioRevenueNet = s12.scenario_revenue_net + s18.scenario_revenue_net
     const totalBaselineProfit = s12.baseline_profit + s18.baseline_profit
     const totalScenarioProfit = s12.scenario_profit + s18.scenario_profit
     const totalBaselineInvestment = s12.baseline_investment + s18.baseline_investment
     const totalScenarioInvestment = s12.scenario_investment + s18.scenario_investment
     const refTotalQty = Number(baseSummary?.TOTAL?.reference_qty || 0)
-    const refTotalRevNet = Number(baseSummary?.TOTAL?.reference_revenue || 0)
+    const refTotalRevGross = Number((baseSummary?.TOTAL?.reference_revenue_gross ?? baseSummary?.TOTAL?.reference_revenue) || 0)
+    const refTotalRevNet = Number(baseSummary?.TOTAL?.reference_revenue_net || 0)
     const refTotalProfit = Number(baseSummary?.TOTAL?.reference_profit || 0)
     const ref12Investment = Number(baseSummary?.['12-ML']?.reference_investment || 0)
     const ref18Investment = Number(baseSummary?.['18-ML']?.reference_investment || 0)
     const refTotalInvestmentRaw = Number(baseSummary?.TOTAL?.reference_investment || 0)
     const refTotalInvestment = refTotalInvestmentRaw > 0 ? refTotalInvestmentRaw : (ref12Investment + ref18Investment)
-    const refTotalRev = refTotalRevNet + refTotalInvestment
     const refTotalAvailRaw = Number(baseSummary?.TOTAL?.reference_available || 0)
     const ref12Avail = Number(baseSummary?.['12-ML']?.reference_available || 0)
     const ref18Avail = Number(baseSummary?.['18-ML']?.reference_available || 0)
@@ -643,7 +699,13 @@ const CrossSizePlanner = ({
         volume_delta_additive_pct: totalBaselineQty > 0 ? ((totalScenarioAddQty - totalBaselineQty) / totalBaselineQty) * 100 : 0,
         baseline_revenue: totalBaselineRevenue,
         scenario_revenue: totalScenarioRevenue,
+        baseline_revenue_gross: totalBaselineRevenueGross,
+        scenario_revenue_gross: totalScenarioRevenueGross,
+        baseline_revenue_net: totalBaselineRevenueNet,
+        scenario_revenue_net: totalScenarioRevenueNet,
         revenue_delta_pct: totalBaselineRevenue > 0 ? ((totalScenarioRevenue - totalBaselineRevenue) / totalBaselineRevenue) * 100 : 0,
+        revenue_gross_delta_pct: totalBaselineRevenueGross > 0 ? ((totalScenarioRevenueGross - totalBaselineRevenueGross) / totalBaselineRevenueGross) * 100 : 0,
+        revenue_net_delta_pct: totalBaselineRevenueNet > 0 ? ((totalScenarioRevenueNet - totalBaselineRevenueNet) / totalBaselineRevenueNet) * 100 : 0,
         baseline_profit: totalBaselineProfit,
         scenario_profit: totalScenarioProfit,
         profit_delta_pct: Math.abs(totalBaselineProfit) > 1e-9 ? ((totalScenarioProfit - totalBaselineProfit) / Math.abs(totalBaselineProfit)) * 100 : 0,
@@ -651,12 +713,15 @@ const CrossSizePlanner = ({
         scenario_investment: totalScenarioInvestment,
         investment_delta_pct: totalBaselineInvestment > 0 ? ((totalScenarioInvestment - totalBaselineInvestment) / totalBaselineInvestment) * 100 : 0,
         reference_qty: refTotalQty,
+        reference_revenue_gross: refTotalRevGross,
         reference_revenue_net: refTotalRevNet,
-        reference_revenue: refTotalRev,
+        reference_revenue: refTotalRevGross,
         reference_profit: refTotalProfit,
         reference_investment: refTotalInvestment,
         vs_reference_volume_pct: refTotalQty > 0 ? ((totalFinalQty - refTotalQty) / refTotalQty) * 100 : 0,
-        vs_reference_revenue_pct: refTotalRev > 0 ? ((totalScenarioRevenue - refTotalRev) / refTotalRev) * 100 : 0,
+        vs_reference_revenue_pct: refTotalRevGross > 0 ? ((totalScenarioRevenue - refTotalRevGross) / refTotalRevGross) * 100 : 0,
+        vs_reference_revenue_gross_pct: refTotalRevGross > 0 ? ((totalScenarioRevenueGross - refTotalRevGross) / refTotalRevGross) * 100 : 0,
+        vs_reference_revenue_net_pct: refTotalRevNet > 0 ? ((totalScenarioRevenueNet - refTotalRevNet) / refTotalRevNet) * 100 : 0,
         vs_reference_profit_pct: Math.abs(refTotalProfit) > 1e-9 ? ((totalScenarioProfit - refTotalProfit) / Math.abs(refTotalProfit)) * 100 : 0,
         vs_reference_investment_pct: refTotalInvestment > 0 ? ((totalScenarioInvestment - refTotalInvestment) / refTotalInvestment) * 100 : 0,
         reference_available: refTotalAvail,
@@ -701,6 +766,77 @@ const CrossSizePlanner = ({
     if (fallback && typeof fallback === 'object') return fallback
     return computedPlannerData?.summary_3m || {}
   }, [referenceByMode, selectedReferenceMode, computedPlannerData?.summary_3m])
+
+  useEffect(() => {
+    if (String(reportName || '').trim()) return
+    const now = new Date()
+    const dateTag = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
+    setReportName(`Step4 Scenario ${dateTag}`)
+  }, [reportName])
+
+  const step4ReportRecords = useMemo(() => {
+    const rows = []
+    const monthly = Array.isArray(computedPlannerData?.monthly_results) ? computedPlannerData.monthly_results : []
+    monthly.forEach((periodRow) => {
+      const period = String(periodRow?.period || '')
+      ;['12-ML', '18-ML'].forEach((sizeKey) => {
+        const sizeBlock = periodRow?.sizes?.[sizeKey]
+        const slabs = Array.isArray(sizeBlock?.slabs) ? sizeBlock.slabs : []
+        slabs.forEach((slab) => {
+          const grossRevenue = Number((slab?.scenario_revenue_gross ?? slab?.scenario_revenue) || 0)
+          const netRevenue = Number(slab?.scenario_revenue_net || 0)
+          const investment = Number(slab?.scenario_investment || 0)
+          rows.push({
+            period,
+            size: sizeKey,
+            slab: String(slab?.slab || ''),
+            baseline_qty: Number(slab?.baseline_qty || 0),
+            scenario_qty: Number(slab?.final_qty ?? slab?.pre_cross_qty ?? 0),
+            base_discount_pct: Number(slab?.default_discount_pct || 0),
+            scenario_discount_pct: Number(slab?.scenario_discount_pct || 0),
+            lag_discount_pct: Number(slab?.lag_used_pct || 0),
+            other_weighted_discount_pct: Number(slab?.other_weighted_scenario_pct || 0),
+            gross_revenue: grossRevenue,
+            net_revenue: netRevenue,
+            gross_margin: Number(slab?.scenario_profit || 0),
+            investment,
+            cts_pct: Number(grossRevenue > 0 ? (investment / grossRevenue) * 100 : 0),
+          })
+        })
+      })
+    })
+    return rows
+  }, [computedPlannerData?.monthly_results])
+
+  const handleSaveReportClick = () => {
+    const suggested = String(reportName || '').trim() || `Step4 Scenario ${new Date().toISOString().slice(0, 10)}`
+    setSaveNameDraft(suggested)
+    setIsSaveModalOpen(true)
+  }
+
+  const handleConfirmSaveReport = () => {
+    if (typeof onSaveReport !== 'function') return
+    const name = String(saveNameDraft || '').trim()
+    if (!name) return
+    onSaveReport({
+      name,
+      reference_mode: selectedReferenceMode,
+      metadata: {
+        reference_label: referenceLabel,
+        periods,
+        saved_from: 'step4_cross_size_planner',
+      },
+      payload: {
+        periods,
+        reference_mode: selectedReferenceMode,
+        summary_3m: computedPlannerData?.summary_3m || {},
+        scenario_discounts_by_period: scenarioDiscountsByPeriod || {},
+        records: step4ReportRecords,
+      },
+    })
+    setReportName(name)
+    setIsSaveModalOpen(false)
+  }
 
   if (isLoading) {
     return (
@@ -749,7 +885,7 @@ const CrossSizePlanner = ({
       <div className="bg-white rounded-lg shadow-md p-4 sticky top-0 z-10">
         <div className="flex items-start justify-between gap-4">
           <h3 className="text-xl font-bold text-body">Step 4: Cross-Size Scenario Planner</h3>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 ml-auto">
             <select
               value={selectedReferenceMode}
               onChange={(e) => {
@@ -762,6 +898,43 @@ const CrossSizePlanner = ({
               <option value="ly_same_3m">Y-o-Y</option>
               <option value="last_3m_before_projection">Q-o-Q</option>
             </select>
+            <select
+              value={selectedSavedReportKey}
+              onChange={(e) => {
+                const key = String(e.target.value || '').trim()
+                setSelectedSavedReportKey(key)
+                if (key && typeof onLoadSavedReport === 'function') onLoadSavedReport(key)
+              }}
+              className="w-56 px-3 py-2 rounded-md border border-slate-300 bg-white text-sm text-body"
+              disabled={isSavedReportsLoading || !Array.isArray(savedReports) || savedReports.length === 0}
+            >
+              <option value="">Saved scenarios</option>
+              {(Array.isArray(savedReports) ? savedReports : []).slice(0, 200).map((report) => (
+                <option key={String(report?.report_key || '')} value={String(report?.report_key || '')}>
+                  {String(report?.name || '').trim() || 'Saved Scenario'}
+                </option>
+              ))}
+            </select>
+            <button
+              type="button"
+              onClick={handleSaveReportClick}
+              disabled={isSavingReport}
+              className="inline-flex items-center justify-center gap-2 px-3 py-2 rounded-md border border-slate-300 bg-white text-sm font-semibold text-body disabled:opacity-40"
+            >
+              {isSavingReport ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+              Save
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                if (typeof onDownloadReports === 'function') onDownloadReports()
+              }}
+              disabled={isDownloadingReports}
+              className="inline-flex items-center justify-center gap-2 px-3 py-2 rounded-md border border-slate-300 bg-white text-sm font-semibold text-body disabled:opacity-40"
+            >
+              {isDownloadingReports ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
+              Download
+            </button>
             <button
               type="button"
               onClick={handleReset}
@@ -772,6 +945,7 @@ const CrossSizePlanner = ({
             </button>
           </div>
         </div>
+        {saveReportMessage ? <div className="mt-2 text-xs text-muted">{saveReportMessage}</div> : null}
 
         <div className="grid grid-cols-1 xl:grid-cols-3 gap-3 mt-4">
           {[
@@ -783,13 +957,12 @@ const CrossSizePlanner = ({
             const refSummary = selectedReferenceSummary?.[card.key] || {}
             const refSummary12 = selectedReferenceSummary?.['12-ML'] || {}
             const refSummary18 = selectedReferenceSummary?.['18-ML'] || {}
-            const volumeAbs = card.isTotal
-              ? Number(summary.final_volume_ml ?? 0)
-              : Number(summary.final_qty ?? summary.scenario_qty_additive ?? 0)
+            const volumeAbs = Number(summary.final_qty ?? summary.scenario_qty_additive ?? 0)
             const referenceQty = card.isTotal
-              ? (Number(refSummary12?.reference_qty || 0) * 12) + (Number(refSummary18?.reference_qty || 0) * 18)
+              ? (Number(refSummary12?.reference_qty || 0) + Number(refSummary18?.reference_qty || 0))
               : Number(refSummary?.reference_qty || 0)
-            const referenceRevenueRaw = Number(refSummary?.reference_revenue || 0)
+            const referenceRevenueGross = Number((refSummary?.reference_revenue_gross ?? refSummary?.reference_revenue) || 0)
+            const referenceRevenueNet = Number(refSummary?.reference_revenue_net || 0)
             const referenceProfit = Number(refSummary?.reference_profit || 0)
             const summary12 = summaryBySize?.['12-ML'] || {}
             const summary18 = summaryBySize?.['18-ML'] || {}
@@ -812,21 +985,22 @@ const CrossSizePlanner = ({
                   pickPositive(refSummary18?.reference_investment, summary18?.reference_investment)
                 ))
               : referenceInvestmentRaw
-            const referenceRevenue = Object.prototype.hasOwnProperty.call(refSummary || {}, 'reference_revenue_net')
-              ? referenceRevenueRaw
-              : (referenceRevenueRaw + referenceInvestment)
             const hasReference = Number(refSummary?.reference_available || 0) > 0 && referenceQty > 0
             const volumePct = hasReference
               ? Number(((volumeAbs - referenceQty) / referenceQty) * 100)
               : Number(summary.volume_delta_pct ?? summary.volume_delta_additive_pct ?? 0)
-            const revenueAbs = Number(summary.scenario_revenue || 0)
+            const revenueGrossAbs = Number((summary.scenario_revenue_gross ?? summary.scenario_revenue) || 0)
+            const revenueNetAbs = Number(summary.scenario_revenue_net || 0)
             const profitAbs = Number(summary.scenario_profit || 0)
             const investmentAbs = Number(summary.scenario_investment ?? 0)
-            const revenuePct = hasReference
-              ? Number(referenceRevenue > 0 ? ((revenueAbs - referenceRevenue) / referenceRevenue) * 100 : 0)
-              : Number(summary.revenue_delta_pct || 0)
-            const grossMarginAbs = revenueAbs > 0 ? ((profitAbs / revenueAbs) * 100) : 0
-            const referenceGrossMargin = referenceRevenue > 0 ? ((referenceProfit / referenceRevenue) * 100) : 0
+            const revenueGrossPct = hasReference
+              ? Number(referenceRevenueGross > 0 ? ((revenueGrossAbs - referenceRevenueGross) / referenceRevenueGross) * 100 : 0)
+              : Number((summary.revenue_gross_delta_pct ?? summary.revenue_delta_pct) || 0)
+            const revenueNetPct = hasReference
+              ? Number(referenceRevenueNet > 0 ? ((revenueNetAbs - referenceRevenueNet) / referenceRevenueNet) * 100 : 0)
+              : Number(summary.revenue_net_delta_pct || 0)
+            const grossMarginAbs = revenueGrossAbs > 0 ? ((profitAbs / revenueGrossAbs) * 100) : 0
+            const referenceGrossMargin = referenceRevenueGross > 0 ? ((referenceProfit / referenceRevenueGross) * 100) : 0
             const grossMarginPct = hasReference
               ? Number(grossMarginAbs - referenceGrossMargin)
               : 0
@@ -834,8 +1008,8 @@ const CrossSizePlanner = ({
             const investmentPct = hasReferenceInvestment
               ? Number(((investmentAbs - referenceInvestment) / referenceInvestment) * 100)
               : 0
-            const ctsAbs = Number(revenueAbs > 0 ? (investmentAbs / revenueAbs) * 100 : 0)
-            const referenceCts = Number(referenceRevenue > 0 ? (referenceInvestment / referenceRevenue) * 100 : 0)
+            const ctsAbs = Number(revenueGrossAbs > 0 ? (investmentAbs / revenueGrossAbs) * 100 : 0)
+            const referenceCts = Number(referenceRevenueGross > 0 ? (referenceInvestment / referenceRevenueGross) * 100 : 0)
             const hasReferenceCts = referenceCts > 0
             const ctsPct = hasReferenceCts
               ? Number(((ctsAbs - referenceCts) / referenceCts) * 100)
@@ -843,41 +1017,48 @@ const CrossSizePlanner = ({
             return (
               <div key={card.key} className="rounded-lg border border-slate-200 bg-slate-50 p-3">
                 <p className="text-sm font-semibold text-body">{card.title}</p>
-                <div className={`grid gap-3 mt-3 ${card.isTotal ? 'grid-cols-2 md:grid-cols-3 xl:grid-cols-5' : 'grid-cols-3'}`}>
-                  <div>
-                    <p className="text-[10px] uppercase tracking-wide text-muted">{card.isTotal ? 'Volume (ML)' : 'Volume'}</p>
-                    <p className="text-2xl leading-none mt-2 font-semibold text-body">{formatCompact(volumeAbs)}</p>
+                <div className={`grid gap-3 mt-3 ${card.isTotal ? 'grid-cols-2 md:grid-cols-3' : 'grid-cols-2 md:grid-cols-4'}`}>
+                  <div className="min-w-0">
+                    <p className="text-[10px] uppercase tracking-wide text-muted">Volume</p>
+                    <p className="text-xl md:text-2xl leading-tight mt-2 font-semibold text-body whitespace-nowrap">{formatCompact(volumeAbs)}</p>
                     <p className={`text-sm font-semibold mt-1 ${pctToneClass(volumePct)}`}>
                       {formatSignedPct(volumePct)}
                     </p>
                   </div>
-                  <div>
-                    <p className="text-[10px] uppercase tracking-wide text-muted">Revenue</p>
-                    <p className="text-2xl leading-none mt-2 font-semibold text-body">{formatCompact(revenueAbs)}</p>
-                    <p className={`text-sm font-semibold mt-1 ${pctToneClass(revenuePct)}`}>
-                      {formatSignedPct(revenuePct)}
+                  <div className="min-w-0">
+                    <p className="text-[10px] uppercase tracking-wide text-muted">Gross Revenue</p>
+                    <p className="text-xl md:text-2xl leading-tight mt-2 font-semibold text-body whitespace-nowrap">{formatCompact(revenueGrossAbs)}</p>
+                    <p className={`text-sm font-semibold mt-1 ${pctToneClass(revenueGrossPct)}`}>
+                      {formatSignedPct(revenueGrossPct)}
                     </p>
                   </div>
-                  <div>
+                  <div className="min-w-0">
+                    <p className="text-[10px] uppercase tracking-wide text-muted">Net Revenue</p>
+                    <p className="text-xl md:text-2xl leading-tight mt-2 font-semibold text-body whitespace-nowrap">{formatCompact(revenueNetAbs)}</p>
+                    <p className={`text-sm font-semibold mt-1 ${pctToneClass(revenueNetPct)}`}>
+                      {formatSignedPct(revenueNetPct)}
+                    </p>
+                  </div>
+                  <div className="min-w-0">
                     <p className="text-[10px] uppercase tracking-wide text-muted">Gross Margin %</p>
-                    <p className="text-2xl leading-none mt-2 font-semibold text-body">{formatFixed(grossMarginAbs, 2)}%</p>
+                    <p className="text-xl md:text-2xl leading-tight mt-2 font-semibold text-body whitespace-nowrap">{formatFixed(grossMarginAbs, 2)}%</p>
                     <p className={`text-sm font-semibold mt-1 ${pctToneClass(grossMarginPct)}`}>
                       {formatSignedPct(grossMarginPct)}
                     </p>
                   </div>
                   {card.isTotal ? (
-                    <div>
+                    <div className="min-w-0">
                       <p className="text-[10px] uppercase tracking-wide text-muted">Investment</p>
-                      <p className="text-2xl leading-none mt-2 font-semibold text-body">{formatCompact(investmentAbs)}</p>
+                      <p className="text-xl md:text-2xl leading-tight mt-2 font-semibold text-body whitespace-nowrap">{formatCompact(investmentAbs)}</p>
                       <p className={`text-sm font-semibold mt-1 ${pctToneClass(investmentPct)}`}>
                         {formatSignedPct(investmentPct)}
                       </p>
                     </div>
                   ) : null}
                   {card.isTotal ? (
-                    <div>
+                    <div className="min-w-0">
                       <p className="text-[10px] uppercase tracking-wide text-muted">CTS</p>
-                      <p className="text-2xl leading-none mt-2 font-semibold text-body">{formatFixed(ctsAbs, 2)}%</p>
+                      <p className="text-xl md:text-2xl leading-tight mt-2 font-semibold text-body whitespace-nowrap">{formatFixed(ctsAbs, 2)}%</p>
                       <p className={`text-sm font-semibold mt-1 ${pctToneClass(ctsPct)}`}>
                         {formatSignedPct(ctsPct)}
                       </p>
@@ -1050,6 +1231,40 @@ const CrossSizePlanner = ({
           </div>
         </details>
       </div>
+
+      {isSaveModalOpen && (
+        <div className="fixed inset-0 z-[95] flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/40" onClick={() => setIsSaveModalOpen(false)} />
+          <div className="relative z-[96] w-full max-w-md rounded-xl bg-white border border-slate-200 shadow-2xl p-4 space-y-3">
+            <h4 className="text-base font-semibold text-body">Save Scenario</h4>
+            <input
+              type="text"
+              value={saveNameDraft}
+              onChange={(e) => setSaveNameDraft(e.target.value)}
+              placeholder="Enter scenario name"
+              className="w-full px-3 py-2 rounded-md border border-slate-300 bg-white text-sm text-body"
+            />
+            <div className="flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setIsSaveModalOpen(false)}
+                className="px-3 py-2 rounded-md border border-slate-300 bg-white text-sm font-semibold text-body"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmSaveReport}
+                disabled={isSavingReport || !String(saveNameDraft || '').trim()}
+                className="inline-flex items-center gap-2 px-3 py-2 rounded-md border border-primary text-primary bg-white text-sm font-semibold disabled:opacity-40"
+              >
+                {isSavingReport ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+                Save
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

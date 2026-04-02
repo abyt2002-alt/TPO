@@ -210,6 +210,45 @@ class RunStateResponse(BaseModel):
     step6_result: Optional[Dict[str, Any]] = None
 
 
+class ReportSaveRequest(BaseModel):
+    run_id: Optional[str] = None
+    step: str = Field(pattern="^(step4|step5)$")
+    name: str = Field(min_length=1, max_length=120)
+    reference_mode: Optional[str] = None
+    metadata: Dict[str, Any] = {}
+    payload: Dict[str, Any] = {}
+
+
+class ReportSummary(BaseModel):
+    report_key: str
+    run_id: Optional[str] = None
+    step: str
+    name: str
+    reference_mode: Optional[str] = None
+    metadata: Dict[str, Any] = {}
+    created_at: str
+    updated_at: str
+
+
+class ReportSaveResponse(BaseModel):
+    success: bool
+    message: str
+    report: ReportSummary
+
+
+class ReportListResponse(BaseModel):
+    success: bool
+    message: str
+    reports: List[ReportSummary] = []
+
+
+class ReportDetailResponse(BaseModel):
+    success: bool
+    message: str
+    report: ReportSummary
+    payload: Dict[str, Any] = {}
+
+
 class ModelingRequest(BaseModel):
     run_id: Optional[str] = None
     states: Optional[List[str]] = None
@@ -386,6 +425,7 @@ class CrossSizePlannerSlabState(BaseModel):
     lag1_base_discount_pct: float
     anchor_qty: float
     base_price: float = 0.0
+    clp_price: float = 0.0
     cogs_per_unit: float = 0.0
     stage2_intercept: float
     coef_residual_store: float

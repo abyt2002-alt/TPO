@@ -1,4 +1,4 @@
-"""Step 3 two-stage modeling and ROI generation.\n\nThis module builds monthly modeling frames, fits stage models, and computes\nROI outputs without changing step-2 formulas.\n"""
+"""Step 3 two-stage modeling and ROI generation.\n\nThis module builds monthly modeling frames, fits stage models, and computes\nROI outputs using the same Q1 discount basis as Step 2.\n"""
 
 import pandas as pd
 import numpy as np
@@ -81,6 +81,12 @@ class Step3ModelingMixin:
 
     def _build_monthly_model_dataframe(self, df: pd.DataFrame, request: ModelingRequest) -> pd.DataFrame:
         work = df.copy()
+        work, missing = self._prepare_step2_discount_basis(work)
+        if missing:
+            raise ValueError(
+                "Step 3 requires Q1 discount columns. Missing: "
+                + ", ".join(missing)
+            )
         store_col = 'Store_ID' if 'Store_ID' in work.columns else 'Outlet_ID'
         work['Date'] = pd.to_datetime(work['Date'], errors='coerce')
         work = work.dropna(subset=['Date'])
@@ -93,8 +99,8 @@ class Step3ModelingMixin:
             .agg(
                 store_count=(store_col, 'nunique'),
                 quantity=('Quantity', 'sum'),
-                total_discount=('TotalDiscount', 'sum'),
-                sales_value=('SalesValue_atBasicRate', 'sum'),
+                total_discount=('_step2_scheme_amount', 'sum'),
+                sales_value=('_step2_dsp_sales', 'sum'),
             )
             .rename(columns={'Period_D': 'Period'})
             .sort_values('Period')
@@ -151,8 +157,8 @@ class Step3ModelingMixin:
             .agg(
                 store_count=(store_col, 'nunique'),
                 quantity=('Quantity', 'sum'),
-                total_discount=('TotalDiscount', 'sum'),
-                sales_value=('SalesValue_atBasicRate', 'sum'),
+                total_discount=('_step2_scheme_amount', 'sum'),
+                sales_value=('_step2_dsp_sales', 'sum'),
             )
         )
         monthly['Period'] = monthly['Month_Key'].dt.to_timestamp()

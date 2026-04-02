@@ -20,6 +20,10 @@ import {
   createRun,
   getRunState,
   saveRunState,
+  saveGlobalReport,
+  downloadGlobalReportsExcel,
+  listGlobalReports,
+  getGlobalReport,
 } from '../services/api'
 import Layout from '../components/Layout'
 import FilterPanel from '../components/rfm/FilterPanel'
@@ -578,6 +582,15 @@ const RFMAnalysis = () => {
     ...FIXED_STAGE3_SETTINGS,
   })
   const [step4DisplayReferenceMode, setStep4DisplayReferenceMode] = useState('ly_same_3m')
+  const [isSavingGlobalReport, setIsSavingGlobalReport] = useState(false)
+  const [isDownloadingGlobalReports, setIsDownloadingGlobalReports] = useState(false)
+  const [step4ReportMessage, setStep4ReportMessage] = useState('')
+  const [step5ReportMessage, setStep5ReportMessage] = useState('')
+  const [isSavingStep5Report, setIsSavingStep5Report] = useState(false)
+  const [step5SavedReports, setStep5SavedReports] = useState([])
+  const [isStep5SavedReportsLoading, setIsStep5SavedReportsLoading] = useState(false)
+  const [step4SavedReports, setStep4SavedReports] = useState([])
+  const [isStep4SavedReportsLoading, setIsStep4SavedReportsLoading] = useState(false)
   const step5ScenarioDefs = useMemo(() => buildStep5ScenarioDefinitions(step5ScenarioBuilder), [step5ScenarioBuilder])
 
   // Fetch initial available filters
@@ -1765,6 +1778,207 @@ const RFMAnalysis = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeStepTab, modelingResult?.success, Boolean(plannerDefaultByReference?.ly_same_3m)])
 
+  const buildScenarioMatrixFromPeriodMap = useCallback((scenarioByPeriod, periods) => {
+    const periodKeys = Array.isArray(periods) ? periods.map((p) => String(p)) : []
+    const matrix = {}
+    periodKeys.forEach((periodKey, idx) => {
+      const bySize = scenarioByPeriod?.[periodKey] || {}
+      Object.entries(bySize).forEach(([sizeKeyRaw, bySlab]) => {
+        const sizeKey = String(sizeKeyRaw || '')
+        if (!sizeKey) return
+        if (!matrix[sizeKey]) matrix[sizeKey] = {}
+        Object.entries(bySlab || {}).forEach(([slabKeyRaw, val]) => {
+          const slabKey = String(slabKeyRaw || '')
+          if (!slabKey) return
+          if (!Array.isArray(matrix[sizeKey][slabKey])) matrix[sizeKey][slabKey] = new Array(periodKeys.length).fill(0)
+          const n = Number(val)
+          matrix[sizeKey][slabKey][idx] = Number.isFinite(n) ? n : 0
+        })
+      })
+    })
+    return matrix
+  }, [])
+
+  const refreshStep4SavedReports = useCallback(async () => {
+    setIsStep4SavedReportsLoading(true)
+    try {
+      const response = await listGlobalReports({ limit: 500 })
+      const rows = Array.isArray(response?.reports) ? response.reports : []
+      const filtered = rows
+        .filter((r) => String(r?.step || '').toLowerCase() === 'step4')
+        .sort((a, b) => String(b?.updated_at || '').localeCompare(String(a?.updated_at || '')))
+      setStep4SavedReports(filtered)
+    } catch (_) {
+      setStep4SavedReports([])
+    } finally {
+      setIsStep4SavedReportsLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (activeStepTab !== 'step4') return
+    refreshStep4SavedReports()
+  }, [activeStepTab, refreshStep4SavedReports])
+
+  const refreshStep5SavedReports = useCallback(async () => {
+    setIsStep5SavedReportsLoading(true)
+    try {
+      const response = await listGlobalReports({ limit: 500 })
+      const rows = Array.isArray(response?.reports) ? response.reports : []
+      const filtered = rows
+        .filter((r) => String(r?.step || '').toLowerCase() === 'step5')
+        .sort((a, b) => String(b?.updated_at || '').localeCompare(String(a?.updated_at || '')))
+      setStep5SavedReports(filtered)
+    } catch (_) {
+      setStep5SavedReports([])
+    } finally {
+      setIsStep5SavedReportsLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (activeStepTab !== 'step5') return
+    refreshStep5SavedReports()
+  }, [activeStepTab, refreshStep5SavedReports])
+
+  const handleDownloadGlobalReports = useCallback(async () => {
+    setIsDownloadingGlobalReports(true)
+    try {
+      const response = await downloadGlobalReportsExcel({})
+      const blob = response?.data
+      if (!blob) throw new Error('No report file returned')
+      const url = window.URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = 'saved_reports.xlsx'
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      window.URL.revokeObjectURL(url)
+    } catch (error) {
+      setStep4ReportMessage(error?.message || 'Failed to download saved reports')
+    } finally {
+      setIsDownloadingGlobalReports(false)
+    }
+  }, [])
+
+  const handleSaveStep4Report = useCallback(async (reportInput = {}) => {
+    const reportName = String(reportInput?.name || '').trim()
+    if (!reportName) {
+      setStep4ReportMessage('Enter scenario name before saving')
+      return
+    }
+    setIsSavingGlobalReport(true)
+    setStep4ReportMessage('')
+    try {
+      const payload = {
+        run_id: runId || null,
+        step: 'step4',
+        name: reportName,
+        reference_mode: String(reportInput?.reference_mode || step4DisplayReferenceMode || 'ly_same_3m'),
+        metadata: reportInput?.metadata || {},
+        payload: reportInput?.payload || {},
+      }
+      const saved = await saveGlobalReport(payload)
+      const savedName = String(saved?.report?.name || reportName)
+      setStep4ReportMessage(`Saved: ${savedName}`)
+      await refreshStep4SavedReports()
+    } catch (error) {
+      setStep4ReportMessage(error?.message || 'Failed to save report')
+    } finally {
+      setIsSavingGlobalReport(false)
+    }
+  }, [runId, step4DisplayReferenceMode, refreshStep4SavedReports])
+
+  const handleLoadStep4SavedReport = useCallback(async (reportKey) => {
+    const key = String(reportKey || '').trim()
+    if (!key) return
+    try {
+      const response = await getGlobalReport(key)
+      const payload = response?.payload || {}
+      const scenarioByPeriod = payload?.scenario_discounts_by_period || {}
+      const periods = Array.isArray(plannerResult?.periods) ? plannerResult.periods.map((p) => String(p)) : []
+      if (!periods.length || !scenarioByPeriod || Object.keys(scenarioByPeriod).length === 0) {
+        setStep4ReportMessage('Saved scenario has no discount map')
+        return
+      }
+      const scenarioMatrix = buildScenarioMatrixFromPeriodMap(scenarioByPeriod, periods)
+      setPlannerResult((prev) => {
+        if (!prev || !prev.success) return prev
+        return {
+          ...prev,
+          scenario_matrix: scenarioMatrix,
+        }
+      })
+      const refMode = String(response?.report?.reference_mode || '').trim()
+      if (refMode === 'ly_same_3m' || refMode === 'last_3m_before_projection') {
+        setStep4DisplayReferenceMode(refMode)
+      }
+      setStep4ReportMessage(`Loaded: ${String(response?.report?.name || key)}`)
+    } catch (error) {
+      setStep4ReportMessage(error?.message || 'Failed to load saved scenario')
+    }
+  }, [plannerResult?.periods, buildScenarioMatrixFromPeriodMap])
+
+  const handleSaveStep5Report = useCallback(async (reportInput = {}) => {
+    const reportName = String(reportInput?.name || '').trim()
+    if (!reportName) {
+      setStep5ReportMessage('Enter scenario name before saving')
+      return
+    }
+    setIsSavingStep5Report(true)
+    setStep5ReportMessage('')
+    try {
+      const payload = {
+        run_id: runId || null,
+        step: 'step5',
+        name: reportName,
+        reference_mode: String(reportInput?.reference_mode || step4DisplayReferenceMode || 'ly_same_3m'),
+        metadata: reportInput?.metadata || {},
+        payload: reportInput?.payload || {},
+      }
+      const saved = await saveGlobalReport(payload)
+      const savedName = String(saved?.report?.name || reportName)
+      setStep5ReportMessage(`Saved: ${savedName}`)
+      await refreshStep5SavedReports()
+    } catch (error) {
+      setStep5ReportMessage(error?.message || 'Failed to save scenario report')
+    } finally {
+      setIsSavingStep5Report(false)
+    }
+  }, [runId, step4DisplayReferenceMode, refreshStep5SavedReports])
+
+  const handleLoadStep5SavedReport = useCallback(async (reportKey) => {
+    const key = String(reportKey || '').trim()
+    if (!key) return
+    try {
+      const response = await getGlobalReport(key)
+      const payload = response?.payload || {}
+      const savedScenario = payload?.scenario
+      if (!savedScenario || typeof savedScenario !== 'object') {
+        setStep5ReportMessage('Saved report has no scenario payload')
+        return
+      }
+      setScenarioResult((prev) => {
+        const prevRows = Array.isArray(prev?.scenarios) ? prev.scenarios : []
+        const scenarioKey = String(savedScenario?.key || savedScenario?.scenario || key)
+        const nextRows = [...prevRows]
+        const idx = nextRows.findIndex((r) => String(r?.key || r?.scenario || '') === scenarioKey)
+        if (idx >= 0) nextRows[idx] = savedScenario
+        else nextRows.unshift(savedScenario)
+        return {
+          ...(prev || {}),
+          success: true,
+          scenarios: nextRows,
+          message: prev?.message || `Loaded saved scenario: ${String(response?.report?.name || key)}`,
+        }
+      })
+      setStep5ReportMessage(`Loaded: ${String(response?.report?.name || key)}`)
+    } catch (error) {
+      setStep5ReportMessage(error?.message || 'Failed to load saved Step 5 report')
+    }
+  }, [])
+
   const handleRunScenarioComparison = () => {
     if (!modelingResult?.success) {
       setScenarioErrorMessage('Run Step 3 modeling before Step 5 scenario generation.')
@@ -2780,6 +2994,14 @@ const RFMAnalysis = () => {
               displayReferenceMode={step4DisplayReferenceMode}
               onDisplayReferenceModeChange={setStep4DisplayReferenceMode}
               referenceByMode={plannerDefaultByReference}
+              onSaveReport={handleSaveStep4Report}
+              isSavingReport={isSavingGlobalReport}
+              saveReportMessage={step4ReportMessage}
+              onDownloadReports={handleDownloadGlobalReports}
+              isDownloadingReports={isDownloadingGlobalReports}
+              savedReports={step4SavedReports}
+              onLoadSavedReport={handleLoadStep4SavedReport}
+              isSavedReportsLoading={isStep4SavedReportsLoading}
               onInitialize={() => {
                 handleGeneratePlanner()
               }}
@@ -2837,6 +3059,12 @@ const RFMAnalysis = () => {
               onGenerateForCurrentFilters={handleGenerateAIScenariosForCurrentFilters}
               isAIGenerating={isStep5AIBusy}
               onFilterContextChange={setStep5CurrentFilterContext}
+              onSaveReport={handleSaveStep5Report}
+              isSavingReport={isSavingStep5Report}
+              saveReportMessage={step5ReportMessage}
+              savedReports={step5SavedReports}
+              isSavedReportsLoading={isStep5SavedReportsLoading}
+              onLoadSavedReport={handleLoadStep5SavedReport}
               onScenariosChange={(nextRows) => {
                 setScenarioResult((prev) => ({
                   ...(prev || {}),
