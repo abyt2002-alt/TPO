@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
-import { AlertCircle, Download, Loader2, Save, X } from 'lucide-react'
+import { AlertCircle, Download, FolderOpen, Loader2, Save, X } from 'lucide-react'
 import {
   ResponsiveContainer,
   BarChart,
@@ -79,6 +79,140 @@ const parseEditableDiscount = (raw, fallback = 5) => {
 }
 
 const fieldKey = (periodKey, sizeKey, slabKey) => `${String(periodKey)}|${String(sizeKey)}|${String(slabKey)}`
+
+const escapeXml = (value) => String(value ?? '')
+  .replace(/&/g, '&amp;')
+  .replace(/</g, '&lt;')
+  .replace(/>/g, '&gt;')
+  .replace(/"/g, '&quot;')
+  .replace(/'/g, '&apos;')
+
+const sanitizeWorksheetName = (raw, fallback = 'Scenario') => {
+  const cleaned = String(raw || fallback)
+    .replace(/[:\\/?*\[\]]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+  return (cleaned || fallback).slice(0, 31)
+}
+
+const getUniqueWorksheetName = (rawName, usedNames) => {
+  const base = sanitizeWorksheetName(rawName)
+  let candidate = base || 'Scenario'
+  let idx = 2
+  while (usedNames.has(candidate)) {
+    const suffix = ` ${idx}`
+    const trimmedBase = (base || 'Scenario').slice(0, Math.max(1, 31 - suffix.length))
+    candidate = `${trimmedBase}${suffix}`
+    idx += 1
+  }
+  usedNames.add(candidate)
+  return candidate
+}
+
+const getSpreadsheetCellType = (value) => {
+  if (typeof value === 'number' && Number.isFinite(value)) return 'Number'
+  if (typeof value === 'boolean') return 'Boolean'
+  return 'String'
+}
+
+const buildSpreadsheetCellXml = (value, styleId = null) => {
+  const type = getSpreadsheetCellType(value)
+  const normalized = type === 'Number' ? Number(value) : String(value ?? '')
+  const styleAttr = styleId ? ` ss:StyleID="${styleId}"` : ''
+  return `<Cell${styleAttr}><Data ss:Type="${type}">${escapeXml(normalized)}</Data></Cell>`
+}
+
+const buildSpreadsheetRowXml = (cells, styleId = null) => (
+  `<Row>${cells.map((cell) => buildSpreadsheetCellXml(cell, styleId)).join('')}</Row>`
+)
+
+const buildSavedScenarioRecordRows = (report) => {
+  const payload = report?.payload || {}
+  const directRows = Array.isArray(payload?.records) ? payload.records : []
+  if (directRows.length > 0) {
+    return directRows.map((row) => ({
+      period: String(row?.period || ''),
+      size: String(row?.size || ''),
+      slab: String(row?.slab || ''),
+      scenario_discount_pct: Number(row?.scenario_discount_pct ?? 0),
+    }))
+  }
+
+  const scenario = payload?.scenario
+  const scenarioByPeriod = scenario?.scenario_discounts_by_period || {}
+  const rows = []
+  Object.entries(scenarioByPeriod || {}).forEach(([periodKey, bySize]) => {
+    ;['12-ML', '18-ML'].forEach((sizeKey) => {
+      sortSlabEntries(bySize?.[sizeKey] || {}).forEach(([slabKey, discount]) => {
+        rows.push({
+          period: String(periodKey),
+          size: sizeKey,
+          slab: String(slabKey),
+          scenario_discount_pct: Number(discount ?? 0),
+        })
+      })
+    })
+  })
+  return rows
+}
+
+const buildSavedScenariosWorkbookXml = (reports = []) => {
+  const usedNames = new Set()
+  const worksheets = (Array.isArray(reports) ? reports : []).map((report, index) => {
+    const sheetName = getUniqueWorksheetName(
+      String(report?.name || '').trim() || `Scenario ${index + 1}`,
+      usedNames
+    )
+    const scenario = report?.payload?.scenario || {}
+    const totals = report?.payload?.totals || {}
+    const detailRows = buildSavedScenarioRecordRows(report)
+    const summaryRows = [
+      ['Saved Scenario', String(report?.name || '').trim() || `Scenario ${index + 1}`],
+      ['Scenario Key', String(report?.metadata?.scenario_key || scenario?.key || scenario?.scenario || '')],
+      ['Reference Mode', String(report?.reference_mode || '')],
+      ['Created At', String(report?.created_at || '')],
+      ['Updated At', String(report?.updated_at || '')],
+    ]
+    const totalRows = [
+      ['Metric', '12-ML', '18-ML', 'TOTAL'],
+      ['Volume %', Number(totals?.['12-ML']?.volume_pct ?? 0), Number(totals?.['18-ML']?.volume_pct ?? 0), Number(totals?.TOTAL?.volume_ml_pct ?? totals?.TOTAL?.volume_pct ?? 0)],
+      ['Revenue %', Number(totals?.['12-ML']?.revenue_pct ?? 0), Number(totals?.['18-ML']?.revenue_pct ?? 0), Number(totals?.TOTAL?.revenue_pct ?? 0)],
+      ['Gross Margin %', Number(totals?.['12-ML']?.profit_pct ?? 0), Number(totals?.['18-ML']?.profit_pct ?? 0), Number(totals?.TOTAL?.profit_pct ?? 0)],
+      ['Investment %', Number(totals?.['12-ML']?.investment_pct ?? 0), Number(totals?.['18-ML']?.investment_pct ?? 0), Number(totals?.TOTAL?.investment_pct ?? 0)],
+    ]
+
+    const rowsXml = [
+      ...summaryRows.map((row) => buildSpreadsheetRowXml(row)),
+      buildSpreadsheetRowXml(['', '']),
+      ...totalRows.map((row, rowIndex) => buildSpreadsheetRowXml(row, rowIndex === 0 ? 'Header' : null)),
+      buildSpreadsheetRowXml(['', '', '', '']),
+      buildSpreadsheetRowXml(['Period', 'Size', 'Slab', 'Scenario Discount %'], 'Header'),
+      ...detailRows.map((row) => buildSpreadsheetRowXml([
+        row.period,
+        row.size,
+        row.slab,
+        Number(row.scenario_discount_pct ?? 0),
+      ])),
+    ].join('')
+
+    return `<Worksheet ss:Name="${escapeXml(sheetName)}"><Table>${rowsXml}</Table></Worksheet>`
+  }).join('')
+
+  return `<?xml version="1.0"?>
+<?mso-application progid="Excel.Sheet"?>
+<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet"
+ xmlns:o="urn:schemas-microsoft-com:office:office"
+ xmlns:x="urn:schemas-microsoft-com:office:excel"
+ xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet"
+ xmlns:html="http://www.w3.org/TR/REC-html40">
+ <Styles>
+  <Style ss:ID="Header">
+   <Font ss:Bold="1"/>
+  </Style>
+ </Styles>
+ ${worksheets}
+</Workbook>`
+}
 
 const enforceNonDecreasingLadder = (mapObj = {}) => {
   const entries = sortSlabEntries(mapObj)
@@ -276,11 +410,10 @@ const ScenarioComparison = ({
   isAIGenerating = false,
   onFilterContextChange = null,
   onSaveReport = null,
-  isSavingReport = false,
   saveReportMessage = '',
   savedReports = [],
-  isSavedReportsLoading = false,
   onLoadSavedReport = null,
+  onDeleteSavedReport = null,
 }) => {
   const VISIBLE_SCENARIOS = 5
   const [minVolumePct, setMinVolumePct] = useState('')
@@ -299,6 +432,7 @@ const ScenarioComparison = ({
   const [modalInputDraft, setModalInputDraft] = useState({})
   const [modalError, setModalError] = useState('')
   const [selectedSavedReportKey, setSelectedSavedReportKey] = useState('')
+  const [modalSavedReportKey, setModalSavedReportKey] = useState('')
 
   const [scenarios, setScenarios] = useState([])
   const [isCreateMode, setIsCreateMode] = useState(false)
@@ -695,6 +829,22 @@ const ScenarioComparison = ({
     URL.revokeObjectURL(url)
   }
 
+  const handleDownloadSavedScenariosWorkbook = () => {
+    const rows = Array.isArray(savedReports) ? savedReports : []
+    if (!rows.length) return
+    const workbookXml = buildSavedScenariosWorkbookXml(rows)
+    const blob = new Blob([workbookXml], { type: 'application/vnd.ms-excel;charset=utf-8;' })
+    const url = URL.createObjectURL(blob)
+    const ts = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `step5_saved_scenarios_${ts}.xls`
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+  }
+
   const yDomain = useMemo(() => {
     if (!chartData.length) return [-5, 5]
     const values = chartData.flatMap((row) => [row.volume_pct, row.revenue_pct, row.profit_pct])
@@ -738,7 +888,7 @@ const ScenarioComparison = ({
   const recomputeScenario = (scenarioLike) => {
     const baseForRecompute = (data?.planner_base?.success ? data.planner_base : null) || (plannerBase?.success ? plannerBase : null)
     if (!baseForRecompute?.success) {
-      return { success: false, message: 'Planner base data missing. Run Step 4 once, then Save & Recalculate.' }
+      return { success: false, message: 'Planner base data missing. Run Step 4 once, then Recalculate.' }
     }
     const periods = normalizePlannerPeriodsFromData(baseForRecompute)
     const scenarioByPeriod = scenarioLike?.scenario_discounts_by_period || {}
@@ -810,6 +960,7 @@ const ScenarioComparison = ({
     setModalInputDraft({})
     setModalError('')
     setIsCreateMode(false)
+    setModalSavedReportKey('')
   }
 
   const modalPeriods = useMemo(() => {
@@ -819,20 +970,47 @@ const ScenarioComparison = ({
     return Object.keys(modalScenario?.scenario_discounts_by_period || {}).sort((a, b) => String(a).localeCompare(String(b)))
   }, [data?.periods, modalScenario])
 
+  const openScenarioModal = (scenarioLike, options = {}) => {
+    if (!scenarioLike || typeof scenarioLike !== 'object') return false
+    const normalizedPeriods = Array.isArray(data?.periods) ? data.periods.map((p) => String(p)) : []
+    const savedReportKey = String(options.savedReportKey || '')
+    const withNormalizedMap = {
+      ...scenarioLike,
+      scenario_discounts_by_period: normalizeScenarioDiscountsByPeriod(scenarioLike, normalizedPeriods),
+    }
+    setModalError('')
+    setIsCreateMode(Boolean(options.createMode))
+    setModalSavedReportKey(savedReportKey)
+    setSelectedSavedReportKey(savedReportKey)
+    setModalScenario(withNormalizedMap)
+    setModalDraft(JSON.parse(JSON.stringify(withNormalizedMap)))
+    return true
+  }
+
   const openScenarioModalFromChart = (entry) => {
     const key = String(entry?.payload?.scenario_key || entry?.scenario_key || '')
     if (!key) return
     const found = filteredRows.find((row) => String(row?.key || row?.scenario || '') === key)
     if (!found) return
-    const normalizedPeriods = Array.isArray(data?.periods) ? data.periods.map((p) => String(p)) : []
-    const withNormalizedMap = {
-      ...found,
-      scenario_discounts_by_period: normalizeScenarioDiscountsByPeriod(found, normalizedPeriods),
+    openScenarioModal(found)
+  }
+
+  const openSavedScenarioModal = (reportKey) => {
+    const key = String(reportKey || '').trim()
+    if (!key) return
+    const record = (Array.isArray(savedReports) ? savedReports : []).find((row) => String(row?.report_key || '') === key)
+    if (!record) {
+      setModalError('Saved scenario not found.')
+      return
     }
-    setModalError('')
-    setIsCreateMode(false)
-    setModalScenario(withNormalizedMap)
-    setModalDraft(JSON.parse(JSON.stringify(withNormalizedMap)))
+    const savedScenario = record?.payload?.scenario
+    if (!savedScenario || typeof savedScenario !== 'object') {
+      setModalError('Saved scenario has no scenario payload.')
+      return
+    }
+    const opened = openScenarioModal(savedScenario, { savedReportKey: key })
+    if (!opened) return
+    if (typeof onLoadSavedReport === 'function') onLoadSavedReport(key)
   }
 
   const openCreateScenarioModal = () => {
@@ -869,10 +1047,7 @@ const ScenarioComparison = ({
       setModalError(recomputed.message || 'Scenario recomputation failed.')
       return
     }
-    setIsCreateMode(true)
-    setModalError('')
-    setModalScenario(recomputed.scenario)
-    setModalDraft(JSON.parse(JSON.stringify(recomputed.scenario)))
+    openScenarioModal(recomputed.scenario, { createMode: true })
   }
 
   useEffect(() => {
@@ -997,11 +1172,14 @@ const ScenarioComparison = ({
     return updated
   }
 
-  const saveModalScenarioToReports = async () => {
+  const saveModalScenarioToSession = (mode = 'save') => {
     if (typeof onSaveReport !== 'function') return
     const updated = saveModalScenario()
     if (!updated) return
-    const name = String(updated?.custom_name || updated?.scenario || '').trim()
+    const baseName = String(updated?.custom_name || updated?.scenario || '').trim()
+    const name = mode === 'save_as' && !String(updated?.custom_name || '').trim()
+      ? `${baseName} Copy`
+      : baseName
     if (!name) {
       setModalError('Scenario name is required before saving report.')
       return
@@ -1025,12 +1203,14 @@ const ScenarioComparison = ({
       })
     })
 
-    onSaveReport({
+    const savedRecord = onSaveReport({
+      report_key: mode === 'save' ? modalSavedReportKey : '',
       name,
       reference_mode: String(data?.reference_mode || plannerBase?.reference_mode || 'ly_same_3m'),
       metadata: {
         source: 'step5_scenario_modal',
         scenario_key: String(updated?.key || updated?.scenario || ''),
+        save_mode: mode,
       },
       payload: {
         scenario: updated,
@@ -1042,22 +1222,34 @@ const ScenarioComparison = ({
         },
       },
     })
+    const nextSavedKey = String(savedRecord?.report_key || '').trim()
+    if (nextSavedKey) {
+      setSelectedSavedReportKey(nextSavedKey)
+      setModalSavedReportKey(nextSavedKey)
+    }
   }
+
+  useEffect(() => {
+    if (!selectedSavedReportKey) return
+    const exists = (Array.isArray(savedReports) ? savedReports : []).some(
+      (row) => String(row?.report_key || '') === selectedSavedReportKey
+    )
+    if (!exists) setSelectedSavedReportKey('')
+  }, [savedReports, selectedSavedReportKey])
 
   return (
     <div className="space-y-6">
       <div className="bg-white rounded-lg shadow-md p-3 sticky top-0 z-20">
-        <div className="flex items-center gap-3">
-          <span className="text-sm font-semibold text-body whitespace-nowrap">Saved Reports</span>
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className="text-sm font-semibold text-body whitespace-nowrap">Saved Scenarios</span>
           <select
             value={selectedSavedReportKey}
             onChange={(e) => {
               const key = String(e.target.value || '').trim()
               setSelectedSavedReportKey(key)
-              if (key && typeof onLoadSavedReport === 'function') onLoadSavedReport(key)
+              if (key) openSavedScenarioModal(key)
             }}
-            disabled={isSavedReportsLoading}
-            className="min-w-[280px] max-w-[460px] px-3 py-2 text-sm border border-slate-300 rounded-lg bg-white"
+            className="min-w-[240px] max-w-[420px] px-3 py-2 text-sm border border-slate-300 rounded-lg bg-white"
           >
             <option value="">Select saved Step 5 scenario</option>
             {(Array.isArray(savedReports) ? savedReports : []).slice(0, 300).map((row) => (
@@ -1066,12 +1258,39 @@ const ScenarioComparison = ({
               </option>
             ))}
           </select>
-          {isSavedReportsLoading ? (
-            <span className="text-xs text-muted inline-flex items-center gap-1">
-              <Loader2 className="w-3.5 h-3.5 animate-spin" />
-              Loading...
-            </span>
-          ) : null}
+          <button
+            type="button"
+            onClick={() => {
+              if (!selectedSavedReportKey) return
+              openSavedScenarioModal(selectedSavedReportKey)
+            }}
+            disabled={!selectedSavedReportKey}
+            className="inline-flex items-center gap-1 px-2.5 py-2 rounded-lg border border-slate-300 text-body hover:bg-slate-50 text-sm disabled:opacity-40"
+          >
+            <FolderOpen size={14} />
+            Open
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              if (!selectedSavedReportKey || typeof onDeleteSavedReport !== 'function') return
+              onDeleteSavedReport(selectedSavedReportKey)
+            }}
+            disabled={!selectedSavedReportKey}
+            className="inline-flex items-center gap-1 px-2.5 py-2 rounded-lg border border-slate-300 text-body hover:bg-slate-50 text-sm disabled:opacity-40"
+          >
+            <X size={14} />
+            Delete
+          </button>
+          <button
+            type="button"
+            onClick={handleDownloadSavedScenariosWorkbook}
+            disabled={!Array.isArray(savedReports) || savedReports.length === 0}
+            className="inline-flex items-center gap-1 px-2.5 py-2 rounded-lg border border-slate-300 text-body hover:bg-slate-50 text-sm disabled:opacity-40"
+          >
+            <Download size={14} />
+            Download All
+          </button>
           {saveReportMessage ? (
             <span className="text-xs text-muted truncate">{saveReportMessage}</span>
           ) : null}
@@ -1398,7 +1617,7 @@ const ScenarioComparison = ({
                 )}
               </div>
             )}
-            <p className="text-xs text-muted mt-2">Click any bar to open scenario month-wise slab discounts.</p>
+            <p className="text-xs text-muted mt-2">Click any bar or choose a saved scenario to open the month-wise slab discount modal.</p>
           </div>
         </>
       )}
@@ -1430,12 +1649,19 @@ const ScenarioComparison = ({
               <div className="flex items-center gap-2">
                 <button
                   type="button"
-                  onClick={saveModalScenarioToReports}
-                  disabled={isSavingReport}
+                  onClick={() => saveModalScenarioToSession('save')}
                   className="inline-flex items-center gap-1 px-3 py-2 rounded-lg border border-slate-300 text-body hover:bg-slate-50 text-sm disabled:opacity-40"
                 >
                   <Save size={14} />
-                  {isSavingReport ? 'Saving...' : 'Save Report'}
+                  Save
+                </button>
+                <button
+                  type="button"
+                  onClick={() => saveModalScenarioToSession('save_as')}
+                  className="inline-flex items-center gap-1 px-3 py-2 rounded-lg border border-slate-300 text-body hover:bg-slate-50 text-sm disabled:opacity-40"
+                >
+                  <Save size={14} />
+                  Save As
                 </button>
                 <button
                   type="button"
@@ -1443,7 +1669,7 @@ const ScenarioComparison = ({
                   className="inline-flex items-center gap-1 px-3 py-2 rounded-lg border border-primary text-primary hover:bg-primary hover:text-white text-sm"
                 >
                   <Save size={14} />
-                  {isCreateMode ? 'Create & Recalculate' : 'Save & Recalculate'}
+                  Recalculate
                 </button>
                 <button
                   type="button"

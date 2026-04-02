@@ -20,10 +20,6 @@ import {
   createRun,
   getRunState,
   saveRunState,
-  saveGlobalReport,
-  downloadGlobalReportsExcel,
-  listGlobalReports,
-  getGlobalReport,
 } from '../services/api'
 import Layout from '../components/Layout'
 import FilterPanel from '../components/rfm/FilterPanel'
@@ -178,6 +174,7 @@ const DEFAULT_STEP1_FILTERS = {
   subcategories: ['STX INSTA SHAMPOO', 'STREAX INSTA SHAMPOO'],
   brands: [],
   sizes: ['12-ML', '18-ML'],
+  outlet_classifications: [],
   recency_threshold: 90,
   frequency_threshold: 20,
 }
@@ -198,6 +195,7 @@ const EMPTY_FILTERS = {
   subcategories: [],
   brands: [],
   sizes: [],
+  outlet_classifications: [],
 }
 
 const arraysEqualAsStrings = (left = [], right = []) => {
@@ -280,7 +278,6 @@ const resolveStepTabFromQuery = (stepParam) => {
   if (stepParam === '3') return 'step3'
   if (stepParam === '4') return 'step4'
   if (stepParam === '5') return 'step5'
-  if (stepParam === '6') return 'step_eda'
   return 'step1'
 }
 
@@ -289,7 +286,6 @@ const resolveStepQueryFromTab = (stepTab) => {
   if (stepTab === 'step3') return '3'
   if (stepTab === 'step4') return '4'
   if (stepTab === 'step5') return '5'
-  if (stepTab === 'step_eda') return '6'
   return null
 }
 
@@ -304,9 +300,12 @@ const FIXED_STAGE3_SETTINGS = {
 }
 
 const DEFAULT_MODELING_COGS_BY_SIZE = {
-  '12-ML': 8,
-  '18-ML': 10,
+  '12-ML': 6,
+  '18-ML': 8,
 }
+
+const STEP4_SESSION_REPORTS_KEY = 'qps_step4_session_saved_scenarios_v1'
+const STEP5_SESSION_REPORTS_KEY = 'qps_step5_session_saved_scenarios_v1'
 
 const normalizeModelingCogsBySize = (raw = {}) => {
   const out = { ...DEFAULT_MODELING_COGS_BY_SIZE }
@@ -582,15 +581,11 @@ const RFMAnalysis = () => {
     ...FIXED_STAGE3_SETTINGS,
   })
   const [step4DisplayReferenceMode, setStep4DisplayReferenceMode] = useState('ly_same_3m')
-  const [isSavingGlobalReport, setIsSavingGlobalReport] = useState(false)
-  const [isDownloadingGlobalReports, setIsDownloadingGlobalReports] = useState(false)
   const [step4ReportMessage, setStep4ReportMessage] = useState('')
   const [step5ReportMessage, setStep5ReportMessage] = useState('')
-  const [isSavingStep5Report, setIsSavingStep5Report] = useState(false)
   const [step5SavedReports, setStep5SavedReports] = useState([])
-  const [isStep5SavedReportsLoading, setIsStep5SavedReportsLoading] = useState(false)
   const [step4SavedReports, setStep4SavedReports] = useState([])
-  const [isStep4SavedReportsLoading, setIsStep4SavedReportsLoading] = useState(false)
+  const [step1AutoCollapseKey, setStep1AutoCollapseKey] = useState(0)
   const step5ScenarioDefs = useMemo(() => buildStep5ScenarioDefinitions(step5ScenarioBuilder), [step5ScenarioBuilder])
 
   // Fetch initial available filters
@@ -650,6 +645,7 @@ const RFMAnalysis = () => {
             subcategories: subcategoriesLevel?.subcategories || [],
             brands: brandsLevel?.brands || [],
             sizes: sizesLevel?.sizes || [],
+            outlet_classifications: sizesLevel?.outlet_classifications || [],
           })
         }
       } catch (error) {
@@ -672,7 +668,7 @@ const RFMAnalysis = () => {
       isActive = false
       clearTimeout(debounceTimer)
     }
-  }, [filters.states, filters.categories, filters.subcategories, filters.brands, availableFilters])
+  }, [filters.states, filters.categories, filters.subcategories, filters.brands, filters.sizes, availableFilters])
 
   // Calculate RFM mutation
   const calculateMutation = useMutation({
@@ -680,6 +676,7 @@ const RFMAnalysis = () => {
     onSuccess: (data) => {
       if (data.success) {
         setRfmData(data)
+        setStep1AutoCollapseKey((prev) => prev + 1)
       }
     },
   })
@@ -1128,7 +1125,7 @@ const RFMAnalysis = () => {
         const state = restored?.state || {}
         const restoredFilters = state.filters || {}
         const useUpdatedDefaultScope = isLegacyDefaultScope(restoredFilters, state, restored)
-        const hasSavedStep1Selection = ['states', 'categories', 'subcategories', 'brands', 'sizes']
+        const hasSavedStep1Selection = ['states', 'categories', 'subcategories', 'brands', 'sizes', 'outlet_classifications']
           .some((key) => Array.isArray(restoredFilters[key]) && restoredFilters[key].length > 0)
         const restoredTableQuery = state.table_query || {}
         const restoredStep2 = state.step2_filters || {}
@@ -1156,6 +1153,7 @@ const RFMAnalysis = () => {
           sizes: useUpdatedDefaultScope
             ? DEFAULT_STEP1_FILTERS.sizes
             : (restoredFilters.sizes || (hasSavedStep1Selection ? [] : DEFAULT_STEP1_FILTERS.sizes)),
+          outlet_classifications: restoredFilters.outlet_classifications || (hasSavedStep1Selection ? [] : DEFAULT_STEP1_FILTERS.outlet_classifications),
           recency_threshold: Number(restoredFilters.recency_threshold || DEFAULT_STEP1_FILTERS.recency_threshold),
           frequency_threshold: Number(restoredFilters.frequency_threshold || DEFAULT_STEP1_FILTERS.frequency_threshold),
         }))
@@ -1389,6 +1387,21 @@ const RFMAnalysis = () => {
       setModelingErrorMessage('Run Step 2 base depth estimation before Step 3 modeling.')
       return
     }
+
+    try {
+      sessionStorage.removeItem(STEP4_SESSION_REPORTS_KEY)
+    } catch (_) {
+      // noop
+    }
+    setStep4SavedReports([])
+    setStep4ReportMessage('')
+    try {
+      sessionStorage.removeItem(STEP5_SESSION_REPORTS_KEY)
+    } catch (_) {
+      // noop
+    }
+    setStep5SavedReports([])
+    setStep5ReportMessage('')
 
     const effectiveSettings = {
       include_lag_discount: settings.include_lag_discount ?? modelingSettings.include_lag_discount,
@@ -1799,185 +1812,177 @@ const RFMAnalysis = () => {
     return matrix
   }, [])
 
-  const refreshStep4SavedReports = useCallback(async () => {
-    setIsStep4SavedReportsLoading(true)
+  useEffect(() => {
     try {
-      const response = await listGlobalReports({ limit: 500 })
-      const rows = Array.isArray(response?.reports) ? response.reports : []
-      const filtered = rows
-        .filter((r) => String(r?.step || '').toLowerCase() === 'step4')
-        .sort((a, b) => String(b?.updated_at || '').localeCompare(String(a?.updated_at || '')))
-      setStep4SavedReports(filtered)
+      const raw = sessionStorage.getItem(STEP4_SESSION_REPORTS_KEY)
+      const parsed = raw ? JSON.parse(raw) : []
+      const rows = Array.isArray(parsed) ? parsed : []
+      setStep4SavedReports(rows)
     } catch (_) {
       setStep4SavedReports([])
-    } finally {
-      setIsStep4SavedReportsLoading(false)
     }
   }, [])
 
   useEffect(() => {
-    if (activeStepTab !== 'step4') return
-    refreshStep4SavedReports()
-  }, [activeStepTab, refreshStep4SavedReports])
-
-  const refreshStep5SavedReports = useCallback(async () => {
-    setIsStep5SavedReportsLoading(true)
     try {
-      const response = await listGlobalReports({ limit: 500 })
-      const rows = Array.isArray(response?.reports) ? response.reports : []
-      const filtered = rows
-        .filter((r) => String(r?.step || '').toLowerCase() === 'step5')
-        .sort((a, b) => String(b?.updated_at || '').localeCompare(String(a?.updated_at || '')))
-      setStep5SavedReports(filtered)
+      const raw = sessionStorage.getItem(STEP5_SESSION_REPORTS_KEY)
+      const parsed = raw ? JSON.parse(raw) : []
+      const rows = Array.isArray(parsed) ? parsed : []
+      setStep5SavedReports(rows)
     } catch (_) {
       setStep5SavedReports([])
-    } finally {
-      setIsStep5SavedReportsLoading(false)
     }
   }, [])
 
-  useEffect(() => {
-    if (activeStepTab !== 'step5') return
-    refreshStep5SavedReports()
-  }, [activeStepTab, refreshStep5SavedReports])
-
-  const handleDownloadGlobalReports = useCallback(async () => {
-    setIsDownloadingGlobalReports(true)
+  const persistStep4SessionReports = useCallback((rows) => {
+    const nextRows = Array.isArray(rows) ? rows : []
+    setStep4SavedReports(nextRows)
     try {
-      const response = await downloadGlobalReportsExcel({})
-      const blob = response?.data
-      if (!blob) throw new Error('No report file returned')
-      const url = window.URL.createObjectURL(blob)
-      const a = document.createElement('a')
-      a.href = url
-      a.download = 'saved_reports.xlsx'
-      document.body.appendChild(a)
-      a.click()
-      document.body.removeChild(a)
-      window.URL.revokeObjectURL(url)
-    } catch (error) {
-      setStep4ReportMessage(error?.message || 'Failed to download saved reports')
-    } finally {
-      setIsDownloadingGlobalReports(false)
+      sessionStorage.setItem(STEP4_SESSION_REPORTS_KEY, JSON.stringify(nextRows))
+    } catch (_) {
+      // noop
     }
   }, [])
 
-  const handleSaveStep4Report = useCallback(async (reportInput = {}) => {
+  const persistStep5SessionReports = useCallback((rows) => {
+    const nextRows = Array.isArray(rows) ? rows : []
+    setStep5SavedReports(nextRows)
+    try {
+      sessionStorage.setItem(STEP5_SESSION_REPORTS_KEY, JSON.stringify(nextRows))
+    } catch (_) {
+      // noop
+    }
+  }, [])
+
+  const handleSaveStep4Report = useCallback((reportInput = {}) => {
     const reportName = String(reportInput?.name || '').trim()
     if (!reportName) {
       setStep4ReportMessage('Enter scenario name before saving')
       return
     }
-    setIsSavingGlobalReport(true)
-    setStep4ReportMessage('')
-    try {
-      const payload = {
-        run_id: runId || null,
-        step: 'step4',
-        name: reportName,
-        reference_mode: String(reportInput?.reference_mode || step4DisplayReferenceMode || 'ly_same_3m'),
-        metadata: reportInput?.metadata || {},
-        payload: reportInput?.payload || {},
-      }
-      const saved = await saveGlobalReport(payload)
-      const savedName = String(saved?.report?.name || reportName)
-      setStep4ReportMessage(`Saved: ${savedName}`)
-      await refreshStep4SavedReports()
-    } catch (error) {
-      setStep4ReportMessage(error?.message || 'Failed to save report')
-    } finally {
-      setIsSavingGlobalReport(false)
+    const now = new Date().toISOString()
+    const reportKey = `step4_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+    const nextRecord = {
+      report_key: reportKey,
+      name: reportName,
+      reference_mode: String(reportInput?.reference_mode || step4DisplayReferenceMode || 'ly_same_3m'),
+      updated_at: now,
+      created_at: now,
+      payload: reportInput?.payload || {},
+      metadata: reportInput?.metadata || {},
     }
-  }, [runId, step4DisplayReferenceMode, refreshStep4SavedReports])
+    const prevRows = Array.isArray(step4SavedReports) ? step4SavedReports : []
+    const deduped = prevRows.filter((row) => String(row?.name || '').trim().toLowerCase() !== reportName.toLowerCase())
+    const nextRows = [nextRecord, ...deduped].sort((a, b) => String(b?.updated_at || '').localeCompare(String(a?.updated_at || '')))
+    persistStep4SessionReports(nextRows)
+    setStep4ReportMessage(`Saved: ${reportName}`)
+  }, [persistStep4SessionReports, step4DisplayReferenceMode, step4SavedReports])
 
-  const handleLoadStep4SavedReport = useCallback(async (reportKey) => {
+  const handleLoadStep4SavedReport = useCallback((reportKey) => {
     const key = String(reportKey || '').trim()
     if (!key) return
-    try {
-      const response = await getGlobalReport(key)
-      const payload = response?.payload || {}
-      const scenarioByPeriod = payload?.scenario_discounts_by_period || {}
-      const periods = Array.isArray(plannerResult?.periods) ? plannerResult.periods.map((p) => String(p)) : []
-      if (!periods.length || !scenarioByPeriod || Object.keys(scenarioByPeriod).length === 0) {
-        setStep4ReportMessage('Saved scenario has no discount map')
-        return
-      }
-      const scenarioMatrix = buildScenarioMatrixFromPeriodMap(scenarioByPeriod, periods)
-      setPlannerResult((prev) => {
-        if (!prev || !prev.success) return prev
-        return {
-          ...prev,
-          scenario_matrix: scenarioMatrix,
-        }
-      })
-      const refMode = String(response?.report?.reference_mode || '').trim()
-      if (refMode === 'ly_same_3m' || refMode === 'last_3m_before_projection') {
-        setStep4DisplayReferenceMode(refMode)
-      }
-      setStep4ReportMessage(`Loaded: ${String(response?.report?.name || key)}`)
-    } catch (error) {
-      setStep4ReportMessage(error?.message || 'Failed to load saved scenario')
+    const record = (Array.isArray(step4SavedReports) ? step4SavedReports : []).find((row) => String(row?.report_key || '') === key)
+    if (!record) {
+      setStep4ReportMessage('Saved scenario not found in this session')
+      return
     }
-  }, [plannerResult?.periods, buildScenarioMatrixFromPeriodMap])
+    const payload = record?.payload || {}
+    const scenarioByPeriod = payload?.scenario_discounts_by_period || {}
+    const periods = Array.isArray(plannerResult?.periods) ? plannerResult.periods.map((p) => String(p)) : []
+    if (!periods.length || !scenarioByPeriod || Object.keys(scenarioByPeriod).length === 0) {
+      setStep4ReportMessage('Saved scenario has no discount map')
+      return
+    }
+    const scenarioMatrix = buildScenarioMatrixFromPeriodMap(scenarioByPeriod, periods)
+    setPlannerResult((prev) => {
+      if (!prev || !prev.success) return prev
+      return {
+        ...prev,
+        scenario_matrix: scenarioMatrix,
+      }
+    })
+    const refMode = String(record?.reference_mode || '').trim()
+    if (refMode === 'ly_same_3m' || refMode === 'last_3m_before_projection') {
+      setStep4DisplayReferenceMode(refMode)
+    }
+    setStep4ReportMessage(`Loaded: ${String(record?.name || key)}`)
+  }, [plannerResult?.periods, buildScenarioMatrixFromPeriodMap, step4SavedReports])
 
-  const handleSaveStep5Report = useCallback(async (reportInput = {}) => {
+  const handleDeleteStep4SavedReport = useCallback((reportKey) => {
+    const key = String(reportKey || '').trim()
+    if (!key) return
+    const nextRows = (Array.isArray(step4SavedReports) ? step4SavedReports : []).filter((row) => String(row?.report_key || '') !== key)
+    persistStep4SessionReports(nextRows)
+    setStep4ReportMessage('Deleted saved scenario')
+  }, [persistStep4SessionReports, step4SavedReports])
+
+  const handleSaveStep5Report = useCallback((reportInput = {}) => {
     const reportName = String(reportInput?.name || '').trim()
     if (!reportName) {
       setStep5ReportMessage('Enter scenario name before saving')
-      return
+      return null
     }
-    setIsSavingStep5Report(true)
-    setStep5ReportMessage('')
-    try {
-      const payload = {
-        run_id: runId || null,
-        step: 'step5',
-        name: reportName,
-        reference_mode: String(reportInput?.reference_mode || step4DisplayReferenceMode || 'ly_same_3m'),
-        metadata: reportInput?.metadata || {},
-        payload: reportInput?.payload || {},
-      }
-      const saved = await saveGlobalReport(payload)
-      const savedName = String(saved?.report?.name || reportName)
-      setStep5ReportMessage(`Saved: ${savedName}`)
-      await refreshStep5SavedReports()
-    } catch (error) {
-      setStep5ReportMessage(error?.message || 'Failed to save scenario report')
-    } finally {
-      setIsSavingStep5Report(false)
+    const existingKey = String(reportInput?.report_key || '').trim()
+    const prevRows = Array.isArray(step5SavedReports) ? step5SavedReports : []
+    const existingRecord = existingKey
+      ? prevRows.find((row) => String(row?.report_key || '') === existingKey)
+      : null
+    const now = new Date().toISOString()
+    const reportKey = existingRecord?.report_key || `step5_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+    const nextRecord = {
+      report_key: reportKey,
+      name: reportName,
+      reference_mode: String(reportInput?.reference_mode || step4DisplayReferenceMode || 'ly_same_3m'),
+      updated_at: now,
+      created_at: String(existingRecord?.created_at || now),
+      payload: reportInput?.payload || {},
+      metadata: reportInput?.metadata || {},
     }
-  }, [runId, step4DisplayReferenceMode, refreshStep5SavedReports])
+    const nextRows = [nextRecord, ...prevRows.filter((row) => String(row?.report_key || '') !== reportKey)]
+      .sort((a, b) => String(b?.updated_at || '').localeCompare(String(a?.updated_at || '')))
+    persistStep5SessionReports(nextRows)
+    setStep5ReportMessage(`${existingRecord ? 'Updated' : 'Saved'}: ${reportName}`)
+    return nextRecord
+  }, [persistStep5SessionReports, step4DisplayReferenceMode, step5SavedReports])
 
-  const handleLoadStep5SavedReport = useCallback(async (reportKey) => {
+  const handleLoadStep5SavedReport = useCallback((reportKey) => {
     const key = String(reportKey || '').trim()
     if (!key) return
-    try {
-      const response = await getGlobalReport(key)
-      const payload = response?.payload || {}
-      const savedScenario = payload?.scenario
-      if (!savedScenario || typeof savedScenario !== 'object') {
-        setStep5ReportMessage('Saved report has no scenario payload')
-        return
-      }
-      setScenarioResult((prev) => {
-        const prevRows = Array.isArray(prev?.scenarios) ? prev.scenarios : []
-        const scenarioKey = String(savedScenario?.key || savedScenario?.scenario || key)
-        const nextRows = [...prevRows]
-        const idx = nextRows.findIndex((r) => String(r?.key || r?.scenario || '') === scenarioKey)
-        if (idx >= 0) nextRows[idx] = savedScenario
-        else nextRows.unshift(savedScenario)
-        return {
-          ...(prev || {}),
-          success: true,
-          scenarios: nextRows,
-          message: prev?.message || `Loaded saved scenario: ${String(response?.report?.name || key)}`,
-        }
-      })
-      setStep5ReportMessage(`Loaded: ${String(response?.report?.name || key)}`)
-    } catch (error) {
-      setStep5ReportMessage(error?.message || 'Failed to load saved Step 5 report')
+    const record = (Array.isArray(step5SavedReports) ? step5SavedReports : []).find((row) => String(row?.report_key || '') === key)
+    if (!record) {
+      setStep5ReportMessage('Saved scenario not found in this session')
+      return
     }
-  }, [])
+    const payload = record?.payload || {}
+    const savedScenario = payload?.scenario
+    if (!savedScenario || typeof savedScenario !== 'object') {
+      setStep5ReportMessage('Saved scenario has no scenario payload')
+      return
+    }
+    setScenarioResult((prev) => {
+      const prevRows = Array.isArray(prev?.scenarios) ? prev.scenarios : []
+      const scenarioKey = String(savedScenario?.key || savedScenario?.scenario || key)
+      const nextRows = [...prevRows]
+      const idx = nextRows.findIndex((r) => String(r?.key || r?.scenario || '') === scenarioKey)
+      if (idx >= 0) nextRows[idx] = savedScenario
+      else nextRows.unshift(savedScenario)
+      return {
+        ...(prev || {}),
+        success: true,
+        scenarios: nextRows,
+        message: prev?.message || `Loaded saved scenario: ${String(record?.name || key)}`,
+      }
+    })
+    setStep5ReportMessage(`Loaded: ${String(record?.name || key)}`)
+  }, [step5SavedReports])
+
+  const handleDeleteStep5SavedReport = useCallback((reportKey) => {
+    const key = String(reportKey || '').trim()
+    if (!key) return
+    const nextRows = (Array.isArray(step5SavedReports) ? step5SavedReports : []).filter((row) => String(row?.report_key || '') !== key)
+    persistStep5SessionReports(nextRows)
+    setStep5ReportMessage('Deleted saved scenario')
+  }, [persistStep5SessionReports, step5SavedReports])
 
   const handleRunScenarioComparison = () => {
     if (!modelingResult?.success) {
@@ -2404,13 +2409,14 @@ const RFMAnalysis = () => {
   }, [edaOptions, availableFilters])
 
   useEffect(() => {
-    if (activeStepTab !== 'step_eda') return
+    if (activeStepTab !== 'step2') return
     if (!rfmData?.success) return
     if (slabTrendMutation.isPending) return
+    if (!baseDepthResult?.success) return
     if (slabTrendResult?.success) return
     handleRunSlabTrendEDA()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeStepTab, rfmData?.success, slabTrendMutation.isPending, slabTrendResult?.success])
+  }, [activeStepTab, rfmData?.success, baseDepthResult?.success, slabTrendMutation.isPending, slabTrendResult?.success])
 
   useEffect(() => {
     const validResults = (modelingResult?.slab_results || []).filter((x) => x?.valid)
@@ -2490,15 +2496,21 @@ const RFMAnalysis = () => {
         newFilters.subcategories = []
         newFilters.brands = []
         newFilters.sizes = []
+        newFilters.outlet_classifications = []
       } else if (key === 'categories') {
         newFilters.subcategories = []
         newFilters.brands = []
         newFilters.sizes = []
+        newFilters.outlet_classifications = []
       } else if (key === 'subcategories') {
         newFilters.brands = []
         newFilters.sizes = []
+        newFilters.outlet_classifications = []
       } else if (key === 'brands') {
         newFilters.sizes = []
+        newFilters.outlet_classifications = []
+      } else if (key === 'sizes') {
+        newFilters.outlet_classifications = []
       }
       
       return newFilters
@@ -2722,27 +2734,8 @@ const RFMAnalysis = () => {
         </div>
       </div>
     )
-  } else if (activeStepTab === 'step_eda') {
-    rightSidebarContent = (
-      <div className="bg-white rounded-lg shadow-md overflow-visible">
-        <div className="bg-primary text-white p-4">
-          <h3 className="text-lg font-semibold">Slab Trend EDA</h3>
-        </div>
-        <div className="p-4 space-y-3">
-          <p className="text-xs text-muted">
-            Uses current Step 1 filters and Step 2 slab definition to plot month-wise slab discount and volume trends.
-          </p>
-          <button
-            type="button"
-            onClick={handleRunSlabTrendEDA}
-            disabled={slabTrendMutation.isPending || !rfmData?.success}
-            className="w-full px-4 py-2 rounded-md bg-white border border-primary text-body text-sm font-semibold disabled:opacity-50"
-          >
-            {slabTrendMutation.isPending ? 'Loading...' : 'Refresh EDA'}
-          </button>
-        </div>
-      </div>
-    )
+  } else if (activeStepTab === 'step1') {
+    rightSidebarContent = null
   } else {
     rightSidebarContent = (
       <FilterPanel
@@ -2772,115 +2765,82 @@ const RFMAnalysis = () => {
           </div>
         )}
 
-        <div className="bg-white rounded-lg shadow-md p-3">
-          <div className="flex gap-2">
-            <button
-              type="button"
-              onClick={() => setStepTab('step1')}
-              className={`px-4 py-2 rounded-md text-sm font-semibold border ${
-                activeStepTab === 'step1'
-                  ? 'bg-white text-body border-primary'
-                  : 'bg-white text-muted border-gray-300'
-              }`}
-            >
-              Step 1: Store Segmentation
-            </button>
-            <button
-              type="button"
-              onClick={() => setStepTab('step2')}
-              className={`px-4 py-2 rounded-md text-sm font-semibold border ${
-                activeStepTab === 'step2'
-                  ? 'bg-white text-body border-primary'
-                  : 'bg-white text-muted border-gray-300'
-              }`}
-            >
-              Step 2: Discount Analysis
-            </button>
-            <button
-              type="button"
-              onClick={() => setStepTab('step3')}
-              className={`px-4 py-2 rounded-md text-sm font-semibold border ${
-                activeStepTab === 'step3'
-                  ? 'bg-white text-body border-primary'
-                  : 'bg-white text-muted border-gray-300'
-              }`}
-            >
-              Step 3: Modeling & ROI
-            </button>
-            <button
-              type="button"
-              onClick={() => setStepTab('step4')}
-              className={`px-4 py-2 rounded-md text-sm font-semibold border ${
-                activeStepTab === 'step4'
-                  ? 'bg-white text-body border-primary'
-                  : 'bg-white text-muted border-gray-300'
-              }`}
-            >
-              Step 4: Cross-Size Planner
-            </button>
-            <button
-              type="button"
-              onClick={() => setStepTab('step5')}
-              className={`px-4 py-2 rounded-md text-sm font-semibold border ${
-                activeStepTab === 'step5'
-                  ? 'bg-white text-body border-primary'
-                  : 'bg-white text-muted border-gray-300'
-              }`}
-            >
-              Step 5: Scenario Comparison
-            </button>
-            <button
-              type="button"
-              onClick={() => setStepTab('step_eda')}
-              className={`px-4 py-2 rounded-md text-sm font-semibold border ${
-                activeStepTab === 'step_eda'
-                  ? 'bg-white text-body border-primary'
-                  : 'bg-white text-muted border-gray-300'
-              }`}
-            >
-              Step 6: Slab Trend EDA
-            </button>
-          </div>
-        </div>
-
-        {activeStepTab === 'step1' && rfmData && rfmData.success && (
+        {activeStepTab === 'step1' && (
           <div className="space-y-6">
-            <RFMSummary data={rfmData} />
+            <FilterPanel
+              filters={filters}
+              availableFilters={displayFilters}
+              onFilterChange={handleFilterChange}
+              onCalculate={handleCalculate}
+              isCalculating={calculateMutation.isPending}
+              isCascadeLoading={isCascadeLoading}
+              layoutMode="step1"
+              autoCollapseKey={step1AutoCollapseKey}
+            />
 
-            {rfmData.cluster_summary && (
-              <ClusterSummary data={rfmData.cluster_summary} />
+            {rfmData?.success ? (
+              <>
+                <details className="bg-white rounded-lg shadow-md p-4" open>
+                  <summary className="cursor-pointer select-none">
+                    <div className="flex items-center justify-between gap-4 pr-6">
+                      <div>
+                        <h3 className="text-lg font-semibold text-body">RFM Segmentation Output</h3>
+                        <p className="text-sm text-muted">
+                          {Number(rfmData.total_filtered_outlets || rfmData.total_outlets || 0).toLocaleString()} outlets in current scope
+                        </p>
+                      </div>
+                    </div>
+                  </summary>
+                  <div className="space-y-6 mt-4">
+                    <RFMSummary data={rfmData} />
+
+                    {rfmData.cluster_summary && (
+                      <ClusterSummary data={rfmData.cluster_summary} />
+                    )}
+
+                    {rfmData.segment_summary && (
+                      <SegmentGrid segments={rfmData.segment_summary} />
+                    )}
+
+                    {rfmData.rfm_data && (
+                      <OutletTable
+                        outlets={rfmData.rfm_data}
+                        totalOutlets={rfmData.total_filtered_outlets || rfmData.total_outlets || 0}
+                        page={rfmData.page || tableQuery.page}
+                        pageSize={rfmData.page_size || tableQuery.page_size}
+                        totalPages={rfmData.total_pages || 1}
+                        isLoading={calculateMutation.isPending}
+                        onQueryChange={handleTableQueryChange}
+                        onExport={handleExport}
+                      />
+                    )}
+                  </div>
+                </details>
+
+                <div className="bg-white rounded-lg shadow-md p-4 flex items-center justify-between">
+                  <div>
+                    <h4 className="text-base font-semibold text-body">Step 1 Completed</h4>
+                    <p className="text-sm text-muted">Proceed to Base Discount Estimator for discount analysis.</p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setStepTab('step2')}
+                    className="px-4 py-2 rounded-md bg-white text-body border border-primary text-sm font-semibold"
+                  >
+                    Go To Base Discount Estimator
+                  </button>
+                </div>
+              </>
+            ) : (
+              !calculateMutation.isPending && (
+                <div className="bg-white rounded-lg shadow-md p-8">
+                  <h3 className="text-xl font-semibold text-body mb-2">Step 1: Store Segmentation</h3>
+                  <p className="text-muted">
+                    Select state, product and outlet type on this page, then run RFM. The segmentation output will appear below.
+                  </p>
+                </div>
+              )
             )}
-
-            {rfmData.segment_summary && (
-              <SegmentGrid segments={rfmData.segment_summary} />
-            )}
-
-            {rfmData.rfm_data && (
-              <OutletTable
-                outlets={rfmData.rfm_data}
-                totalOutlets={rfmData.total_filtered_outlets || rfmData.total_outlets || 0}
-                page={rfmData.page || tableQuery.page}
-                pageSize={rfmData.page_size || tableQuery.page_size}
-                totalPages={rfmData.total_pages || 1}
-                isLoading={calculateMutation.isPending}
-                onQueryChange={handleTableQueryChange}
-                onExport={handleExport}
-              />
-            )}
-
-            <div className="bg-white rounded-lg shadow-md p-4 flex items-center justify-between">
-              <div>
-                <h4 className="text-base font-semibold text-body">Step 1 Completed</h4>
-                <p className="text-sm text-muted">Proceed to Base Discount Estimator for discount analysis.</p>
-              </div>
-              <button
-                type="button"
-                onClick={() => setStepTab('step2')}
-                className="px-4 py-2 rounded-md bg-white text-body border border-primary text-sm font-semibold"
-              >
-                Go To Base Discount Estimator
-              </button>
-            </div>
           </div>
         )}
 
@@ -2902,6 +2862,13 @@ const RFMAnalysis = () => {
               errorMessage={baseDepthErrorMessage || baseDepthMutation.error?.message}
               showControls={false}
               definedSlabProfiles={step2Filters?.defined_slab_profiles || {}}
+            />
+
+            <SlabTrendEDA
+              data={slabTrendResult}
+              isLoading={slabTrendMutation.isPending}
+              isError={slabTrendMutation.isError || Boolean(slabTrendErrorMessage)}
+              errorMessage={slabTrendErrorMessage || slabTrendMutation.error?.message}
             />
 
             {baseDepthResult?.success && (
@@ -2995,13 +2962,10 @@ const RFMAnalysis = () => {
               onDisplayReferenceModeChange={setStep4DisplayReferenceMode}
               referenceByMode={plannerDefaultByReference}
               onSaveReport={handleSaveStep4Report}
-              isSavingReport={isSavingGlobalReport}
               saveReportMessage={step4ReportMessage}
-              onDownloadReports={handleDownloadGlobalReports}
-              isDownloadingReports={isDownloadingGlobalReports}
               savedReports={step4SavedReports}
               onLoadSavedReport={handleLoadStep4SavedReport}
-              isSavedReportsLoading={isStep4SavedReportsLoading}
+              onDeleteSavedReport={handleDeleteStep4SavedReport}
               onInitialize={() => {
                 handleGeneratePlanner()
               }}
@@ -3060,11 +3024,10 @@ const RFMAnalysis = () => {
               isAIGenerating={isStep5AIBusy}
               onFilterContextChange={setStep5CurrentFilterContext}
               onSaveReport={handleSaveStep5Report}
-              isSavingReport={isSavingStep5Report}
               saveReportMessage={step5ReportMessage}
               savedReports={step5SavedReports}
-              isSavedReportsLoading={isStep5SavedReportsLoading}
               onLoadSavedReport={handleLoadStep5SavedReport}
+              onDeleteSavedReport={handleDeleteStep5SavedReport}
               onScenariosChange={(nextRows) => {
                 setScenarioResult((prev) => ({
                   ...(prev || {}),
@@ -3074,31 +3037,6 @@ const RFMAnalysis = () => {
                 }))
               }}
             />
-          </div>
-        )}
-
-        {activeStepTab === 'step_eda' && rfmData && rfmData.success && (
-          <SlabTrendEDA
-            data={slabTrendResult}
-            isLoading={slabTrendMutation.isPending}
-            isError={slabTrendMutation.isError || Boolean(slabTrendErrorMessage)}
-            errorMessage={slabTrendErrorMessage || slabTrendMutation.error?.message}
-          />
-        )}
-
-        {activeStepTab === 'step1' && !rfmData && !calculateMutation.isPending && (
-          <div className="bg-white rounded-lg shadow-md p-12 text-center">
-            <div className="max-w-md mx-auto">
-              <div className="text-subtle mb-4">
-                <BarChart3 size={64} className="mx-auto" />
-              </div>
-              <h3 className="text-xl font-semibold text-body mb-2">
-                No Segmentation Analysis Yet
-              </h3>
-              <p className="text-muted mb-6">
-                Configure your filters in the Settings panel on the right and click "Calculate RFM" to start the analysis
-              </p>
-            </div>
           </div>
         )}
 
@@ -3155,22 +3093,6 @@ const RFMAnalysis = () => {
             <h3 className="text-xl font-semibold text-body mb-2">Step 5 Requires Step 1 Output</h3>
             <p className="text-muted mb-4">
               Run Store Segmentation first, then complete Steps 2-4 before scenario comparison.
-            </p>
-            <button
-              type="button"
-              onClick={() => setStepTab('step1')}
-              className="px-4 py-2 rounded-md bg-white text-body border border-primary text-sm font-semibold"
-            >
-              Go To Step 1
-            </button>
-          </div>
-        )}
-
-        {activeStepTab === 'step_eda' && !rfmData && !calculateMutation.isPending && (
-          <div className="bg-white rounded-lg shadow-md p-8">
-            <h3 className="text-xl font-semibold text-body mb-2">Step 6 Requires Step 1 Output</h3>
-            <p className="text-muted mb-4">
-              Run Store Segmentation first, then open Slab Trend EDA.
             </p>
             <button
               type="button"

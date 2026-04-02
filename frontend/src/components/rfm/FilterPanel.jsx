@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useEffect } from 'react'
 import { Filter, Play, ChevronDown, ChevronUp, Search, X } from 'lucide-react'
 
 const MultiSelectDropdown = ({ label, options, selectedValues, onChange, placeholder, disabled = false }) => {
@@ -118,7 +118,16 @@ const MultiSelectDropdown = ({ label, options, selectedValues, onChange, placeho
   )
 }
 
-const FilterPanel = ({ filters, availableFilters, onFilterChange, onCalculate, isCalculating, isCascadeLoading = false }) => {
+const FilterPanel = ({
+  filters,
+  availableFilters,
+  onFilterChange,
+  onCalculate,
+  isCalculating,
+  isCascadeLoading = false,
+  layoutMode = 'default',
+  autoCollapseKey = 0,
+}) => {
   const [isExpanded, setIsExpanded] = useState(true)
   const [expandedSections, setExpandedSections] = useState({
     products: true,
@@ -138,7 +147,8 @@ const FilterPanel = ({ filters, availableFilters, onFilterChange, onCalculate, i
            filters.categories.length > 0 || 
            filters.subcategories.length > 0 || 
            filters.brands.length > 0 || 
-           filters.sizes.length > 0
+           filters.sizes.length > 0 ||
+           (filters.outlet_classifications || []).length > 0
   }
 
   const clearAllFilters = () => {
@@ -147,7 +157,14 @@ const FilterPanel = ({ filters, availableFilters, onFilterChange, onCalculate, i
     onFilterChange('subcategories', [])
     onFilterChange('brands', [])
     onFilterChange('sizes', [])
+    onFilterChange('outlet_classifications', [])
   }
+
+  useEffect(() => {
+    if (layoutMode !== 'step1') return
+    if (!autoCollapseKey) return
+    setIsExpanded(false)
+  }, [autoCollapseKey, layoutMode])
 
   return (
     <div className="bg-white rounded-lg shadow-md overflow-visible">
@@ -167,7 +184,8 @@ const FilterPanel = ({ filters, availableFilters, onFilterChange, onCalculate, i
                   filters.categories.length && `${filters.categories.length} category(ies)`,
                   filters.subcategories.length && `${filters.subcategories.length} subcategory(ies)`,
                   filters.brands.length && `${filters.brands.length} brand(s)`,
-                  filters.sizes.length && `${filters.sizes.length} size(s)`
+                  filters.sizes.length && `${filters.sizes.length} size(s)`,
+                  (filters.outlet_classifications || []).length && `${filters.outlet_classifications.length} outlet type(s)`
                 ].filter(Boolean).join(', ')}
               </p>
             )}
@@ -191,20 +209,145 @@ const FilterPanel = ({ filters, availableFilters, onFilterChange, onCalculate, i
       </div>
 
       {/* Content */}
-      {isExpanded && (
+      {isExpanded && layoutMode === 'step1' && (
+        <div className="p-5 space-y-5">
+          <div className="grid grid-cols-1 xl:grid-cols-[1.4fr_1fr] gap-4">
+            <div className="rounded-xl border border-gray-200 bg-white p-4">
+              <div className="flex items-center justify-between mb-3">
+                <h4 className="text-sm font-semibold text-body">Dataset Filters</h4>
+                {hasActiveFilters() && (
+                  <span className="inline-flex items-center rounded-full bg-primary/10 px-2.5 py-1 text-xs font-medium text-primary">
+                    Active filters
+                  </span>
+                )}
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-3">
+                <MultiSelectDropdown
+                  label="State(s)"
+                  options={availableFilters?.states || []}
+                  selectedValues={filters.states}
+                  onChange={(values) => onFilterChange('states', values)}
+                  placeholder="All States"
+                />
+                <MultiSelectDropdown
+                  label="Outlet Type(s)"
+                  options={availableFilters?.outlet_classifications || []}
+                  selectedValues={filters.outlet_classifications || []}
+                  onChange={(values) => onFilterChange('outlet_classifications', values)}
+                  placeholder="All Outlet Types"
+                />
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
+                <MultiSelectDropdown
+                  label="Category(ies)"
+                  options={availableFilters?.categories || []}
+                  selectedValues={filters.categories}
+                  onChange={(values) => onFilterChange('categories', values)}
+                  placeholder="All Categories"
+                />
+                <MultiSelectDropdown
+                  label="Subcategory(ies)"
+                  options={availableFilters?.subcategories || []}
+                  selectedValues={filters.subcategories}
+                  onChange={(values) => onFilterChange('subcategories', values)}
+                  placeholder="All Subcategories"
+                />
+                <MultiSelectDropdown
+                  label="Brand(s)"
+                  options={availableFilters?.brands || []}
+                  selectedValues={filters.brands}
+                  onChange={(values) => onFilterChange('brands', values)}
+                  placeholder="All Brands"
+                />
+                <MultiSelectDropdown
+                  label="Size(s)"
+                  options={availableFilters?.sizes || []}
+                  selectedValues={filters.sizes}
+                  onChange={(values) => onFilterChange('sizes', values)}
+                  placeholder="All Sizes"
+                />
+              </div>
+            </div>
+
+            <div className="rounded-xl border border-gray-200 bg-white p-4">
+              <h4 className="text-sm font-semibold text-body mb-3">RFM Configuration</h4>
+              <div className="space-y-3">
+                <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Recency Threshold (days)
+                  </label>
+                  <input
+                    type="number"
+                    min="30"
+                    max="180"
+                    step="10"
+                    value={filters.recency_threshold}
+                    onChange={(e) => onFilterChange('recency_threshold', parseInt(e.target.value))}
+                    className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent"
+                  />
+                  <p className="text-xs text-gray-500 mt-1">
+                    Outlets with last order within this many days are treated as recent.
+                  </p>
+                </div>
+                <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Frequency Threshold (order days)
+                  </label>
+                  <input
+                    type="number"
+                    min="1"
+                    max="100"
+                    step="1"
+                    value={filters.frequency_threshold}
+                    onChange={(e) => onFilterChange('frequency_threshold', parseInt(e.target.value))}
+                    className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent"
+                  />
+                  <p className="text-xs text-gray-500 mt-1">
+                    Outlets at or above this threshold are treated as high frequency.
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex items-center justify-between gap-3 mt-4 pt-4 border-t border-gray-200">
+                <button
+                  type="button"
+                  onClick={clearAllFilters}
+                  className="inline-flex items-center gap-2 rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
+                >
+                  <X size={16} />
+                  Clear
+                </button>
+                <button
+                  onClick={onCalculate}
+                  disabled={isCalculating}
+                  className="min-w-[180px] flex items-center justify-center space-x-2 bg-primary text-white px-5 py-2.5 rounded-lg hover:bg-opacity-90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed font-semibold"
+                >
+                  {isCalculating ? (
+                    <>
+                      <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white"></div>
+                      <span>Calculating...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Play size={18} />
+                      <span>Calculate RFM</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {isExpanded && layoutMode !== 'step1' && (
         <div className="p-4 space-y-3">
           <p className="text-gray-600 text-sm">
             Select filters to define the dataset for RFM analysis
           </p>
-          <p className="text-xs text-muted bg-accent-light px-3 py-2 rounded-md">
-            Cascade order: State -&gt; Category -&gt; Subcategory -&gt; Brand -&gt; Size. Changing upper filters clears dependent lower filters.
-            {isCascadeLoading ? ' Updating options after your last selection...' : ' Options are updated automatically after a short pause.'}
-          </p>
-          <p className="text-xs text-muted">
-            Dropdown search filters option lists only. Data updates when you click Calculate RFM.
-          </p>
 
-          {/* Location Section */}
           <div className="border border-gray-200 rounded-lg">
             <button
               onClick={() => toggleSection('location')}
@@ -233,7 +376,6 @@ const FilterPanel = ({ filters, availableFilters, onFilterChange, onCalculate, i
             )}
           </div>
 
-          {/* Products Section */}
           <div className="border border-gray-200 rounded-lg">
             <button
               onClick={() => toggleSection('products')}
@@ -241,9 +383,9 @@ const FilterPanel = ({ filters, availableFilters, onFilterChange, onCalculate, i
             >
               <span className="font-medium text-sm">Products</span>
               <div className="flex items-center gap-2">
-                {(filters.categories.length + filters.subcategories.length + filters.brands.length + filters.sizes.length) > 0 && (
+                {(filters.categories.length + filters.subcategories.length + filters.brands.length + filters.sizes.length + (filters.outlet_classifications || []).length) > 0 && (
                   <span className="text-xs bg-primary text-white px-2 py-0.5 rounded-full">
-                    {filters.categories.length + filters.subcategories.length + filters.brands.length + filters.sizes.length}
+                    {filters.categories.length + filters.subcategories.length + filters.brands.length + filters.sizes.length + (filters.outlet_classifications || []).length}
                   </span>
                 )}
                 {expandedSections.products ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
@@ -279,11 +421,17 @@ const FilterPanel = ({ filters, availableFilters, onFilterChange, onCalculate, i
                   onChange={(values) => onFilterChange('sizes', values)}
                   placeholder="All Sizes"
                 />
+                <MultiSelectDropdown
+                  label="Outlet Type(s)"
+                  options={availableFilters?.outlet_classifications || []}
+                  selectedValues={filters.outlet_classifications || []}
+                  onChange={(values) => onFilterChange('outlet_classifications', values)}
+                  placeholder="All Outlet Types"
+                />
               </div>
             )}
           </div>
 
-          {/* RFM Thresholds Section */}
           <div className="border border-gray-200 rounded-lg">
             <button
               onClick={() => toggleSection('thresholds')}
@@ -332,7 +480,6 @@ const FilterPanel = ({ filters, availableFilters, onFilterChange, onCalculate, i
             )}
           </div>
 
-          {/* Calculate Button */}
           <div className="pt-2">
             <button
               onClick={onCalculate}

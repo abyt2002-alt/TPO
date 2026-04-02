@@ -341,7 +341,8 @@ class Step1SegmentationMixin:
                 "categories": [],
                 "subcategories": [],
                 "brands": [],
-                "sizes": []
+                "sizes": [],
+                "outlet_classifications": [],
             }
         
         df = self.data_cache
@@ -350,7 +351,8 @@ class Step1SegmentationMixin:
             "categories": sorted(df['Category'].dropna().unique().tolist()),
             "subcategories": sorted(df['Subcategory'].dropna().unique().tolist()),
             "brands": sorted(df['Brand'].dropna().unique().tolist()),
-            "sizes": sorted(df['Sizes'].dropna().unique().tolist())
+            "sizes": sorted(df['Sizes'].dropna().unique().tolist()),
+            "outlet_classifications": sorted(df['Final_Outlet_Classification'].dropna().unique().tolist()) if 'Final_Outlet_Classification' in df.columns else [],
         }
 
 
@@ -365,6 +367,7 @@ class Step1SegmentationMixin:
         categories = current_filters.get('categories') or []
         subcategories = current_filters.get('subcategories') or []
         brands = current_filters.get('brands') or []
+        sizes = current_filters.get('sizes') or []
 
         # For each level, apply only parent filters (not the field's own filter).
         df_for_categories = df_all[df_all['Final_State'].isin(states)] if states else df_all
@@ -380,6 +383,9 @@ class Step1SegmentationMixin:
         df_for_sizes = df_for_brands
         if brands:
             df_for_sizes = df_for_sizes[df_for_sizes['Brand'].isin(brands)]
+        df_for_outlet_classifications = df_for_sizes
+        if sizes:
+            df_for_outlet_classifications = df_for_outlet_classifications[df_for_outlet_classifications['Sizes'].isin(sizes)]
 
         # States always show all options (top level), others follow parent cascade.
         return {
@@ -387,5 +393,6 @@ class Step1SegmentationMixin:
             "categories": sorted(df_for_categories['Category'].dropna().unique().tolist()),
             "subcategories": sorted(df_for_subcategories['Subcategory'].dropna().unique().tolist()),
             "brands": sorted(df_for_brands['Brand'].dropna().unique().tolist()),
-            "sizes": sorted(df_for_sizes['Sizes'].dropna().unique().tolist())
+            "sizes": sorted(df_for_sizes['Sizes'].dropna().unique().tolist()),
+            "outlet_classifications": sorted(df_for_outlet_classifications['Final_Outlet_Classification'].dropna().unique().tolist()) if 'Final_Outlet_Classification' in df_for_outlet_classifications.columns else [],
         }

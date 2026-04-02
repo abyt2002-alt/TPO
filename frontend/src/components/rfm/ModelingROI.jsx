@@ -41,6 +41,15 @@ const formatRoiAxisTick = (value) => {
   }
   return n.toFixed(2).replace(/\.?0+$/, '')
 }
+
+const getAdjustedR2 = (r2, sampleSize, predictorCount) => {
+  const n = Number(sampleSize)
+  const p = Number(predictorCount)
+  const score = Number(r2)
+  if (!Number.isFinite(n) || !Number.isFinite(p) || !Number.isFinite(score)) return null
+  if (n <= p + 1 || p < 0) return null
+  return 1 - ((1 - score) * (n - 1)) / (n - p - 1)
+}
 const toDayKey = (value) => {
   const raw = String(value || '')
   const match = raw.match(/^(\d{4})-(\d{2})-(\d{2})/)
@@ -240,125 +249,20 @@ const ModelingROI = ({
     })
   }, [slabData])
 
+  const ridgePredictorCount = Number(slabData?.model_coefficients?.include_lag_discount) > 0 ? 4 : 3
+  const ridgeAdjustedR2 = useMemo(
+    () => getAdjustedR2(slabData?.model_coefficients?.stage2_r2, slabData?.predicted_vs_actual?.length, ridgePredictorCount),
+    [slabData, ridgePredictorCount]
+  )
+
   const renderModelContent = () => {
     if (!slabData) return null
     return (
-      <>
-        <div className="bg-white rounded-lg shadow-md p-6">
-          <h4 className="text-lg font-semibold text-body mb-4">{slabSizeKey} {slabData.slab} - Model View</h4>
-          <h5 className="text-base font-semibold text-body mb-3">Stage 1: Store Count vs Discount</h5>
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-3 text-sm mb-6">
-            <div className="bg-accent-light rounded-md p-3">
-              <p className="text-muted">Stage 1 R2</p>
-              <p className="font-bold text-body">{fmt(slabData?.model_coefficients?.stage1_r2)}</p>
-            </div>
-            <div className="bg-accent-light rounded-md p-3">
-              <p className="text-muted">Stage 1 Intercept</p>
-              <p className="font-bold text-body">{fmt(slabData?.model_coefficients?.stage1_intercept)}</p>
-            </div>
-            <div className="bg-accent-light rounded-md p-3">
-              <p className="text-muted">Discount Beta</p>
-              <p className="font-bold text-body">{fmt(slabData?.model_coefficients?.stage1_coef_discount)}</p>
-            </div>
-            <div className="bg-accent-light rounded-md p-3">
-              <p className="text-muted">COGS Per Unit</p>
-              <p className="font-bold text-body">{fmt(slabData?.summary?.cogs_per_unit)}</p>
-            </div>
-          </div>
-
-          <h5 className="text-base font-semibold text-body mb-3">Stage 2: Quantity Model</h5>
-          <div className="grid grid-cols-1 md:grid-cols-6 gap-3 text-sm mb-4">
-            <div className="bg-accent-light rounded-md p-3">
-              <p className="text-muted">Constrained Ridge R2</p>
-              <p className="font-bold text-body">{fmt(slabData?.model_coefficients?.stage2_r2)}</p>
-            </div>
-            <div className="bg-accent-light rounded-md p-3">
-              <p className="text-muted">OLS Reference R2</p>
-              <p className="font-bold text-body">{fmt(slabData?.model_coefficients?.stage2_ols_r2)}</p>
-            </div>
-            <div className="bg-accent-light rounded-md p-3">
-              <p className="text-muted">L2 Used</p>
-              <p className="font-bold text-body">{fmt(slabData?.model_coefficients?.l2_penalty)}</p>
-            </div>
-            <div className="bg-accent-light rounded-md p-3">
-              <p className="text-muted">CV R2</p>
-              <p className="font-bold text-body">{fmt(slabData?.model_coefficients?.stage2_cv_r2)}</p>
-            </div>
-            <div className="bg-accent-light rounded-md p-3">
-              <p className="text-muted">L2 Auto-Tune</p>
-              <p className="font-bold text-body">
-                {Number(slabData?.model_coefficients?.optimize_l2_penalty) > 0 ? 'Yes' : 'No'}
-              </p>
-            </div>
-            <div className="bg-accent-light rounded-md p-3">
-              <p className="text-muted">Lag Discount In Model</p>
-              <p className="font-bold text-body">
-                {Number(slabData?.model_coefficients?.include_lag_discount) > 0 ? 'Yes' : 'No'}
-              </p>
-            </div>
-          </div>
-          <p className="text-xs text-muted mb-3">
-            Stage 2 uses the Streamlit New Strategy feature set: residual store, base discount, lag base discount, and weighted base discount from the other slabs of the same pack.
-          </p>
-          <p className="text-xs text-muted mb-3">OLS is shown for comparison only. ROI and planning still use constrained ridge.</p>
-          <h5 className="text-base font-semibold text-body mb-3">Coefficient Comparison</h5>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
-            <div className="rounded-md border border-gray-200 p-3">
-              <p className="text-xs font-semibold text-muted uppercase mb-2">Constrained Ridge</p>
-              <div className="space-y-2">
-                <div className="bg-accent-light rounded-md p-3">
-                  <p className="text-muted">Intercept</p>
-                  <p className="font-bold text-body">{fmt(slabData?.model_coefficients?.stage2_intercept)}</p>
-                </div>
-                <div className="bg-accent-light rounded-md p-3">
-                  <p className="text-muted">Residual (Store)</p>
-                  <p className="font-bold text-body">{fmt(slabData?.model_coefficients?.coef_residual_store)}</p>
-                </div>
-                <div className="bg-accent-light rounded-md p-3">
-                  <p className="text-muted">Structural Discount</p>
-                  <p className="font-bold text-body">{fmt(slabData?.model_coefficients?.coef_structural_discount)}</p>
-                </div>
-                <div className="bg-accent-light rounded-md p-3">
-                  <p className="text-muted">Lag1 Structural Discount</p>
-                  <p className="font-bold text-body">{fmt(slabData?.model_coefficients?.coef_lag1_structural_discount)}</p>
-                </div>
-                <div className="bg-accent-light rounded-md p-3">
-                  <p className="text-muted">Other Slabs Weighted Discount</p>
-                  <p className="font-bold text-body">{fmt(slabData?.model_coefficients?.coef_other_slabs_weighted_base_discount_pct)}</p>
-                </div>
-              </div>
-            </div>
-            <div className="rounded-md border border-gray-200 p-3">
-              <p className="text-xs font-semibold text-muted uppercase mb-2">OLS Reference</p>
-              <div className="space-y-2">
-                <div className="bg-accent-light rounded-md p-3">
-                  <p className="text-muted">Intercept</p>
-                  <p className="font-bold text-body">{fmt(slabData?.model_coefficients?.stage2_ols_intercept)}</p>
-                </div>
-                <div className="bg-accent-light rounded-md p-3">
-                  <p className="text-muted">Residual (Store)</p>
-                  <p className="font-bold text-body">{fmt(slabData?.model_coefficients?.stage2_ols_coef_residual_store)}</p>
-                </div>
-                <div className="bg-accent-light rounded-md p-3">
-                  <p className="text-muted">Structural Discount</p>
-                  <p className="font-bold text-body">{fmt(slabData?.model_coefficients?.stage2_ols_coef_structural_discount)}</p>
-                </div>
-                <div className="bg-accent-light rounded-md p-3">
-                  <p className="text-muted">Lag1 Structural Discount</p>
-                  <p className="font-bold text-body">{fmt(slabData?.model_coefficients?.stage2_ols_coef_lag1_structural_discount)}</p>
-                </div>
-                <div className="bg-accent-light rounded-md p-3">
-                  <p className="text-muted">Other Slabs Weighted Discount</p>
-                  <p className="font-bold text-body">{fmt(slabData?.model_coefficients?.stage2_ols_coef_other_slabs_weighted_base_discount_pct)}</p>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-        <div className="bg-white rounded-lg shadow-md p-6">
-          <h4 className="text-lg font-semibold text-body mb-4">Actual vs Predicted Quantity - {slabData.slab}</h4>
+      <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1.55fr)_360px] gap-5">
+        <div className="bg-white rounded-lg shadow-md p-5">
+          <h4 className="text-lg font-semibold text-body mb-4">Actual vs Predicted - {slabSizeKey} {slabData.slab}</h4>
           <div className="rounded-lg border border-slate-200 bg-gradient-to-br from-sky-50 via-white to-teal-50 p-3">
-            <div style={{ width: '100%', height: 380 }}>
+            <div style={{ width: '100%', height: 420 }}>
               <ResponsiveContainer>
                 <LineChart data={slabData.predicted_vs_actual || []}>
                   <CartesianGrid strokeDasharray="4 4" stroke="#cfd8e3" />
@@ -366,15 +270,50 @@ const ModelingROI = ({
                   <YAxis />
                   <Tooltip labelFormatter={formatDate} formatter={(value) => [fmt(value), '']} />
                   <Legend />
-                  <Line type="monotone" dataKey="actual_quantity" name="Actual Quantity" stroke="#111827" strokeWidth={3} dot={false} />
-                  <Line type="monotone" dataKey="predicted_quantity" name="Predicted Quantity" stroke="#059669" strokeWidth={3} dot={false} />
-                  <Line type="monotone" dataKey="predicted_quantity_ols" name="OLS Predicted (ref)" stroke="#F59E0B" strokeWidth={2} strokeDasharray="6 4" dot={false} />
+                  <Line type="monotone" dataKey="actual_quantity" name="Actual" stroke="#111827" strokeWidth={3} dot={false} />
+                  <Line type="monotone" dataKey="predicted_quantity" name="Predicted" stroke="#059669" strokeWidth={3} dot={false} />
                 </LineChart>
               </ResponsiveContainer>
             </div>
           </div>
         </div>
-      </>
+
+        <div className="bg-white rounded-lg shadow-md p-5">
+          <h4 className="text-lg font-semibold text-body mb-4">Model Details</h4>
+          <div className="grid grid-cols-2 gap-3 mb-4">
+            <div className="bg-accent-light rounded-md p-3">
+              <p className="text-muted">R2</p>
+              <p className="font-bold text-body">{fmt(slabData?.model_coefficients?.stage2_r2)}</p>
+            </div>
+            <div className="bg-accent-light rounded-md p-3">
+              <p className="text-muted">Adjusted R2</p>
+              <p className="font-bold text-body">{ridgeAdjustedR2 == null ? 'NA' : fmt(ridgeAdjustedR2)}</p>
+            </div>
+          </div>
+          <div className="space-y-2">
+            <div className="bg-accent-light rounded-md p-3">
+              <p className="text-muted">Intercept</p>
+              <p className="font-bold text-body">{fmt(slabData?.model_coefficients?.stage2_intercept)}</p>
+            </div>
+            <div className="bg-accent-light rounded-md p-3">
+              <p className="text-muted">Residual Store</p>
+              <p className="font-bold text-body">{fmt(slabData?.model_coefficients?.coef_residual_store)}</p>
+            </div>
+            <div className="bg-accent-light rounded-md p-3">
+              <p className="text-muted">Base Discount</p>
+              <p className="font-bold text-body">{fmt(slabData?.model_coefficients?.coef_structural_discount)}</p>
+            </div>
+            <div className="bg-accent-light rounded-md p-3">
+              <p className="text-muted">Lag Discount</p>
+              <p className="font-bold text-body">{fmt(slabData?.model_coefficients?.coef_lag1_structural_discount)}</p>
+            </div>
+            <div className="bg-accent-light rounded-md p-3">
+              <p className="text-muted">Other Slabs</p>
+              <p className="font-bold text-body">{fmt(slabData?.model_coefficients?.coef_other_slabs_weighted_base_discount_pct)}</p>
+            </div>
+          </div>
+        </div>
+      </div>
     )
   }
 

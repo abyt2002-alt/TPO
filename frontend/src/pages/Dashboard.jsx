@@ -1,186 +1,182 @@
 import { Link } from 'react-router-dom'
-import { Users, TrendingUp, DollarSign, Calendar } from 'lucide-react'
+import {
+  BarChart3,
+  BrainCircuit,
+  CalendarDays,
+  LineChart,
+  Percent,
+  Sparkles,
+  TrendingUp,
+} from 'lucide-react'
 import Layout from '../components/Layout'
 
-const Dashboard = () => {
-  const features = [
-    {
-      icon: Users,
-      title: 'Store Segmentation',
-      description: 'Segment outlets by Recency, Frequency, and Monetary value',
-      link: '/rfm',
-      color: 'bg-primary',
-      isLive: true,
-    },
-    {
-      icon: TrendingUp,
-      title: 'Discount Analysis (Base Depth)',
-      description: 'Step 2 is available inside Store Segmentation',
-      link: '/rfm?step=2',
-      color: 'bg-secondary',
-      disabled: false,
-      isLive: true,
-    },
-    {
-      icon: DollarSign,
-      title: 'Modeling & ROI',
-      description: 'Step 3 is available inside Store Segmentation',
-      link: '/rfm?step=3',
-      color: 'bg-accent',
-      disabled: false,
-      isLive: true,
-    },
-    {
-      icon: Calendar,
-      title: '12-Month Planner',
-      description: 'Step 4 is available inside Store Segmentation',
-      link: '/rfm?step=4',
-      color: 'bg-primary',
-      disabled: false,
-      isLive: true,
-    },
-  ]
+const workflowSteps = [
+  {
+    number: '01',
+    title: 'Store Segmentation',
+    description: 'Scope the business and run outlet segmentation.',
+    link: '/rfm',
+    icon: BarChart3,
+    tone: 'bg-blue-50 text-blue-700 border-blue-200',
+  },
+  {
+    number: '02',
+    title: 'Discount Analysis',
+    description: 'Estimate structural discount and slab calendar.',
+    link: '/rfm?step=2',
+    icon: Percent,
+    tone: 'bg-amber-50 text-amber-700 border-amber-200',
+  },
+  {
+    number: '03',
+    title: 'Modeling & ROI',
+    description: 'Fit slab models and evaluate ROI logic.',
+    link: '/rfm?step=3',
+    icon: LineChart,
+    tone: 'bg-emerald-50 text-emerald-700 border-emerald-200',
+  },
+  {
+    number: '04',
+    title: 'Cross-Size Planner',
+    description: 'Plan the next 3 months across 12-ML and 18-ML.',
+    link: '/rfm?step=4',
+    icon: CalendarDays,
+    tone: 'bg-violet-50 text-violet-700 border-violet-200',
+  },
+  {
+    number: '05',
+    title: 'Scenario Comparison',
+    description: 'Compare fixed and AI-generated options.',
+    link: '/rfm?step=5',
+    icon: BrainCircuit,
+    tone: 'bg-rose-50 text-rose-700 border-rose-200',
+  },
+  {
+    number: '06',
+    title: 'Built-in EDA',
+    description: 'Validate price, discount, MRP, and volume signals.',
+    link: '/rfm?step=2',
+    icon: TrendingUp,
+    tone: 'bg-cyan-50 text-cyan-700 border-cyan-200',
+  },
+]
 
+const engineItems = [
+  {
+    label: 'AI-led planning',
+    value: 'Prompt to ranked scenarios',
+  },
+  {
+    label: 'Scheme backbone',
+    value: 'Structural slab discount logic',
+  },
+  {
+    label: 'Modeling layer',
+    value: 'Own, lag, weighted slab effects',
+  },
+  {
+    label: 'Cross effects',
+    value: '12-ML / 18-ML interaction',
+  },
+]
+
+const Dashboard = () => {
   return (
     <Layout>
-      <div className="space-y-8">
-        {/* Welcome Section */}
-        <div className="bg-gradient-to-r from-primary to-secondary text-white rounded-lg shadow-lg p-8">
-          <h1 className="text-4xl font-bold mb-4">Welcome to Trade Promo Optimization Tool</h1>
-          <p className="text-xl opacity-90">
-            Comprehensive analytics platform for retail outlet performance and promotional optimization
-          </p>
-        </div>
+      <div className="space-y-4">
+        <section className="rounded-3xl border border-slate-200 bg-white shadow-sm overflow-hidden">
+          <div className="grid grid-cols-1 xl:grid-cols-[1.15fr_0.85fr]">
+            <div className="px-8 py-7">
+              <div className="inline-flex items-center gap-2 rounded-full bg-blue-50 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-blue-700">
+                <Sparkles className="h-3.5 w-3.5" />
+                QPS
+              </div>
+              <h1 className="mt-4 text-4xl font-bold tracking-tight text-slate-950">
+                QPS Optimization
+              </h1>
+              <p className="mt-3 max-w-2xl text-base leading-7 text-slate-600">
+                Structural scheme estimation, slab-level modeling, cross-pack planning, and AI-led scenario evaluation in one connected workflow.
+              </p>
+            </div>
 
-        {/* Stats Overview */}
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
-          <div className="bg-white rounded-lg shadow-md p-6">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-muted text-sm">Total Records</p>
-                <p className="text-3xl font-bold text-primary">3.1M+</p>
+            <div className="border-t border-slate-200 bg-slate-50 px-8 py-7 xl:border-l xl:border-t-0">
+              <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">
+                Focus
               </div>
-              <Users className="text-primary opacity-20" size={48} />
+              <div className="mt-3 text-2xl font-semibold leading-tight text-slate-900">
+                AI-led planning is the top layer. Scheme logic, modeling, and cross effects are the decision engine below it.
+              </div>
+              <div className="mt-4 flex flex-wrap gap-2">
+                <span className="rounded-full border border-slate-200 bg-white px-3 py-1 text-sm font-medium text-slate-700">12-ML / 18-ML</span>
+                <span className="rounded-full border border-slate-200 bg-white px-3 py-1 text-sm font-medium text-slate-700">3-Month Planning</span>
+                <span className="rounded-full border border-slate-200 bg-white px-3 py-1 text-sm font-medium text-slate-700">AI + MC Scenarios</span>
+              </div>
             </div>
           </div>
-          <div className="bg-white rounded-lg shadow-md p-6">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-muted text-sm">RFM Segments</p>
-                <p className="text-3xl font-bold text-success">8</p>
-              </div>
-              <TrendingUp className="text-success opacity-20" size={48} />
-            </div>
-          </div>
-          <div className="bg-white rounded-lg shadow-md p-6">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-muted text-sm">Data Files</p>
-                <p className="text-3xl font-bold text-warning">20</p>
-              </div>
-              <DollarSign className="text-warning opacity-20" size={48} />
-            </div>
-          </div>
-          <div className="bg-white rounded-lg shadow-md p-6">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-muted text-sm">Data Range</p>
-                <p className="text-3xl font-bold text-accent">14 Mo</p>
-              </div>
-              <Calendar className="text-accent opacity-20" size={48} />
-            </div>
-          </div>
-        </div>
+        </section>
 
-        {/* Features Grid */}
-        <div>
-          <div className="flex items-center justify-between mb-6">
-            <h2 className="text-2xl font-bold text-body">Available Features</h2>
-            <div className="inline-flex items-center rounded-full bg-secondary px-3 py-1">
-              <span className="text-xs font-semibold text-white">
-                {features.filter((f) => f.isLive).length} Live Now
-              </span>
+        <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
+          <div className="mb-4 flex items-center justify-between gap-4">
+            <div>
+              <h2 className="text-xl font-bold text-slate-900">Decision Engine</h2>
+              <p className="mt-1 text-sm text-slate-500">
+                The four layers that drive planning outputs.
+              </p>
             </div>
           </div>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            {features.map((feature) => {
-              const Icon = feature.icon
-              const isDisabled = feature.disabled
 
-              const card = (
-                <div
-                  className={`relative rounded-lg p-6 transition-all ${
-                    isDisabled
-                      ? 'bg-white/80 border border-gray-200 opacity-60 cursor-not-allowed'
-                      : 'bg-white border border-secondary/50 shadow-md ring-1 ring-secondary/20 hover:shadow-xl hover:-translate-y-1 cursor-pointer'
-                  }`}
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
+            {engineItems.map((item) => (
+              <div key={item.label} className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4">
+                <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">
+                  {item.label}
+                </div>
+                <div className="mt-2 text-base font-semibold text-slate-900">
+                  {item.value}
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+
+        <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
+          <div className="mb-4">
+            <h2 className="text-xl font-bold text-slate-900">Workflow</h2>
+            <p className="mt-1 text-sm text-slate-500">
+              Compact path from scope selection to scenario ranking.
+            </p>
+          </div>
+
+          <div className="grid grid-cols-1 gap-3 lg:grid-cols-2 xl:grid-cols-3">
+            {workflowSteps.map((step) => {
+              const Icon = step.icon
+              return (
+                <Link
+                  key={step.number}
+                  to={step.link}
+                  className="group rounded-2xl border border-slate-200 bg-white p-4 transition-all hover:-translate-y-0.5 hover:border-slate-300 hover:shadow-md"
                 >
-                  {!isDisabled && (
-                    <span className="absolute top-3 right-3 text-[10px] bg-secondary text-white px-2 py-1 rounded-full font-semibold tracking-wide">
-                      Available Now
-                    </span>
-                  )}
-                  <div className="flex items-start space-x-4">
-                    <div className={`${feature.color} p-3 rounded-lg`}>
-                      <Icon className="text-white" size={32} />
+                  <div className="flex items-start gap-4">
+                    <div className={`rounded-2xl border p-3 ${step.tone}`}>
+                      <Icon className="h-5 w-5" />
                     </div>
-                    <div className="flex-1">
-                      <h3 className="text-xl font-semibold text-body mb-2">
-                        {feature.title}
-                        {isDisabled && (
-                          <span className="ml-2 text-xs bg-accent-light text-muted px-2 py-1 rounded">
-                            Coming Soon
-                          </span>
-                        )}
+                    <div className="min-w-0">
+                      <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">
+                        Step {step.number}
+                      </div>
+                      <h3 className="mt-1 text-lg font-semibold text-slate-900 group-hover:text-blue-700">
+                        {step.title}
                       </h3>
-                      <p className="text-muted">{feature.description}</p>
-                      {!isDisabled && (
-                        <div className="mt-3">
-                          <span className="inline-flex items-center text-xs font-semibold text-secondary">
-                            Open Feature
-                          </span>
-                        </div>
-                      )}
+                      <p className="mt-1 text-sm leading-6 text-slate-600">
+                        {step.description}
+                      </p>
                     </div>
                   </div>
-                </div>
-              )
-
-              return isDisabled ? (
-                <div key={feature.title}>{card}</div>
-              ) : (
-                <Link key={feature.title} to={feature.link} className="block">
-                  {card}
                 </Link>
               )
             })}
           </div>
-        </div>
-
-        {/* About Section */}
-        <div className="bg-white rounded-lg shadow-md p-8">
-          <h2 className="text-2xl font-bold text-body mb-4">About Store Segmentation</h2>
-          <div className="grid md:grid-cols-3 gap-6">
-            <div>
-              <h3 className="font-semibold text-lg text-primary mb-2">Recency (R)</h3>
-              <p className="text-muted">
-                How recently did the outlet make a purchase? Recent customers are more likely to respond to offers.
-              </p>
-            </div>
-            <div>
-              <h3 className="font-semibold text-lg text-success mb-2">Frequency (F)</h3>
-              <p className="text-muted">
-                How often does the outlet purchase? Frequent buyers show higher engagement and loyalty.
-              </p>
-            </div>
-            <div>
-              <h3 className="font-semibold text-lg text-warning mb-2">Monetary (M)</h3>
-              <p className="text-muted">
-                How much does the outlet spend per order? High-value customers contribute more to revenue.
-              </p>
-            </div>
-          </div>
-        </div>
+        </section>
       </div>
     </Layout>
   )

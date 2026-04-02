@@ -1,5 +1,5 @@
 import { Link, useLocation } from 'react-router-dom'
-import { BarChart3, Home, Menu, X, Settings, Percent, LineChart, CalendarDays, Upload, Activity } from 'lucide-react'
+import { BarChart3, Menu, X, Settings, Percent, LineChart, CalendarDays, Upload } from 'lucide-react'
 import { useState } from 'react'
 
 const Layout = ({ children, rightSidebar }) => {
@@ -9,19 +9,14 @@ const Layout = ({ children, rightSidebar }) => {
   const stepParam = new URLSearchParams(location.search).get('step')
 
   const navigation = [
-    { name: 'Dashboard', href: '/', icon: Home },
     { name: 'Store Segmentation', href: '/rfm', icon: BarChart3, step: '1' },
     { name: 'Base Discount Estimator', href: '/rfm?step=2', icon: Percent, step: '2' },
     { name: 'Modeling & ROI', href: '/rfm?step=3', icon: LineChart, step: '3' },
     { name: 'Cross-Size Planner', href: '/rfm?step=4', icon: CalendarDays, step: '4' },
     { name: 'Scenario Comparison', href: '/rfm?step=5', icon: Upload, step: '5' },
-    { name: 'Slab Trend EDA', href: '/rfm?step=6', icon: Activity, step: '6' },
   ]
 
   const isNavActive = (item) => {
-    if (item.href === '/') {
-      return location.pathname === '/'
-    }
     if (item.step === '2') {
       return location.pathname === '/rfm' && stepParam === '2'
     }
@@ -34,11 +29,8 @@ const Layout = ({ children, rightSidebar }) => {
     if (item.step === '5') {
       return location.pathname === '/rfm' && stepParam === '5'
     }
-    if (item.step === '6') {
-      return location.pathname === '/rfm' && stepParam === '6'
-    }
     if (item.step === '1') {
-      return location.pathname === '/rfm' && stepParam !== '2' && stepParam !== '3' && stepParam !== '4' && stepParam !== '5' && stepParam !== '6'
+      return location.pathname === '/rfm' && stepParam !== '2' && stepParam !== '3' && stepParam !== '4' && stepParam !== '5'
     }
     return location.pathname === item.href
   }
@@ -52,7 +44,7 @@ const Layout = ({ children, rightSidebar }) => {
             <div className="flex items-center">
               <BarChart3 className="w-8 h-8 text-primary" />
               <h1 className="ml-3 text-xl font-bold text-body">
-                Trade Promo Optimization Tool
+                QPS Optimization
               </h1>
             </div>
             

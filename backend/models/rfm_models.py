@@ -111,6 +111,7 @@ class BaseDepthRequest(BaseModel):
     subcategories: Optional[List[str]] = None
     brands: Optional[List[str]] = None
     sizes: Optional[List[str]] = None
+    outlet_classifications: Optional[List[str]] = None
     recency_threshold: int = Field(default=90, ge=30, le=180)
     frequency_threshold: int = Field(default=20, ge=1, le=100)
     time_aggregation: str = Field(default="D", pattern="^(D|W|M)$")

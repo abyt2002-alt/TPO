@@ -51,6 +51,9 @@ class ScopeBuilderMixin:
             df = df[df['Brand'].isin(request.brands)]
         if request.sizes:
             df = df[df['Sizes'].isin(request.sizes)]
+        if getattr(request, 'outlet_classifications', None):
+            if 'Final_Outlet_Classification' in df.columns:
+                df = df[df['Final_Outlet_Classification'].isin(request.outlet_classifications)]
         return df
 
 
@@ -61,6 +64,7 @@ class ScopeBuilderMixin:
             tuple(sorted(request.subcategories or [])),
             tuple(sorted(request.brands or [])),
             tuple(sorted(request.sizes or [])),
+            tuple(sorted(getattr(request, 'outlet_classifications', None) or [])),
             int(request.recency_threshold),
             int(request.frequency_threshold),
         )
