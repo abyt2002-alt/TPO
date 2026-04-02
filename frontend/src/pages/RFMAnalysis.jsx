@@ -381,6 +381,11 @@ const shiftPeriodKey = (periodKey, deltaMonths) => {
 const sortPeriodKeys = (keys = []) =>
   [...keys].sort((a, b) => String(a).localeCompare(String(b)))
 
+const isMaskedFilterLabel = (label = '') => {
+  const key = String(label || '').trim().toLowerCase()
+  return key === 'category(ies)' || key === 'subcategory(ies)' || key === 'brand(s)'
+}
+
 const EdaMultiSelect = ({
   label,
   options = [],
@@ -391,6 +396,8 @@ const EdaMultiSelect = ({
 }) => {
   const [isOpen, setIsOpen] = useState(false)
   const [search, setSearch] = useState('')
+  const isMaskedField = useMemo(() => isMaskedFilterLabel(label), [label])
+  const toDisplayLabel = (rawLabel) => (isMaskedField ? 'Haircolor' : String(rawLabel || ''))
   const normalizedOptions = useMemo(
     () =>
       (options || []).map((opt) =>
@@ -404,8 +411,8 @@ const EdaMultiSelect = ({
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase()
     if (!q) return normalizedOptions
-    return normalizedOptions.filter((opt) => opt.label.toLowerCase().includes(q))
-  }, [normalizedOptions, search])
+    return normalizedOptions.filter((opt) => toDisplayLabel(opt.label).toLowerCase().includes(q))
+  }, [normalizedOptions, search, isMaskedField])
 
   const selectedSet = useMemo(() => new Set((selectedValues || []).map((v) => String(v))), [selectedValues])
   const selectedCount = selectedSet.size
@@ -413,7 +420,7 @@ const EdaMultiSelect = ({
     selectedCount === 0
       ? placeholder
       : selectedCount === 1
-        ? normalizedOptions.find((opt) => selectedSet.has(opt.value))?.label || '1 selected'
+        ? toDisplayLabel(normalizedOptions.find((opt) => selectedSet.has(opt.value))?.label || '') || '1 selected'
         : `${selectedCount} selected`
 
   const toggle = (value) => {
@@ -495,7 +502,7 @@ const EdaMultiSelect = ({
                       onChange={() => toggle(opt.value)}
                       className="w-4 h-4 text-primary border-gray-300 rounded focus:ring-primary"
                     />
-                    <span className="ml-2 text-sm text-gray-700">{opt.label}</span>
+                    <span className="ml-2 text-sm text-gray-700">{toDisplayLabel(opt.label)}</span>
                   </label>
                 ))
               )}

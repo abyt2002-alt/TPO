@@ -1,16 +1,23 @@
 import { useState, useMemo, useEffect } from 'react'
 import { Filter, Play, ChevronDown, ChevronUp, Search, X } from 'lucide-react'
 
+const isMaskedFilterLabel = (label = '') => {
+  const key = String(label || '').trim().toLowerCase()
+  return key === 'category(ies)' || key === 'subcategory(ies)' || key === 'brand(s)'
+}
+
 const MultiSelectDropdown = ({ label, options, selectedValues, onChange, placeholder, disabled = false }) => {
   const [isOpen, setIsOpen] = useState(false)
   const [searchTerm, setSearchTerm] = useState('')
+  const isMaskedField = useMemo(() => isMaskedFilterLabel(label), [label])
+  const toDisplayLabel = (rawValue) => (isMaskedField ? 'Haircolor' : String(rawValue || ''))
 
   const filteredOptions = useMemo(() => {
     if (!searchTerm) return options || []
-    return (options || []).filter(option => 
-      option.toLowerCase().includes(searchTerm.toLowerCase())
+    return (options || []).filter((option) =>
+      toDisplayLabel(option).toLowerCase().includes(searchTerm.toLowerCase())
     )
-  }, [options, searchTerm])
+  }, [options, searchTerm, isMaskedField])
 
   const handleToggle = (value) => {
     if (disabled) return
@@ -33,7 +40,7 @@ const MultiSelectDropdown = ({ label, options, selectedValues, onChange, placeho
   const displayText = selectedValues.length === 0 
     ? placeholder 
     : selectedValues.length === 1 
-    ? selectedValues[0] 
+    ? toDisplayLabel(selectedValues[0]) 
     : `${selectedValues.length} selected`
 
   return (
@@ -106,7 +113,7 @@ const MultiSelectDropdown = ({ label, options, selectedValues, onChange, placeho
                       onChange={() => handleToggle(option)}
                       className="w-4 h-4 text-primary border-gray-300 rounded focus:ring-primary"
                     />
-                    <span className="ml-2 text-sm text-gray-700">{option}</span>
+                    <span className="ml-2 text-sm text-gray-700">{toDisplayLabel(option)}</span>
                   </label>
                 ))
               )}
