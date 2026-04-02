@@ -1920,24 +1920,29 @@ const RFMAnalysis = () => {
     const reportName = String(reportInput?.name || '').trim()
     if (!reportName) {
       setStep5ReportMessage('Enter scenario name before saving')
-      return
+      return null
     }
+    const existingKey = String(reportInput?.report_key || '').trim()
+    const prevRows = Array.isArray(step5SavedReports) ? step5SavedReports : []
+    const existingRecord = existingKey
+      ? prevRows.find((row) => String(row?.report_key || '') === existingKey)
+      : null
     const now = new Date().toISOString()
-    const reportKey = `step5_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+    const reportKey = existingRecord?.report_key || `step5_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
     const nextRecord = {
       report_key: reportKey,
       name: reportName,
       reference_mode: String(reportInput?.reference_mode || step4DisplayReferenceMode || 'ly_same_3m'),
       updated_at: now,
-      created_at: now,
+      created_at: String(existingRecord?.created_at || now),
       payload: reportInput?.payload || {},
       metadata: reportInput?.metadata || {},
     }
-    const prevRows = Array.isArray(step5SavedReports) ? step5SavedReports : []
-    const deduped = prevRows.filter((row) => String(row?.name || '').trim().toLowerCase() !== reportName.toLowerCase())
-    const nextRows = [nextRecord, ...deduped].sort((a, b) => String(b?.updated_at || '').localeCompare(String(a?.updated_at || '')))
+    const nextRows = [nextRecord, ...prevRows.filter((row) => String(row?.report_key || '') !== reportKey)]
+      .sort((a, b) => String(b?.updated_at || '').localeCompare(String(a?.updated_at || '')))
     persistStep5SessionReports(nextRows)
-    setStep5ReportMessage(`Saved: ${reportName}`)
+    setStep5ReportMessage(`${existingRecord ? 'Updated' : 'Saved'}: ${reportName}`)
+    return nextRecord
   }, [persistStep5SessionReports, step4DisplayReferenceMode, step5SavedReports])
 
   const handleLoadStep5SavedReport = useCallback((reportKey) => {

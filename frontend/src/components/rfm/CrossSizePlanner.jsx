@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { AlertCircle, Loader2, RotateCcw, Save, Trash2 } from 'lucide-react'
+import { AlertCircle, Download, Loader2, RotateCcw, Save, Trash2 } from 'lucide-react'
 
 const normalizeSizeKey = (value) => String(value || '').toUpperCase().replace(/\s+/g, '').trim()
 const REFERENCE_MODE_LABELS = {
@@ -39,6 +39,111 @@ const formatCompact = (value) => {
     compactDisplay: 'short',
     maximumFractionDigits: 2,
   }).format(n)
+}
+
+const escapeXml = (value) => String(value ?? '')
+  .replace(/&/g, '&amp;')
+  .replace(/</g, '&lt;')
+  .replace(/>/g, '&gt;')
+  .replace(/"/g, '&quot;')
+  .replace(/'/g, '&apos;')
+
+const sanitizeWorksheetName = (raw, fallback = 'Scenario') => {
+  const cleaned = String(raw || fallback)
+    .replace(/[:\\/?*\[\]]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+  return (cleaned || fallback).slice(0, 31)
+}
+
+const getUniqueWorksheetName = (rawName, usedNames) => {
+  const base = sanitizeWorksheetName(rawName)
+  let candidate = base || 'Scenario'
+  let idx = 2
+  while (usedNames.has(candidate)) {
+    const suffix = ` ${idx}`
+    const trimmedBase = (base || 'Scenario').slice(0, Math.max(1, 31 - suffix.length))
+    candidate = `${trimmedBase}${suffix}`
+    idx += 1
+  }
+  usedNames.add(candidate)
+  return candidate
+}
+
+const getSpreadsheetCellType = (value) => {
+  if (typeof value === 'number' && Number.isFinite(value)) return 'Number'
+  if (typeof value === 'boolean') return 'Boolean'
+  return 'String'
+}
+
+const buildSpreadsheetCellXml = (value, styleId = null) => {
+  const type = getSpreadsheetCellType(value)
+  const normalized = type === 'Number' ? Number(value) : String(value ?? '')
+  const styleAttr = styleId ? ` ss:StyleID="${styleId}"` : ''
+  return `<Cell${styleAttr}><Data ss:Type="${type}">${escapeXml(normalized)}</Data></Cell>`
+}
+
+const buildSpreadsheetRowXml = (cells, styleId = null) => (
+  `<Row>${cells.map((cell) => buildSpreadsheetCellXml(cell, styleId)).join('')}</Row>`
+)
+
+const buildStep4WorkbookXml = (reports = []) => {
+  const usedNames = new Set()
+  const worksheets = (Array.isArray(reports) ? reports : []).map((report, index) => {
+    const payload = report?.payload || {}
+    const summary = payload?.summary_3m || {}
+    const records = Array.isArray(payload?.records) ? payload.records : []
+    const sheetName = getUniqueWorksheetName(
+      String(report?.name || '').trim() || `Scenario ${index + 1}`,
+      usedNames
+    )
+    const summaryRows = [
+      ['Saved Scenario', String(report?.name || '').trim() || `Scenario ${index + 1}`],
+      ['Reference Mode', String(payload?.reference_mode || report?.reference_mode || '')],
+      ['Created At', String(report?.created_at || '')],
+      ['Updated At', String(report?.updated_at || '')],
+    ]
+    const totalsRows = [
+      ['Metric', '12-ML', '18-ML', 'TOTAL'],
+      ['Quantity', Number(summary?.['12-ML']?.final_qty ?? summary?.['12-ML']?.scenario_qty_additive ?? 0), Number(summary?.['18-ML']?.final_qty ?? summary?.['18-ML']?.scenario_qty_additive ?? 0), Number(summary?.TOTAL?.final_qty ?? summary?.TOTAL?.scenario_qty_additive ?? 0)],
+      ['Revenue', Number(summary?.['12-ML']?.scenario_revenue ?? 0), Number(summary?.['18-ML']?.scenario_revenue ?? 0), Number(summary?.TOTAL?.scenario_revenue ?? 0)],
+      ['Profit', Number(summary?.['12-ML']?.scenario_profit ?? 0), Number(summary?.['18-ML']?.scenario_profit ?? 0), Number(summary?.TOTAL?.scenario_profit ?? 0)],
+      ['Volume %', Number(summary?.['12-ML']?.vs_reference_volume_pct ?? 0), Number(summary?.['18-ML']?.vs_reference_volume_pct ?? 0), Number(summary?.TOTAL?.vs_reference_volume_ml_pct ?? summary?.TOTAL?.vs_reference_volume_pct ?? 0)],
+      ['Revenue %', Number(summary?.['12-ML']?.vs_reference_revenue_pct ?? 0), Number(summary?.['18-ML']?.vs_reference_revenue_pct ?? 0), Number(summary?.TOTAL?.vs_reference_revenue_pct ?? 0)],
+      ['Gross Margin %', Number(summary?.['12-ML']?.vs_reference_profit_pct ?? 0), Number(summary?.['18-ML']?.vs_reference_profit_pct ?? 0), Number(summary?.TOTAL?.vs_reference_profit_pct ?? 0)],
+    ]
+    const rowsXml = [
+      ...summaryRows.map((row) => buildSpreadsheetRowXml(row)),
+      buildSpreadsheetRowXml(['', '']),
+      ...totalsRows.map((row, rowIndex) => buildSpreadsheetRowXml(row, rowIndex === 0 ? 'Header' : null)),
+      buildSpreadsheetRowXml(['', '', '', '']),
+      buildSpreadsheetRowXml(['Period', 'Size', 'Slab', 'Reference Discount %', 'Scenario Discount %'], 'Header'),
+      ...records.map((row) => buildSpreadsheetRowXml([
+        String(row?.period || ''),
+        String(row?.size || ''),
+        String(row?.slab || ''),
+        Number(row?.reference_discount_pct ?? 0),
+        Number(row?.scenario_discount_pct ?? 0),
+      ])),
+    ].join('')
+
+    return `<Worksheet ss:Name="${escapeXml(sheetName)}"><Table>${rowsXml}</Table></Worksheet>`
+  }).join('')
+
+  return `<?xml version="1.0"?>
+<?mso-application progid="Excel.Sheet"?>
+<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet"
+ xmlns:o="urn:schemas-microsoft-com:office:office"
+ xmlns:x="urn:schemas-microsoft-com:office:excel"
+ xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet"
+ xmlns:html="http://www.w3.org/TR/REC-html40">
+ <Styles>
+  <Style ss:ID="Header">
+   <Font ss:Bold="1"/>
+  </Style>
+ </Styles>
+ ${worksheets}
+</Workbook>`
 }
 
 const formatFixed = (value, digits = 4) => {
@@ -842,6 +947,22 @@ const CrossSizePlanner = ({
     setIsSaveModalOpen(false)
   }
 
+  const handleDownloadSavedReportsWorkbook = () => {
+    const rows = Array.isArray(savedReports) ? savedReports : []
+    if (!rows.length) return
+    const workbookXml = buildStep4WorkbookXml(rows)
+    const blob = new Blob([workbookXml], { type: 'application/vnd.ms-excel;charset=utf-8;' })
+    const url = URL.createObjectURL(blob)
+    const ts = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `step4_saved_scenarios_${ts}.xls`
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+  }
+
   if (isLoading) {
     return (
       <div className="bg-white rounded-lg shadow-md border border-slate-200 p-10 flex flex-col items-center justify-center gap-3">
@@ -940,6 +1061,15 @@ const CrossSizePlanner = ({
             >
               <Trash2 className="w-4 h-4" />
               Delete
+            </button>
+            <button
+              type="button"
+              onClick={handleDownloadSavedReportsWorkbook}
+              disabled={!Array.isArray(savedReports) || savedReports.length === 0}
+              className="inline-flex items-center justify-center gap-2 px-3 py-2 rounded-md border border-slate-300 bg-white text-sm font-semibold text-body disabled:opacity-40"
+            >
+              <Download className="w-4 h-4" />
+              Download All
             </button>
             <button
               type="button"
