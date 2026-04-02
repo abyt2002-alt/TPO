@@ -760,7 +760,7 @@ const RFMAnalysis = () => {
   const scenarioMutation = useMutation({
     mutationFn: async (variables = {}) => {
       if (!modelingResult?.success) {
-        throw new Error('Run Step 3 modeling before Step 5 scenario comparison.')
+        throw new Error('Run Step 3 modeling before Step 5 scenario generator.')
       }
 
       const basePayload = buildPlannerPayload({
@@ -1855,11 +1855,21 @@ const RFMAnalysis = () => {
   }, [])
 
   const handleSaveStep4Report = useCallback((reportInput = {}) => {
-    const reportName = String(reportInput?.name || '').trim()
-    if (!reportName) {
-      setStep4ReportMessage('Enter scenario name before saving')
-      return
+    const prevRows = Array.isArray(step4SavedReports) ? step4SavedReports : []
+    const buildNextDefaultScenarioName = () => {
+      const used = new Set()
+      prevRows.forEach((row) => {
+        const name = String(row?.name || '').trim()
+        const m = name.match(/^QPS Scenario\s+(\d+)$/i)
+        if (!m) return
+        const n = Number(m[1])
+        if (Number.isFinite(n) && n > 0) used.add(n)
+      })
+      let idx = 1
+      while (used.has(idx)) idx += 1
+      return `QPS Scenario ${idx}`
     }
+    const reportName = String(reportInput?.name || '').trim() || buildNextDefaultScenarioName()
     const now = new Date().toISOString()
     const reportKey = `step4_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
     const nextRecord = {
@@ -1871,7 +1881,6 @@ const RFMAnalysis = () => {
       payload: reportInput?.payload || {},
       metadata: reportInput?.metadata || {},
     }
-    const prevRows = Array.isArray(step4SavedReports) ? step4SavedReports : []
     const deduped = prevRows.filter((row) => String(row?.name || '').trim().toLowerCase() !== reportName.toLowerCase())
     const nextRows = [nextRecord, ...deduped].sort((a, b) => String(b?.updated_at || '').localeCompare(String(a?.updated_at || '')))
     persistStep4SessionReports(nextRows)
@@ -1998,6 +2007,20 @@ const RFMAnalysis = () => {
   }
 
   const buildStep5PromptWithFilterContext = (basePromptRaw = '', filterContext = {}) => {
+    const toNullableNumber = (value) => {
+      if (value === null || value === undefined) return null
+      const text = String(value).trim()
+      if (text === '') return null
+      const parsed = Number(text)
+      return Number.isFinite(parsed) ? parsed : null
+    }
+    const toNullableDiscountConstraint = (value) => {
+      const parsed = toNullableNumber(value)
+      // Defensive handling: leaked blank constraints were previously serialized as 0.
+      if (parsed === 0) return null
+      return parsed
+    }
+
     const basePrompt = String(basePromptRaw || '').trim()
     const discountConstraints = Array.isArray(filterContext?.discount_constraints)
       ? filterContext.discount_constraints
@@ -2007,8 +2030,10 @@ const RFMAnalysis = () => {
     const constraintLines = []
     discountConstraints.forEach((c) => {
       const label = `${String(c?.period || '')} ${String(c?.size || '')} ${String(c?.slab || '')}`.trim()
-      const minTxt = Number.isFinite(Number(c?.min)) ? `>= ${Number(c.min)}` : ''
-      const maxTxt = Number.isFinite(Number(c?.max)) ? `<= ${Number(c.max)}` : ''
+      const minVal = toNullableDiscountConstraint(c?.min)
+      const maxVal = toNullableDiscountConstraint(c?.max)
+      const minTxt = minVal !== null ? `>= ${minVal}` : ''
+      const maxTxt = maxVal !== null ? `<= ${maxVal}` : ''
       const cond = [minTxt, maxTxt].filter(Boolean).join(' and ')
       if (label && cond) constraintLines.push(`- ${label}: ${cond}`)
     })
@@ -2042,6 +2067,20 @@ const RFMAnalysis = () => {
   }
 
   const normalizeStep5FilterContextForAI = (filterContext = {}) => {
+    const toNullableNumber = (value) => {
+      if (value === null || value === undefined) return null
+      const text = String(value).trim()
+      if (text === '') return null
+      const parsed = Number(text)
+      return Number.isFinite(parsed) ? parsed : null
+    }
+    const toNullableDiscountConstraint = (value) => {
+      const parsed = toNullableNumber(value)
+      // Defensive handling: leaked blank constraints were previously serialized as 0.
+      if (parsed === 0) return null
+      return parsed
+    }
+
     const rawConstraints = Array.isArray(filterContext?.discount_constraints)
       ? filterContext.discount_constraints
       : []
@@ -2050,26 +2089,54 @@ const RFMAnalysis = () => {
         period: String(c?.period || '').trim(),
         size: String(c?.size || '').trim(),
         slab: String(c?.slab || '').trim(),
-        min: Number.isFinite(Number(c?.min)) ? Number(c.min) : null,
-        max: Number.isFinite(Number(c?.max)) ? Number(c.max) : null,
+        min: toNullableDiscountConstraint(c?.min),
+        max: toNullableDiscountConstraint(c?.max),
       }))
       .filter((c) => c.period && c.size && c.slab && (c.min !== null || c.max !== null))
 
     const rawThresholds = filterContext?.metric_thresholds || {}
     const metric_thresholds = {
-      min_12_volume_pct: Number.isFinite(Number(rawThresholds?.min_12_volume_pct)) ? Number(rawThresholds.min_12_volume_pct) : null,
-      min_18_volume_pct: Number.isFinite(Number(rawThresholds?.min_18_volume_pct)) ? Number(rawThresholds.min_18_volume_pct) : null,
-      min_total_volume_pct: Number.isFinite(Number(rawThresholds?.min_total_volume_pct)) ? Number(rawThresholds.min_total_volume_pct) : null,
-      min_revenue_pct: Number.isFinite(Number(rawThresholds?.min_revenue_pct)) ? Number(rawThresholds.min_revenue_pct) : null,
-      min_gross_margin_pct: Number.isFinite(Number(rawThresholds?.min_gross_margin_pct))
-        ? Number(rawThresholds.min_gross_margin_pct)
-        : (Number.isFinite(Number(rawThresholds?.min_profit_pct)) ? Number(rawThresholds.min_profit_pct) : null),
-      min_investment_pct: Number.isFinite(Number(rawThresholds?.min_investment_pct)) ? Number(rawThresholds.min_investment_pct) : null,
-      max_investment_pct: Number.isFinite(Number(rawThresholds?.max_investment_pct)) ? Number(rawThresholds.max_investment_pct) : null,
-      max_cts_pct: Number.isFinite(Number(rawThresholds?.max_cts_pct)) ? Number(rawThresholds.max_cts_pct) : null,
+      min_12_volume_pct: toNullableNumber(rawThresholds?.min_12_volume_pct),
+      min_18_volume_pct: toNullableNumber(rawThresholds?.min_18_volume_pct),
+      min_total_volume_pct: toNullableNumber(rawThresholds?.min_total_volume_pct),
+      min_revenue_pct: toNullableNumber(rawThresholds?.min_revenue_pct),
+      min_gross_margin_pct: toNullableNumber(rawThresholds?.min_gross_margin_pct) ?? toNullableNumber(rawThresholds?.min_profit_pct),
+      min_investment_pct: toNullableNumber(rawThresholds?.min_investment_pct),
+      max_investment_pct: toNullableNumber(rawThresholds?.max_investment_pct),
+      max_cts_pct: toNullableNumber(rawThresholds?.max_cts_pct),
     }
     return { discount_constraints, metric_thresholds }
   }
+
+  const getInvalidStep5DiscountConstraintMessage = (constraints = []) => {
+    const parseBound = (raw) => {
+      if (raw === null || raw === undefined) return { hasValue: false, value: null }
+      const txt = String(raw).trim()
+      if (!txt) return { hasValue: false, value: null }
+      const val = Number(txt)
+      if (!Number.isFinite(val)) return { hasValue: false, value: null }
+      return { hasValue: true, value: val }
+    }
+
+    for (const item of constraints || []) {
+      const minBound = parseBound(item?.min)
+      const maxBound = parseBound(item?.max)
+      if (!minBound.hasValue || !maxBound.hasValue) continue
+      const minVal = Number(minBound.value)
+      const maxVal = Number(maxBound.value)
+      if (minVal <= maxVal) continue
+      return `Invalid discount constraints for ${String(item?.period || '')} ${String(item?.size || '')} ${String(item?.slab || '')}: min (${minVal}) > max (${maxVal}).`
+    }
+    return ''
+  }
+
+  useEffect(() => {
+    const structuredFilters = normalizeStep5FilterContextForAI(step5CurrentFilterContext)
+    const invalidConstraintMessage = getInvalidStep5DiscountConstraintMessage(structuredFilters.discount_constraints)
+    if (!invalidConstraintMessage && String(scenarioErrorMessage || '').includes('Invalid discount constraints for ')) {
+      setScenarioErrorMessage('')
+    }
+  }, [step5CurrentFilterContext, scenarioErrorMessage])
 
   const handleGenerateAIScenarios = () => {
     if (!modelingResult?.success) {
@@ -2081,6 +2148,11 @@ const RFMAnalysis = () => {
       step5CurrentFilterContext
     )
     const structuredFilters = normalizeStep5FilterContextForAI(step5CurrentFilterContext)
+    const invalidConstraintMessage = getInvalidStep5DiscountConstraintMessage(structuredFilters.discount_constraints)
+    if (invalidConstraintMessage) {
+      setScenarioErrorMessage(invalidConstraintMessage)
+      return
+    }
     setScenarioErrorMessage('')
     aiScenarioJobMutation.mutate({
       scenario_count: Math.min(10000, Math.max(1, Number(step5AISettings.scenario_count || 5))),
@@ -2097,6 +2169,11 @@ const RFMAnalysis = () => {
     }
     const promptWithConstraints = buildStep5PromptWithFilterContext(step5AISettings.prompt, filterContext)
     const structuredFilters = normalizeStep5FilterContextForAI(filterContext)
+    const invalidConstraintMessage = getInvalidStep5DiscountConstraintMessage(structuredFilters.discount_constraints)
+    if (invalidConstraintMessage) {
+      setScenarioErrorMessage(invalidConstraintMessage)
+      return
+    }
 
     setScenarioErrorMessage('')
     aiScenarioJobMutation.mutate({
@@ -2668,7 +2745,7 @@ const RFMAnalysis = () => {
             Create Scenario
           </button>
           <div className="rounded-lg border border-slate-200 bg-white p-3 space-y-2">
-            <div className="text-xs font-semibold text-body">AI Scenario Generator (Append)</div>
+            <div className="text-xs font-semibold text-body">Scenario Generator (Append)</div>
             <div>
               <label className="block text-[11px] font-medium text-gray-700 mb-1">Scenario Count (1-10000)</label>
               <input
@@ -2982,7 +3059,7 @@ const RFMAnalysis = () => {
               <div className="bg-white rounded-lg shadow-md p-4 flex items-center justify-between">
                 <div>
                   <h4 className="text-base font-semibold text-body">Step 4 Completed</h4>
-                  <p className="text-sm text-muted">Cross-size planner and 3-month baseline forecast are ready. Proceed to scenario comparison next.</p>
+                  <p className="text-sm text-muted">Scenario planner and 3-month baseline forecast are ready. Proceed to scenario generator next.</p>
                 </div>
                 <button
                   type="button"
@@ -3092,7 +3169,7 @@ const RFMAnalysis = () => {
           <div className="bg-white rounded-lg shadow-md p-8">
             <h3 className="text-xl font-semibold text-body mb-2">Step 5 Requires Step 1 Output</h3>
             <p className="text-muted mb-4">
-              Run Store Segmentation first, then complete Steps 2-4 before scenario comparison.
+              Run Store Segmentation first, then complete Steps 2-4 before scenario generator.
             </p>
             <button
               type="button"

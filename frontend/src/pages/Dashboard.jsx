@@ -37,7 +37,7 @@ const workflowSteps = [
   },
   {
     number: '04',
-    title: 'Cross-Size Planner',
+    title: 'Scenario Planner',
     description: 'Plan the next 3 months across 12-ML and 18-ML.',
     link: '/rfm?step=4',
     icon: CalendarDays,
@@ -45,7 +45,7 @@ const workflowSteps = [
   },
   {
     number: '05',
-    title: 'Scenario Comparison',
+    title: 'Scenario Generator',
     description: 'Compare fixed and AI-generated options.',
     link: '/rfm?step=5',
     icon: BrainCircuit,

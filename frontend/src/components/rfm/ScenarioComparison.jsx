@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { AlertCircle, Download, FolderOpen, Loader2, Save, X } from 'lucide-react'
 import {
   ResponsiveContainer,
@@ -261,6 +261,28 @@ const ScenarioBarTooltip = ({ active, payload, label }) => {
 const parseThreshold = (value) => {
   const n = Number(value)
   return Number.isFinite(n) ? n : -9999
+}
+
+const getInvalidDiscountConstraintMessage = (constraints = []) => {
+  const parseBound = (raw) => {
+    if (raw === null || raw === undefined) return { hasValue: false, value: null }
+    const txt = String(raw).trim()
+    if (!txt) return { hasValue: false, value: null }
+    const val = Number(txt)
+    if (!Number.isFinite(val)) return { hasValue: false, value: null }
+    return { hasValue: true, value: val }
+  }
+
+  for (const item of constraints || []) {
+    const minBound = parseBound(item?.min)
+    const maxBound = parseBound(item?.max)
+    if (!minBound.hasValue || !maxBound.hasValue) continue
+    const minVal = Number(minBound.value)
+    const maxVal = Number(maxBound.value)
+    if (minVal <= maxVal) continue
+    return `Invalid discount constraints for ${String(item?.period || '')} ${String(item?.size || '')} ${String(item?.slab || '')}: min (${minVal}) > max (${maxVal}).`
+  }
+  return ''
 }
 
 const totalMetricValue = (row, metric = 'revenue_pct') => {
@@ -612,8 +634,14 @@ const ScenarioComparison = ({
     maxCtsPct,
   ])
 
+  const discountConstraintError = useMemo(
+    () => getInvalidDiscountConstraintMessage(activeDiscountConstraints),
+    [activeDiscountConstraints]
+  )
+
   const handleGenerateForCurrentFilters = () => {
     if (typeof onGenerateForCurrentFilters !== 'function') return
+    if (discountConstraintError) return
     onGenerateForCurrentFilters({
       discount_constraints: activeDiscountConstraints,
       metric_thresholds: {
@@ -629,7 +657,7 @@ const ScenarioComparison = ({
     })
   }
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (typeof onFilterContextChange !== 'function') return
     onFilterContextChange({
       discount_constraints: activeDiscountConstraints,
@@ -1176,10 +1204,29 @@ const ScenarioComparison = ({
     if (typeof onSaveReport !== 'function') return
     const updated = saveModalScenario()
     if (!updated) return
-    const baseName = String(updated?.custom_name || updated?.scenario || '').trim()
-    const name = mode === 'save_as' && !String(updated?.custom_name || '').trim()
-      ? `${baseName} Copy`
-      : baseName
+    const buildNextDefaultScenarioName = () => {
+      const used = new Set()
+      ;(Array.isArray(savedReports) ? savedReports : []).forEach((row) => {
+        const name = String(row?.name || '').trim()
+        const m = name.match(/^QPS Scenario\s+(\d+)$/i)
+        if (!m) return
+        const n = Number(m[1])
+        if (Number.isFinite(n) && n > 0) used.add(n)
+      })
+      let idx = 1
+      while (used.has(idx)) idx += 1
+      return `QPS Scenario ${idx}`
+    }
+
+    const customName = String(updated?.custom_name || '').trim()
+    const existingSavedRecord = (Array.isArray(savedReports) ? savedReports : []).find(
+      (row) => String(row?.report_key || '') === String(modalSavedReportKey || '')
+    )
+    const name = customName || (
+      mode === 'save' && existingSavedRecord
+        ? String(existingSavedRecord?.name || '').trim() || buildNextDefaultScenarioName()
+        : buildNextDefaultScenarioName()
+    )
     if (!name) {
       setModalError('Scenario name is required before saving report.')
       return
@@ -1295,6 +1342,11 @@ const ScenarioComparison = ({
             <span className="text-xs text-muted truncate">{saveReportMessage}</span>
           ) : null}
         </div>
+        {discountConstraintError ? (
+          <div className="mt-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-danger">
+            {discountConstraintError}
+          </div>
+        ) : null}
       </div>
 
       <div className="bg-white rounded-lg shadow-md p-4">
@@ -1609,7 +1661,7 @@ const ScenarioComparison = ({
                   <button
                     type="button"
                     onClick={handleGenerateForCurrentFilters}
-                    disabled={isAIGenerating}
+                    disabled={isAIGenerating || Boolean(discountConstraintError)}
                     className="px-3 py-2 rounded-md border border-primary text-primary bg-white text-sm font-semibold disabled:opacity-50"
                   >
                     {isAIGenerating ? 'Generating AI Scenarios...' : 'Generate AI for Current Filters'}
@@ -1738,8 +1790,8 @@ const ScenarioComparison = ({
                   <div className="text-base font-semibold text-body">{fmtPct(readSummary(modalDraft || modalScenario, 'TOTAL').profit_pct)}</div>
                 </div>
                 <div className="rounded-lg border border-slate-200 bg-white p-3">
-                  <div className="text-[11px] uppercase text-muted">TOTAL Investment %</div>
-                  <div className="text-base font-semibold text-body">{fmtPct(readSummary(modalDraft || modalScenario, 'TOTAL').investment_pct)}</div>
+                  <div className="text-[11px] uppercase text-muted">TOTAL CTS %</div>
+                  <div className="text-base font-semibold text-body">{fmtPct(readSummary(modalDraft || modalScenario, 'TOTAL').cts_pct)}</div>
                 </div>
               </div>
               {(modalError || saveReportMessage) && (
