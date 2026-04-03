@@ -876,12 +876,24 @@ const CrossSizePlanner = ({
     return computedPlannerData?.summary_3m || {}
   }, [referenceByMode, selectedReferenceMode, computedPlannerData?.summary_3m])
 
+  const buildNextDefaultScenarioName = () => {
+    const used = new Set()
+    ;(Array.isArray(savedReports) ? savedReports : []).forEach((row) => {
+      const name = String(row?.name || '').trim()
+      const m = name.match(/^QPS Scenario\s+(\d+)$/i)
+      if (!m) return
+      const n = Number(m[1])
+      if (Number.isFinite(n) && n > 0) used.add(n)
+    })
+    let idx = 1
+    while (used.has(idx)) idx += 1
+    return `QPS Scenario ${idx}`
+  }
+
   useEffect(() => {
     if (String(reportName || '').trim()) return
-    const now = new Date()
-    const dateTag = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
-    setReportName(`Step4 Scenario ${dateTag}`)
-  }, [reportName])
+    setReportName(buildNextDefaultScenarioName())
+  }, [reportName, savedReports])
 
   const step4ReportRecords = useMemo(() => {
     const rows = []
@@ -918,15 +930,14 @@ const CrossSizePlanner = ({
   }, [computedPlannerData?.monthly_results])
 
   const handleSaveReportClick = () => {
-    const suggested = String(reportName || '').trim() || `Step4 Scenario ${new Date().toISOString().slice(0, 10)}`
+    const suggested = String(reportName || '').trim() || buildNextDefaultScenarioName()
     setSaveNameDraft(suggested)
     setIsSaveModalOpen(true)
   }
 
   const handleConfirmSaveReport = () => {
     if (typeof onSaveReport !== 'function') return
-    const name = String(saveNameDraft || '').trim()
-    if (!name) return
+    const name = String(saveNameDraft || '').trim() || buildNextDefaultScenarioName()
     onSaveReport({
       name,
       reference_mode: selectedReferenceMode,
@@ -968,7 +979,7 @@ const CrossSizePlanner = ({
       <div className="bg-white rounded-lg shadow-md border border-slate-200 p-10 flex flex-col items-center justify-center gap-3">
         <Loader2 className="w-8 h-8 animate-spin text-primary" />
         <div className="text-center">
-          <p className="text-base font-semibold text-body">Updating cross-size planner</p>
+          <p className="text-base font-semibold text-body">Updating scenario planner</p>
           <p className="text-sm text-muted">Recomputing 3-month slab impact from backend model.</p>
         </div>
       </div>
@@ -981,7 +992,7 @@ const CrossSizePlanner = ({
         <AlertCircle className="text-danger flex-shrink-0 mt-0.5" size={20} />
         <div>
           <h4 className="font-semibold text-body">Step 4 Error</h4>
-          <p className="text-muted text-sm">{errorMessage || data?.message || 'Failed to initialize cross-size planner.'}</p>
+          <p className="text-muted text-sm">{errorMessage || data?.message || 'Failed to initialize scenario planner.'}</p>
         </div>
       </div>
     )
@@ -991,7 +1002,7 @@ const CrossSizePlanner = ({
     return (
       <div className="bg-white rounded-lg shadow-md p-8">
         <h3 className="text-xl font-semibold text-body mb-2">Step 4 Requires Step 3 Output</h3>
-        <p className="text-muted">Run Step 3 modeling first. Then Step 4 will initialize the cross-size planner.</p>
+        <p className="text-muted">Run Step 3 modeling first. Then Step 4 will initialize the scenario planner.</p>
         <button
           type="button"
           onClick={() => {
@@ -1009,7 +1020,7 @@ const CrossSizePlanner = ({
     <div className="space-y-4">
       <div className="bg-white rounded-lg shadow-md p-4 sticky top-0 z-10">
         <div className="flex items-start justify-between gap-4">
-          <h3 className="text-xl font-bold text-body">Step 4: Cross-Size Scenario Planner</h3>
+          <h3 className="text-xl font-bold text-body">Step 4: Scenario Planner</h3>
           <div className="flex items-center gap-2 ml-auto">
             <select
               value={selectedReferenceMode}
@@ -1377,7 +1388,7 @@ const CrossSizePlanner = ({
               type="text"
               value={saveNameDraft}
               onChange={(e) => setSaveNameDraft(e.target.value)}
-              placeholder="Enter scenario name"
+              placeholder="QPS Scenario 1"
               className="w-full px-3 py-2 rounded-md border border-slate-300 bg-white text-sm text-body"
             />
             <div className="flex items-center justify-end gap-2">
@@ -1391,8 +1402,7 @@ const CrossSizePlanner = ({
               <button
                 type="button"
                 onClick={handleConfirmSaveReport}
-                disabled={!String(saveNameDraft || '').trim()}
-                className="inline-flex items-center gap-2 px-3 py-2 rounded-md border border-primary text-primary bg-white text-sm font-semibold disabled:opacity-40"
+                className="inline-flex items-center gap-2 px-3 py-2 rounded-md border border-primary text-primary bg-white text-sm font-semibold"
               >
                 <Save className="w-4 h-4" />
                 Save
