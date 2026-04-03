@@ -594,6 +594,24 @@ const RFMAnalysis = () => {
   const [step4SavedReports, setStep4SavedReports] = useState([])
   const [step1AutoCollapseKey, setStep1AutoCollapseKey] = useState(0)
   const step5ScenarioDefs = useMemo(() => buildStep5ScenarioDefinitions(step5ScenarioBuilder), [step5ScenarioBuilder])
+  const step2ActualVolumeByPeriod = useMemo(() => {
+    const map = {}
+    const rows = Array.isArray(slabTrendResult?.series) ? slabTrendResult.series : []
+    rows.forEach((seriesRow) => {
+      const sizeKey = normalizeStep2SizeKey(seriesRow?.size)
+      if (sizeKey !== '12-ML' && sizeKey !== '18-ML') return
+      const points = Array.isArray(seriesRow?.points) ? seriesRow.points : []
+      points.forEach((pt) => {
+        const period = String(pt?.period || '').trim()
+        if (!period) return
+        const vol = Number(pt?.volume || 0)
+        if (!Number.isFinite(vol)) return
+        if (!map[period]) map[period] = {}
+        map[period][sizeKey] = Number(map[period][sizeKey] || 0) + vol
+      })
+    })
+    return map
+  }, [slabTrendResult?.series])
 
   // Fetch initial available filters
   const { data: availableFilters, isLoading: filtersLoading } = useQuery({
@@ -3060,6 +3078,17 @@ const RFMAnalysis = () => {
               isLoading={forecastMutation.isPending}
               isError={forecastMutation.isError || Boolean(forecastErrorMessage)}
               errorMessage={forecastErrorMessage || forecastMutation.error?.message}
+              actualVolumeByPeriod={step2ActualVolumeByPeriod}
+              demoTargets={{
+                scenario: {
+                  '12-ML': 4277350,
+                  '18-ML': 2726368,
+                },
+                ly: {
+                  '12-ML': 1756159,
+                  '18-ML': 3918745,
+                },
+              }}
             />
 
             {plannerResult?.success && (
