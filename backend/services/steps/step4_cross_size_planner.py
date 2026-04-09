@@ -50,6 +50,30 @@ class _AIJobCancelled(Exception):
 
 
 class Step4CrossSizePlannerMixin:
+    def _forecast_unbounded_series(self, values: List[float], forecast_months: int) -> np.ndarray:
+        arr = np.asarray(values or [], dtype=float)
+        if arr.size == 0:
+            return np.zeros(int(forecast_months), dtype=float)
+        if arr.size == 1:
+            return np.repeat(float(arr[0]), int(forecast_months))
+
+        if Holt is not None and arr.size >= 3:
+            try:
+                fitted = Holt(
+                    arr,
+                    exponential=False,
+                    damped_trend=False,
+                    initialization_method="estimated",
+                ).fit(optimized=True)
+                return np.asarray(fitted.forecast(int(forecast_months)), dtype=float)
+            except Exception:
+                pass
+
+        x = np.arange(arr.size, dtype=float)
+        slope, intercept = np.polyfit(x, arr, 1)
+        future_x = np.arange(arr.size, arr.size + int(forecast_months), dtype=float)
+        return np.asarray(intercept + (slope * future_x), dtype=float)
+
     def _extract_first_json_object(self, text: str) -> Optional[Dict[str, Any]]:
         raw = str(text or "").strip()
         if not raw:
@@ -2732,6 +2756,7 @@ class Step4CrossSizePlannerMixin:
 
                     last_row = model_df.iloc[-1]
                     coeff = modeled['coefficients']
+                    stage2_model = modeled['stage2_model']
                     base_discount_hist = pd.to_numeric(
                         model_df.get('base_discount_pct', pd.Series(dtype=float)),
                         errors='coerce',
@@ -2759,16 +2784,20 @@ class Step4CrossSizePlannerMixin:
                             clp_price_for_slab = float(clp_unit_series.iloc[-1])
                     cogs_for_slab = float(self._resolve_modeling_cogs_for_size(request, size_key, 0.0))
 
-                    baseline_series = pd.to_numeric(
-                        model_df.get('non_discount_baseline_quantity', pd.Series(dtype=float)),
+                    residual_hist = pd.to_numeric(
+                        model_df.get('residual_store', pd.Series(dtype=float)),
                         errors='coerce',
                     ).fillna(0.0).to_numpy(dtype=float)
-                    if baseline_series.size == 0:
-                        baseline_series = pd.to_numeric(
-                            model_df.get('baseline_quantity', pd.Series(dtype=float)),
-                            errors='coerce',
-                        ).fillna(0.0).to_numpy(dtype=float)
-                    baseline_forecast = self._forecast_baseline_series(baseline_series.tolist(), forecast_months)
+                    residual_forecast = self._forecast_unbounded_series(residual_hist.tolist(), forecast_months)
+                    zeros_forecast = np.zeros(int(forecast_months), dtype=float)
+                    baseline_forecast = self._predict_stage2_quantity(
+                        stage2_model,
+                        residual_forecast,
+                        zeros_forecast,
+                        zeros_forecast,
+                        zeros_forecast,
+                        extra_feature_values={'other_slabs_weighted_base_discount_pct': zeros_forecast},
+                    )
                     baseline_forecast = np.clip(np.asarray(baseline_forecast, dtype=float), 0.0, None)
 
                     slab_rows.append(

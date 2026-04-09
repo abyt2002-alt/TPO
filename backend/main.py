@@ -514,6 +514,11 @@ async def get_cascading_filters(filters: Dict[str, List[str]]):
         df_for_sizes = df_for_brands
         if brands:
             df_for_sizes = df_for_sizes[df_for_sizes["Brand"].isin(brands)]
+        df_for_outlet_classifications = df_for_sizes
+        if filters.get("sizes"):
+            df_for_outlet_classifications = df_for_outlet_classifications[
+                df_for_outlet_classifications["Sizes"].isin(filters.get("sizes") or [])
+            ]
 
         return {
             "states": sorted(df_all["Final_State"].dropna().unique().tolist()),
@@ -521,6 +526,9 @@ async def get_cascading_filters(filters: Dict[str, List[str]]):
             "subcategories": sorted(df_for_subcategories["Subcategory"].dropna().unique().tolist()),
             "brands": sorted(df_for_brands["Brand"].dropna().unique().tolist()),
             "sizes": sorted(df_for_sizes["Sizes"].dropna().unique().tolist()),
+            "outlet_classifications": rfm_service._normalized_outlet_classification_options(
+                df_for_outlet_classifications["Final_Outlet_Classification"]
+            ) if "Final_Outlet_Classification" in df_for_outlet_classifications.columns else [],
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

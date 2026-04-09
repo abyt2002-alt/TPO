@@ -15,13 +15,13 @@ const slabSortKey = (value) => {
 const formatSignedPct = (value) => {
   const n = Number(value)
   if (!Number.isFinite(n)) return 'NA'
-  if (Math.abs(n) < 1e-9) return '+0.00%'
+  if (Math.abs(n) < 0.005) return '+0.00%'
   return `${n >= 0 ? '+' : ''}${n.toFixed(2)}%`
 }
 
 const pctToneClass = (value) => {
   const n = Number(value)
-  if (!Number.isFinite(n) || Math.abs(n) < 1e-9) return 'text-muted'
+  if (!Number.isFinite(n) || Math.abs(n) < 0.005) return 'text-muted'
   return n > 0 ? 'text-success' : 'text-danger'
 }
 
@@ -313,6 +313,7 @@ const CrossSizePlanner = ({
   onDisplayReferenceModeChange,
   referenceByMode = {},
   onInitialize,
+  onComputedDataChange,
   onSaveReport,
   saveReportMessage = '',
   savedReports = [],
@@ -871,10 +872,13 @@ const CrossSizePlanner = ({
   const selectedReferenceSummary = useMemo(() => {
     const preferred = referenceByMode?.[selectedReferenceMode]?.summary_3m
     if (preferred && typeof preferred === 'object') return preferred
-    const fallback = referenceByMode?.last_3m_before_projection?.summary_3m
-    if (fallback && typeof fallback === 'object') return fallback
     return computedPlannerData?.summary_3m || {}
   }, [referenceByMode, selectedReferenceMode, computedPlannerData?.summary_3m])
+
+  useEffect(() => {
+    if (typeof onComputedDataChange !== 'function') return
+    onComputedDataChange(computedPlannerData)
+  }, [computedPlannerData, onComputedDataChange])
 
   const buildNextDefaultScenarioName = () => {
     const used = new Set()
@@ -1146,10 +1150,10 @@ const CrossSizePlanner = ({
             const revenueNetPct = hasReference
               ? Number(referenceRevenueNet > 0 ? ((revenueNetAbs - referenceRevenueNet) / referenceRevenueNet) * 100 : 0)
               : Number(summary.revenue_net_delta_pct || 0)
-            const grossMarginAbs = revenueGrossAbs > 0 ? ((profitAbs / revenueGrossAbs) * 100) : 0
-            const referenceGrossMargin = referenceRevenueGross > 0 ? ((referenceProfit / referenceRevenueGross) * 100) : 0
-            const grossMarginPct = hasReference
-              ? Number(grossMarginAbs - referenceGrossMargin)
+            const netMarginAbs = revenueNetAbs > 0 ? ((profitAbs / revenueNetAbs) * 100) : 0
+            const referenceNetMargin = referenceRevenueNet > 0 ? ((referenceProfit / referenceRevenueNet) * 100) : 0
+            const netMarginPct = hasReference
+              ? Number(netMarginAbs - referenceNetMargin)
               : 0
             const hasReferenceInvestment = referenceInvestment > 0
             const investmentPct = hasReferenceInvestment
@@ -1166,7 +1170,7 @@ const CrossSizePlanner = ({
                 <p className="text-sm font-semibold text-body">{card.title}</p>
                 <div className={`grid gap-3 mt-3 ${card.isTotal ? 'grid-cols-2 md:grid-cols-3' : 'grid-cols-2 md:grid-cols-4'}`}>
                   <div className="min-w-0">
-                    <p className="text-[10px] uppercase tracking-wide text-muted">Volume</p>
+                    <p className="text-[10px] uppercase tracking-wide text-muted">{card.isTotal ? 'Volume Units' : 'Volume'}</p>
                     <p className="text-xl md:text-2xl leading-tight mt-2 font-semibold text-body whitespace-nowrap">{formatCompact(volumeAbs)}</p>
                     <p className={`text-sm font-semibold mt-1 ${pctToneClass(volumePct)}`}>
                       {formatSignedPct(volumePct)}
@@ -1187,10 +1191,10 @@ const CrossSizePlanner = ({
                     </p>
                   </div>
                   <div className="min-w-0">
-                    <p className="text-[10px] uppercase tracking-wide text-muted">Gross Margin %</p>
-                    <p className="text-xl md:text-2xl leading-tight mt-2 font-semibold text-body whitespace-nowrap">{formatFixed(grossMarginAbs, 2)}%</p>
-                    <p className={`text-sm font-semibold mt-1 ${pctToneClass(grossMarginPct)}`}>
-                      {formatSignedPct(grossMarginPct)}
+                    <p className="text-[10px] uppercase tracking-wide text-muted">Net Margin %</p>
+                    <p className="text-xl md:text-2xl leading-tight mt-2 font-semibold text-body whitespace-nowrap">{formatFixed(netMarginAbs, 2)}%</p>
+                    <p className={`text-sm font-semibold mt-1 ${pctToneClass(netMarginPct)}`}>
+                      {formatSignedPct(netMarginPct)}
                     </p>
                   </div>
                   {card.isTotal ? (

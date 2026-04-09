@@ -10,6 +10,7 @@ class RFMRequest(BaseModel):
     subcategories: Optional[List[str]] = None
     brands: Optional[List[str]] = None
     sizes: Optional[List[str]] = None
+    outlet_classifications: Optional[List[str]] = None
     recency_threshold: int = Field(default=90, ge=30, le=180)
     frequency_threshold: int = Field(default=20, ge=1, le=100)
     page: int = Field(default=1, ge=1)
@@ -26,6 +27,7 @@ class RFMRequest(BaseModel):
                 "subcategories": [],
                 "brands": [],
                 "sizes": [],
+                "outlet_classifications": [],
                 "recency_threshold": 90,
                 "frequency_threshold": 20,
                 "page": 1,

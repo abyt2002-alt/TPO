@@ -555,6 +555,7 @@ const RFMAnalysis = () => {
   const [modelingResult, setModelingResult] = useState(null)
   const [modelingErrorMessage, setModelingErrorMessage] = useState('')
   const [plannerResult, setPlannerResult] = useState(null)
+  const [plannerDisplayResult, setPlannerDisplayResult] = useState(null)
   const [plannerErrorMessage, setPlannerErrorMessage] = useState('')
   const [plannerDefaultByReference, setPlannerDefaultByReference] = useState({})
   const [forecastResult, setForecastResult] = useState(null)
@@ -593,6 +594,15 @@ const RFMAnalysis = () => {
   const [step5SavedReports, setStep5SavedReports] = useState([])
   const [step4SavedReports, setStep4SavedReports] = useState([])
   const [step1AutoCollapseKey, setStep1AutoCollapseKey] = useState(0)
+  const activePlannerReferenceMode = String(step4DisplayReferenceMode || 'ly_same_3m')
+  const activePlannerBaseResult = useMemo(() => {
+    const byMode = plannerDefaultByReference?.[activePlannerReferenceMode]
+    if (byMode?.success) return byMode
+    if (plannerResult?.success && String(plannerResult?.reference_mode || 'ly_same_3m') === activePlannerReferenceMode) {
+      return plannerResult
+    }
+    return plannerResult?.success ? plannerResult : null
+  }, [plannerDefaultByReference, activePlannerReferenceMode, plannerResult])
   const step5ScenarioDefs = useMemo(() => buildStep5ScenarioDefinitions(step5ScenarioBuilder), [step5ScenarioBuilder])
   const step2ActualVolumeByPeriod = useMemo(() => {
     const map = {}
@@ -749,6 +759,7 @@ const RFMAnalysis = () => {
       const isCacheOnly = Boolean(variables?.cache_only)
       if (!isCacheOnly) {
         setPlannerResult(data)
+        setPlannerDisplayResult(data)
         setPlannerErrorMessage('')
       }
       const scenarioByPeriod = variables?.scenario_discounts_by_period
@@ -792,8 +803,8 @@ const RFMAnalysis = () => {
         reference_mode: step4DisplayReferenceMode || 'ly_same_3m',
       })
 
-      const defaultResponse = plannerResult?.success
-        ? plannerResult
+      const defaultResponse = activePlannerBaseResult?.success
+        ? activePlannerBaseResult
         : await calculateCrossSizePlanner(basePayload)
 
       if (!defaultResponse?.success) {
@@ -808,21 +819,21 @@ const RFMAnalysis = () => {
         volume_pct: Number(summaryBlock?.vs_reference_volume_pct ?? 0),
         revenue_pct: Number(summaryBlock?.vs_reference_revenue_pct ?? 0),
         gross_margin_pct: (
-          Number(summaryBlock?.scenario_revenue ?? 0) > 0 &&
-          Number(summaryBlock?.reference_revenue ?? 0) > 0
+          Number(summaryBlock?.scenario_revenue_net ?? summaryBlock?.scenario_revenue ?? 0) > 0 &&
+          Number(summaryBlock?.reference_revenue_net ?? summaryBlock?.reference_revenue ?? 0) > 0
         )
           ? (
-            ((Number(summaryBlock?.scenario_profit ?? 0) / Number(summaryBlock?.scenario_revenue ?? 0)) * 100) -
-            ((Number(summaryBlock?.reference_profit ?? 0) / Number(summaryBlock?.reference_revenue ?? 0)) * 100)
+            ((Number(summaryBlock?.scenario_profit ?? 0) / Number(summaryBlock?.scenario_revenue_net ?? summaryBlock?.scenario_revenue ?? 0)) * 100) -
+            ((Number(summaryBlock?.reference_profit ?? 0) / Number(summaryBlock?.reference_revenue_net ?? summaryBlock?.reference_revenue ?? 0)) * 100)
           )
           : Number(summaryBlock?.vs_reference_profit_pct ?? 0),
         profit_pct: (
-          Number(summaryBlock?.scenario_revenue ?? 0) > 0 &&
-          Number(summaryBlock?.reference_revenue ?? 0) > 0
+          Number(summaryBlock?.scenario_revenue_net ?? summaryBlock?.scenario_revenue ?? 0) > 0 &&
+          Number(summaryBlock?.reference_revenue_net ?? summaryBlock?.reference_revenue ?? 0) > 0
         )
           ? (
-            ((Number(summaryBlock?.scenario_profit ?? 0) / Number(summaryBlock?.scenario_revenue ?? 0)) * 100) -
-            ((Number(summaryBlock?.reference_profit ?? 0) / Number(summaryBlock?.reference_revenue ?? 0)) * 100)
+            ((Number(summaryBlock?.scenario_profit ?? 0) / Number(summaryBlock?.scenario_revenue_net ?? summaryBlock?.scenario_revenue ?? 0)) * 100) -
+            ((Number(summaryBlock?.reference_profit ?? 0) / Number(summaryBlock?.reference_revenue_net ?? summaryBlock?.reference_revenue ?? 0)) * 100)
           )
           : Number(summaryBlock?.vs_reference_profit_pct ?? 0),
         scenario_investment: Number(summaryBlock?.scenario_investment ?? 0),
@@ -1223,8 +1234,10 @@ const RFMAnalysis = () => {
         }
         if (restored?.step4_result) {
           setPlannerResult(restored.step4_result)
+          setPlannerDisplayResult(restored.step4_result)
         } else if (state?.step4_result) {
           setPlannerResult(state.step4_result)
+          setPlannerDisplayResult(state.step4_result)
         }
         const restoredForecast = restored?.step5_result || state?.step5_result || null
         setForecastResult(isStaleForecastResult(restoredForecast) ? null : restoredForecast)
@@ -1340,6 +1353,7 @@ const RFMAnalysis = () => {
       ...FIXED_STAGE3_SETTINGS,
     })
     setPlannerResult(null)
+    setPlannerDisplayResult(null)
     setPlannerErrorMessage('')
     setPlannerDefaultByReference({})
     setForecastResult(null)
@@ -1377,6 +1391,7 @@ const RFMAnalysis = () => {
     }))
     setModelingResult(null)
     setPlannerResult(null)
+    setPlannerDisplayResult(null)
     setPlannerDefaultByReference({})
     setForecastResult(null)
     setScenarioResult(null)
@@ -1391,6 +1406,7 @@ const RFMAnalysis = () => {
     setModelingResult(null)
     setModelingErrorMessage('')
     setPlannerResult(null)
+    setPlannerDisplayResult(null)
     setPlannerErrorMessage('')
     setPlannerDefaultByReference({})
     setForecastResult(null)
@@ -1463,6 +1479,7 @@ const RFMAnalysis = () => {
       ...step2Filters,
     }
     setPlannerResult(null)
+    setPlannerDisplayResult(null)
     setPlannerErrorMessage('')
     setPlannerDefaultByReference({})
     setForecastResult(null)
@@ -1816,6 +1833,106 @@ const RFMAnalysis = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeStepTab, modelingResult?.success, Boolean(plannerDefaultByReference?.ly_same_3m)])
 
+  useEffect(() => {
+    if (activeStepTab !== 'step4' && activeStepTab !== 'step5') return
+    if (!modelingResult?.success) return
+    if (plannerDefaultByReference?.[activePlannerReferenceMode]) return
+    handleFetchPlannerReference(activePlannerReferenceMode)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    activeStepTab,
+    modelingResult?.success,
+    activePlannerReferenceMode,
+    Boolean(plannerDefaultByReference?.[activePlannerReferenceMode]),
+  ])
+
+  useEffect(() => {
+    const rows = Array.isArray(scenarioResult?.scenarios) ? scenarioResult.scenarios : []
+    if (activeStepTab !== 'step5') return
+    if (!activePlannerBaseResult?.success) return
+    if (!rows.length) return
+    if (String(scenarioResult?.reference_mode || '') === activePlannerReferenceMode) return
+
+    const periods = normalizePlannerPeriodsFromData(activePlannerBaseResult)
+    if (!periods.length) return
+
+    const readMetric = (summaryBlock = {}) => ({
+      volume: Number(summaryBlock?.final_qty ?? summaryBlock?.scenario_qty_additive ?? 0),
+      revenue: Number(summaryBlock?.scenario_revenue ?? 0),
+      profit: Number(summaryBlock?.scenario_profit ?? 0),
+      volume_pct: Number(summaryBlock?.vs_reference_volume_pct ?? 0),
+      revenue_pct: Number(summaryBlock?.vs_reference_revenue_pct ?? 0),
+      gross_margin_pct: (
+        Number(summaryBlock?.scenario_revenue_net ?? summaryBlock?.scenario_revenue ?? 0) > 0 &&
+        Number(summaryBlock?.reference_revenue_net ?? summaryBlock?.reference_revenue ?? 0) > 0
+      )
+        ? (
+          ((Number(summaryBlock?.scenario_profit ?? 0) / Number(summaryBlock?.scenario_revenue_net ?? summaryBlock?.scenario_revenue ?? 0)) * 100) -
+          ((Number(summaryBlock?.reference_profit ?? 0) / Number(summaryBlock?.reference_revenue_net ?? summaryBlock?.reference_revenue ?? 0)) * 100)
+        )
+        : Number(summaryBlock?.vs_reference_profit_pct ?? 0),
+      profit_pct: (
+        Number(summaryBlock?.scenario_revenue_net ?? summaryBlock?.scenario_revenue ?? 0) > 0 &&
+        Number(summaryBlock?.reference_revenue_net ?? summaryBlock?.reference_revenue ?? 0) > 0
+      )
+        ? (
+          ((Number(summaryBlock?.scenario_profit ?? 0) / Number(summaryBlock?.scenario_revenue_net ?? summaryBlock?.scenario_revenue ?? 0)) * 100) -
+          ((Number(summaryBlock?.reference_profit ?? 0) / Number(summaryBlock?.reference_revenue_net ?? summaryBlock?.reference_revenue ?? 0)) * 100)
+        )
+        : Number(summaryBlock?.vs_reference_profit_pct ?? 0),
+      scenario_investment: Number(summaryBlock?.scenario_investment ?? 0),
+      reference_investment: Number(summaryBlock?.reference_investment ?? 0),
+      investment_pct: Number(
+        summaryBlock?.vs_reference_investment_pct ??
+        summaryBlock?.investment_delta_pct ??
+        summaryBlock?.investment_change_positive_vs_reference_pct ??
+        0
+      ),
+    })
+
+    const recomputedRows = rows.map((row) => {
+      try {
+        const response = computeCrossSizePlannerData({
+          data: activePlannerBaseResult,
+          periods,
+          scenarioDiscountsByPeriod: row?.scenario_discounts_by_period || {},
+          applyTerminalLagStart: true,
+        })
+        const summary = response?.summary_3m || {}
+        return {
+          ...row,
+          success: Boolean(response?.success),
+          message: response?.message || '',
+          summary: {
+            '12-ML': readMetric(summary?.['12-ML']),
+            '18-ML': readMetric(summary?.['18-ML']),
+            TOTAL: {
+              ...readMetric(summary?.TOTAL),
+              volume_ml: Number(summary?.TOTAL?.final_volume_ml ?? summary?.TOTAL?.scenario_volume_ml_additive ?? 0),
+              volume_ml_pct: Number(summary?.TOTAL?.vs_reference_volume_ml_pct ?? 0),
+            },
+          },
+        }
+      } catch (error) {
+        return {
+          ...row,
+          success: false,
+          message: error?.message || 'Failed to recompute scenario',
+          summary: null,
+        }
+      }
+    })
+
+    setScenarioResult((prev) => {
+      if (!prev) return prev
+      return {
+        ...prev,
+        reference_mode: activePlannerReferenceMode,
+        scenarios: recomputedRows,
+      }
+    })
+  }, [activeStepTab, activePlannerBaseResult, activePlannerReferenceMode, scenarioResult])
+
   const buildScenarioMatrixFromPeriodMap = useCallback((scenarioByPeriod, periods) => {
     const periodKeys = Array.isArray(periods) ? periods.map((p) => String(p)) : []
     const matrix = {}
@@ -1922,7 +2039,9 @@ const RFMAnalysis = () => {
     }
     const payload = record?.payload || {}
     const scenarioByPeriod = payload?.scenario_discounts_by_period || {}
-    const periods = Array.isArray(plannerResult?.periods) ? plannerResult.periods.map((p) => String(p)) : []
+    const periods = Array.isArray(activePlannerBaseResult?.periods)
+      ? activePlannerBaseResult.periods.map((p) => String(p))
+      : []
     if (!periods.length || !scenarioByPeriod || Object.keys(scenarioByPeriod).length === 0) {
       setStep4ReportMessage('Saved scenario has no discount map')
       return
@@ -1935,12 +2054,19 @@ const RFMAnalysis = () => {
         scenario_matrix: scenarioMatrix,
       }
     })
+    setPlannerDisplayResult((prev) => {
+      if (!prev || !prev.success) return prev
+      return {
+        ...prev,
+        scenario_matrix: scenarioMatrix,
+      }
+    })
     const refMode = String(record?.reference_mode || '').trim()
     if (refMode === 'ly_same_3m' || refMode === 'last_3m_before_projection') {
       setStep4DisplayReferenceMode(refMode)
     }
     setStep4ReportMessage(`Loaded: ${String(record?.name || key)}`)
-  }, [plannerResult?.periods, buildScenarioMatrixFromPeriodMap, step4SavedReports])
+  }, [activePlannerBaseResult?.periods, buildScenarioMatrixFromPeriodMap, step4SavedReports])
 
   const handleDeleteStep4SavedReport = useCallback((reportKey) => {
     const key = String(reportKey || '').trim()
@@ -2074,7 +2200,7 @@ const RFMAnalysis = () => {
     pushMetricMin('18-ML volume change', thresholds?.min_18_volume_pct)
     pushMetricMin('TOTAL volume change', thresholds?.min_total_volume_pct)
     pushMetricMin('TOTAL revenue change', thresholds?.min_revenue_pct)
-    pushMetricMin('TOTAL gross margin change', thresholds?.min_gross_margin_pct ?? thresholds?.min_profit_pct)
+    pushMetricMin('TOTAL net margin change', thresholds?.min_gross_margin_pct ?? thresholds?.min_profit_pct)
     pushMetricMin('TOTAL investment change', thresholds?.min_investment_pct)
     pushMetricMax('TOTAL investment change', thresholds?.max_investment_pct)
     pushMetricMax('TOTAL CTS (investment/revenue)', thresholds?.max_cts_pct)
@@ -2270,6 +2396,7 @@ const RFMAnalysis = () => {
     setModelingResult(null)
     setModelingErrorMessage('')
     setPlannerResult(null)
+    setPlannerDisplayResult(null)
     setPlannerErrorMessage('')
     setPlannerDefaultByReference({})
     setForecastResult(null)
@@ -3063,6 +3190,7 @@ const RFMAnalysis = () => {
               displayReferenceMode={step4DisplayReferenceMode}
               onDisplayReferenceModeChange={setStep4DisplayReferenceMode}
               referenceByMode={plannerDefaultByReference}
+              onComputedDataChange={setPlannerDisplayResult}
               onSaveReport={handleSaveStep4Report}
               saveReportMessage={step4ReportMessage}
               savedReports={step4SavedReports}
@@ -3075,20 +3203,11 @@ const RFMAnalysis = () => {
 
             <BaselineForecast
               data={forecastResult}
+              plannerData={plannerDisplayResult || plannerResult}
               isLoading={forecastMutation.isPending}
               isError={forecastMutation.isError || Boolean(forecastErrorMessage)}
               errorMessage={forecastErrorMessage || forecastMutation.error?.message}
               actualVolumeByPeriod={step2ActualVolumeByPeriod}
-              demoTargets={{
-                scenario: {
-                  '12-ML': 4277350,
-                  '18-ML': 2726368,
-                },
-                ly: {
-                  '12-ML': 1756159,
-                  '18-ML': 3918745,
-                },
-              }}
             />
 
             {plannerResult?.success && (

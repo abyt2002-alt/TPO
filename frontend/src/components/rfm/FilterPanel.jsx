@@ -1,23 +1,17 @@
 import { useState, useMemo, useEffect } from 'react'
 import { Filter, Play, ChevronDown, ChevronUp, Search, X } from 'lucide-react'
 
-const isMaskedFilterLabel = (label = '') => {
-  const key = String(label || '').trim().toLowerCase()
-  return key === 'category(ies)' || key === 'subcategory(ies)' || key === 'brand(s)'
-}
-
 const MultiSelectDropdown = ({ label, options, selectedValues, onChange, placeholder, disabled = false }) => {
   const [isOpen, setIsOpen] = useState(false)
   const [searchTerm, setSearchTerm] = useState('')
-  const isMaskedField = useMemo(() => isMaskedFilterLabel(label), [label])
-  const toDisplayLabel = (rawValue) => (isMaskedField ? 'Haircolor' : String(rawValue || ''))
+  const toDisplayLabel = (rawValue) => String(rawValue || '')
 
   const filteredOptions = useMemo(() => {
     if (!searchTerm) return options || []
     return (options || []).filter((option) =>
       toDisplayLabel(option).toLowerCase().includes(searchTerm.toLowerCase())
     )
-  }, [options, searchTerm, isMaskedField])
+  }, [options, searchTerm])
 
   const handleToggle = (value) => {
     if (disabled) return
@@ -248,21 +242,21 @@ const FilterPanel = ({
 
               <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
                 <MultiSelectDropdown
-                  label="Category(ies)"
+                  label="Category"
                   options={availableFilters?.categories || []}
                   selectedValues={filters.categories}
                   onChange={(values) => onFilterChange('categories', values)}
                   placeholder="All Categories"
                 />
                 <MultiSelectDropdown
-                  label="Subcategory(ies)"
+                  label="Subcategory"
                   options={availableFilters?.subcategories || []}
                   selectedValues={filters.subcategories}
                   onChange={(values) => onFilterChange('subcategories', values)}
                   placeholder="All Subcategories"
                 />
                 <MultiSelectDropdown
-                  label="Brand(s)"
+                  label="Brand"
                   options={availableFilters?.brands || []}
                   selectedValues={filters.brands}
                   onChange={(values) => onFilterChange('brands', values)}
@@ -401,21 +395,21 @@ const FilterPanel = ({
             {expandedSections.products && (
               <div className="p-3 pt-0 space-y-3 border-t border-gray-200">
                 <MultiSelectDropdown
-                  label="Category(ies)"
+                  label="Category"
                   options={availableFilters?.categories || []}
                   selectedValues={filters.categories}
                   onChange={(values) => onFilterChange('categories', values)}
                   placeholder="All Categories"
                 />
                 <MultiSelectDropdown
-                  label="Subcategory(ies)"
+                  label="Subcategory"
                   options={availableFilters?.subcategories || []}
                   selectedValues={filters.subcategories}
                   onChange={(values) => onFilterChange('subcategories', values)}
                   placeholder="All Subcategories"
                 />
                 <MultiSelectDropdown
-                  label="Brand(s)"
+                  label="Brand"
                   options={availableFilters?.brands || []}
                   selectedValues={filters.brands}
                   onChange={(values) => onFilterChange('brands', values)}
