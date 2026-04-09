@@ -40,6 +40,14 @@ from models.rfm_models import (
 
 class ScopeBuilderMixin:
 
+    def _normalized_outlet_classification_options(self, series: pd.Series) -> List[str]:
+        if series is None:
+            return []
+        normalized = self._to_step2_outlet_group_series(series)
+        values = [x for x in normalized.dropna().astype(str).unique().tolist() if x]
+        order = {'OtherGT': 0, 'WH': 1}
+        return sorted(values, key=lambda x: (order.get(x, 99), x))
+
     def _apply_base_filters(self, df: pd.DataFrame, request: RFMRequest) -> pd.DataFrame:
         if request.states:
             df = df[df['Final_State'].isin(request.states)]
@@ -53,7 +61,14 @@ class ScopeBuilderMixin:
             df = df[df['Sizes'].isin(request.sizes)]
         if getattr(request, 'outlet_classifications', None):
             if 'Final_Outlet_Classification' in df.columns:
-                df = df[df['Final_Outlet_Classification'].isin(request.outlet_classifications)]
+                normalized_targets = set(
+                    self._normalize_step2_outlet_classifications(
+                        list(getattr(request, 'outlet_classifications', None) or [])
+                    )
+                )
+                if normalized_targets:
+                    class_groups = self._to_step2_outlet_group_series(df['Final_Outlet_Classification'])
+                    df = df[class_groups.isin(normalized_targets)]
         return df
 
 

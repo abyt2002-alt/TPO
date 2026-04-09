@@ -177,7 +177,7 @@ const buildSavedScenariosWorkbookXml = (reports = []) => {
       ['Metric', '12-ML', '18-ML', 'TOTAL'],
       ['Volume %', Number(totals?.['12-ML']?.volume_pct ?? 0), Number(totals?.['18-ML']?.volume_pct ?? 0), Number(totals?.TOTAL?.volume_ml_pct ?? totals?.TOTAL?.volume_pct ?? 0)],
       ['Revenue %', Number(totals?.['12-ML']?.revenue_pct ?? 0), Number(totals?.['18-ML']?.revenue_pct ?? 0), Number(totals?.TOTAL?.revenue_pct ?? 0)],
-      ['Gross Margin %', Number(totals?.['12-ML']?.profit_pct ?? 0), Number(totals?.['18-ML']?.profit_pct ?? 0), Number(totals?.TOTAL?.profit_pct ?? 0)],
+      ['Net Margin %', Number(totals?.['12-ML']?.profit_pct ?? 0), Number(totals?.['18-ML']?.profit_pct ?? 0), Number(totals?.TOTAL?.profit_pct ?? 0)],
       ['Investment %', Number(totals?.['12-ML']?.investment_pct ?? 0), Number(totals?.['18-ML']?.investment_pct ?? 0), Number(totals?.TOTAL?.investment_pct ?? 0)],
     ]
 
@@ -214,12 +214,42 @@ const buildSavedScenariosWorkbookXml = (reports = []) => {
 </Workbook>`
 }
 
-const enforceNonDecreasingLadder = (mapObj = {}) => {
+const enforceNonDecreasingLadder = (mapObj = {}, changedSlabKey = null, changedValue = null) => {
   const entries = sortSlabEntries(mapObj)
+  const keys = entries.map(([slabKey]) => String(slabKey))
+  if (!keys.length) return {}
+
   const out = {}
+  keys.forEach((slabKey) => {
+    out[slabKey] = clampDiscount(mapObj?.[slabKey])
+  })
+
+  const target = String(changedSlabKey || '').trim()
+  if (target && Object.prototype.hasOwnProperty.call(out, target)) {
+    out[target] = clampDiscount(changedValue)
+    const idx = keys.indexOf(target)
+    if (idx >= 0) {
+      for (let i = idx + 1; i < keys.length; i += 1) {
+        const prevKey = keys[i - 1]
+        const currKey = keys[i]
+        if (Number(out[currKey]) < Number(out[prevKey])) {
+          out[currKey] = Number(out[prevKey].toFixed(2))
+        }
+      }
+      for (let i = idx - 1; i >= 0; i -= 1) {
+        const nextKey = keys[i + 1]
+        const currKey = keys[i]
+        if (Number(out[currKey]) > Number(out[nextKey])) {
+          out[currKey] = Number(out[nextKey].toFixed(2))
+        }
+      }
+      return out
+    }
+  }
+
   let floor = 5
-  entries.forEach(([slabKey, raw]) => {
-    const current = clampDiscount(raw)
+  keys.forEach((slabKey) => {
+    const current = clampDiscount(out[slabKey])
     const next = Math.max(floor, current)
     out[slabKey] = Number(next.toFixed(2))
     floor = out[slabKey]
@@ -253,8 +283,41 @@ const ScenarioBarTooltip = ({ active, payload, label }) => {
       <div className="text-[11px] text-muted mb-1">{scenarioName}</div>
       <div className="text-blue-800">Volume: {fmtPct(read('volume_pct'))}</div>
       <div className="text-green-700">Revenue: {fmtPct(read('revenue_pct'))}</div>
-      <div className="text-orange-700">Gross Margin: {fmtPct(read('profit_pct'))}</div>
+      <div className="text-orange-700">Net Margin: {fmtPct(read('profit_pct'))}</div>
     </div>
+  )
+}
+
+const SCENARIO_CHART_LABEL_KEYS = ['volume_pct', 'revenue_pct', 'profit_pct']
+
+const ScenarioBarValueLabel = (props) => {
+  const { x, y, width, value, payload, dataKey } = props || {}
+  const numericValue = Number(value)
+  if (!Number.isFinite(numericValue)) return null
+
+  const metrics = SCENARIO_CHART_LABEL_KEYS
+    .map((key) => ({
+      key,
+      value: Number(payload?.[key] || 0),
+    }))
+    .sort((a, b) => b.value - a.value)
+
+  const lane = Math.max(0, metrics.findIndex((entry) => entry.key === dataKey))
+  const centerX = Number(x || 0) + (Number(width || 0) / 2)
+  const baseY = Number(y || 0) - 8
+  const labelY = baseY - (lane * 14)
+
+  return (
+    <text
+      x={centerX}
+      y={labelY}
+      textAnchor="middle"
+      fontSize={11}
+      fontWeight={800}
+      fill="#0f172a"
+    >
+      {fmtPct(numericValue)}
+    </text>
   )
 }
 
@@ -365,6 +428,7 @@ const readSummary = (row, sizeKey) => {
     ? invPctDirect
     : (Number.isFinite(invPctDerived) ? invPctDerived : Number.NaN)
   const revenueAbs = Number(
+    block?.scenario_revenue_net ??
     block?.scenario_revenue ??
     block?.revenue ??
     block?.scenarioRevenue
@@ -375,6 +439,7 @@ const readSummary = (row, sizeKey) => {
     block?.scenarioProfit
   )
   const referenceRevenueAbs = Number(
+    block?.reference_revenue_net ??
     block?.reference_revenue ??
     block?.ref_revenue
   )
@@ -382,24 +447,26 @@ const readSummary = (row, sizeKey) => {
     block?.reference_profit ??
     block?.ref_profit
   )
-  const scenarioGrossMargin = (
+  const scenarioNetMargin = (
     Number.isFinite(revenueAbs) &&
     revenueAbs > 0 &&
     Number.isFinite(profitAbs)
   ) ? ((profitAbs / revenueAbs) * 100) : Number.NaN
-  const referenceGrossMargin = (
+  const referenceNetMargin = (
     Number.isFinite(referenceRevenueAbs) &&
     referenceRevenueAbs > 0 &&
     Number.isFinite(referenceProfitAbs)
   ) ? ((referenceProfitAbs / referenceRevenueAbs) * 100) : Number.NaN
-  const grossMarginDirect = Number(block?.gross_margin_pct)
-  const grossMarginPct = Number.isFinite(grossMarginDirect)
-    ? grossMarginDirect
+  const netMarginDirect = Number(block?.net_margin_pct ?? block?.gross_margin_pct)
+  const netMarginPct = (
+    Number.isFinite(scenarioNetMargin) && Number.isFinite(referenceNetMargin)
+  )
+    ? (scenarioNetMargin - referenceNetMargin)
+    : (Number.isFinite(netMarginDirect)
+      ? netMarginDirect
     : (
-      Number.isFinite(scenarioGrossMargin) && Number.isFinite(referenceGrossMargin)
-        ? (scenarioGrossMargin - referenceGrossMargin)
-        : toNum(block?.profit_pct || 0)
-    )
+      toNum(block?.profit_pct || 0)
+    ))
   const ctsPct = (
     Number.isFinite(invScenarioAbs) &&
     Number.isFinite(revenueAbs) &&
@@ -411,8 +478,8 @@ const readSummary = (row, sizeKey) => {
     profit: toNum(block?.profit || 0),
     volume_pct: toNum(block?.volume_pct || 0),
     revenue_pct: toNum(block?.revenue_pct || 0),
-    gross_margin_pct: grossMarginPct,
-    profit_pct: grossMarginPct,
+    gross_margin_pct: netMarginPct,
+    profit_pct: netMarginPct,
     volume_ml: toNum(block?.volume_ml || 0),
     volume_ml_pct: toNum(block?.volume_ml_pct || 0),
     investment_pct: invPctFinal,
@@ -714,7 +781,7 @@ const ScenarioComparison = ({
 
   const rankLabel = useMemo(() => {
     if (sortMetric === 'volume_pct') return 'Volume Rank'
-    if (sortMetric === 'profit_pct') return 'Gross Margin Rank'
+    if (sortMetric === 'profit_pct') return 'Net Margin Rank'
     return 'Revenue Rank'
   }, [sortMetric])
 
@@ -794,13 +861,13 @@ const ScenarioComparison = ({
       'TOTAL Profit',
       '12-ML Volume %',
       '12-ML Revenue %',
-      '12-ML Gross Margin %',
+      '12-ML Net Margin %',
       '18-ML Volume %',
       '18-ML Revenue %',
-      '18-ML Gross Margin %',
+      '18-ML Net Margin %',
       'TOTAL Volume %',
       'TOTAL Revenue %',
-      'TOTAL Gross Margin %',
+      'TOTAL Net Margin %',
       ...discountColumnDefs.map((d) => d.header),
     ]
 
@@ -937,21 +1004,21 @@ const ScenarioComparison = ({
       volume_pct: Number(summaryBlock?.vs_reference_volume_pct ?? 0) || 0,
       revenue_pct: Number(summaryBlock?.vs_reference_revenue_pct ?? 0) || 0,
       gross_margin_pct: (
-        Number(summaryBlock?.scenario_revenue ?? 0) > 0 &&
-        Number(summaryBlock?.reference_revenue ?? 0) > 0
+        Number(summaryBlock?.scenario_revenue_net ?? summaryBlock?.scenario_revenue ?? 0) > 0 &&
+        Number(summaryBlock?.reference_revenue_net ?? summaryBlock?.reference_revenue ?? 0) > 0
       )
         ? (
-          ((Number(summaryBlock?.scenario_profit ?? 0) / Number(summaryBlock?.scenario_revenue ?? 0)) * 100) -
-          ((Number(summaryBlock?.reference_profit ?? 0) / Number(summaryBlock?.reference_revenue ?? 0)) * 100)
+          ((Number(summaryBlock?.scenario_profit ?? 0) / Number(summaryBlock?.scenario_revenue_net ?? summaryBlock?.scenario_revenue ?? 0)) * 100) -
+          ((Number(summaryBlock?.reference_profit ?? 0) / Number(summaryBlock?.reference_revenue_net ?? summaryBlock?.reference_revenue ?? 0)) * 100)
         )
         : (Number(summaryBlock?.vs_reference_profit_pct ?? 0) || 0),
       profit_pct: (
-        Number(summaryBlock?.scenario_revenue ?? 0) > 0 &&
-        Number(summaryBlock?.reference_revenue ?? 0) > 0
+        Number(summaryBlock?.scenario_revenue_net ?? summaryBlock?.scenario_revenue ?? 0) > 0 &&
+        Number(summaryBlock?.reference_revenue_net ?? summaryBlock?.reference_revenue ?? 0) > 0
       )
         ? (
-          ((Number(summaryBlock?.scenario_profit ?? 0) / Number(summaryBlock?.scenario_revenue ?? 0)) * 100) -
-          ((Number(summaryBlock?.reference_profit ?? 0) / Number(summaryBlock?.reference_revenue ?? 0)) * 100)
+          ((Number(summaryBlock?.scenario_profit ?? 0) / Number(summaryBlock?.scenario_revenue_net ?? summaryBlock?.scenario_revenue ?? 0)) * 100) -
+          ((Number(summaryBlock?.reference_profit ?? 0) / Number(summaryBlock?.reference_revenue_net ?? summaryBlock?.reference_revenue ?? 0)) * 100)
         )
         : (Number(summaryBlock?.vs_reference_profit_pct ?? 0) || 0),
       scenario_investment: Number(summaryBlock?.scenario_investment ?? 0) || 0,
@@ -1125,7 +1192,9 @@ const ScenarioComparison = ({
       if (!next.scenario_discounts_by_period[periodKey][sizeKey]) next.scenario_discounts_by_period[periodKey][sizeKey] = {}
       next.scenario_discounts_by_period[periodKey][sizeKey][slabKey] = nextValue
       next.scenario_discounts_by_period[periodKey][sizeKey] = enforceNonDecreasingLadder(
-        next.scenario_discounts_by_period[periodKey][sizeKey]
+        next.scenario_discounts_by_period[periodKey][sizeKey],
+        slabKey,
+        nextValue
       )
       const enforcedMap = next.scenario_discounts_by_period[periodKey][sizeKey] || {}
       setModalInputDraft((prevInput) => {
@@ -1149,18 +1218,33 @@ const ScenarioComparison = ({
   const buildModalDraftForSave = () => {
     if (!modalDraft) return null
     const draftForSave = JSON.parse(JSON.stringify(modalDraft))
+    const touchedKeysByBucket = {}
     Object.entries(modalInputDraft || {}).forEach(([key, raw]) => {
       const [periodKey, sizeKey, slabKey] = key.split('|')
       if (!periodKey || !sizeKey || !slabKey) return
       if (!draftForSave.scenario_discounts_by_period?.[periodKey]?.[sizeKey]) return
-      draftForSave.scenario_discounts_by_period[periodKey][sizeKey][slabKey] = parseEditableDiscount(
+      const nextValue = parseEditableDiscount(
         raw,
         draftForSave.scenario_discounts_by_period[periodKey][sizeKey][slabKey]
       )
+      draftForSave.scenario_discounts_by_period[periodKey][sizeKey][slabKey] = nextValue
+      const bucketKey = `${periodKey}|${sizeKey}`
+      if (!touchedKeysByBucket[bucketKey]) touchedKeysByBucket[bucketKey] = []
+      touchedKeysByBucket[bucketKey].push({ slabKey, nextValue })
     })
     Object.entries(draftForSave.scenario_discounts_by_period || {}).forEach(([periodKey, bySize]) => {
       Object.entries(bySize || {}).forEach(([sizeKey, slabMap]) => {
-        draftForSave.scenario_discounts_by_period[periodKey][sizeKey] = enforceNonDecreasingLadder(slabMap || {})
+        const bucketKey = `${periodKey}|${sizeKey}`
+        const touched = touchedKeysByBucket[bucketKey] || []
+        let nextMap = { ...(slabMap || {}) }
+        if (touched.length > 0) {
+          touched.forEach(({ slabKey, nextValue }) => {
+            nextMap = enforceNonDecreasingLadder(nextMap, slabKey, nextValue)
+          })
+        } else {
+          nextMap = enforceNonDecreasingLadder(nextMap)
+        }
+        draftForSave.scenario_discounts_by_period[periodKey][sizeKey] = nextMap
       })
     })
     return draftForSave
@@ -1460,7 +1544,7 @@ const ScenarioComparison = ({
           )}
 
           <div className="bg-white rounded-lg shadow-md p-4">
-            <h4 className="text-base font-semibold text-body mb-3">Scenario Filters (Volume / Revenue / Gross Margin / Investment / CTS)</h4>
+            <h4 className="text-base font-semibold text-body mb-3">Scenario Filters (Volume / Revenue / Net Margin / Investment / CTS)</h4>
             <div className="grid grid-cols-1 md:grid-cols-7 gap-3">
               <div>
                 <label className="block text-xs font-medium text-muted mb-1">Min 12-ML Volume %</label>
@@ -1507,7 +1591,7 @@ const ScenarioComparison = ({
                 />
               </div>
               <div>
-                <label className="block text-xs font-medium text-muted mb-1">Min Gross Margin % Increase</label>
+                <label className="block text-xs font-medium text-muted mb-1">Min Net Margin % Increase</label>
                 <input
                   type="number"
                   step="0.1"
@@ -1544,7 +1628,7 @@ const ScenarioComparison = ({
 
           <div className="bg-white rounded-lg shadow-md p-4">
             <div className="flex items-center justify-between mb-3">
-              <h4 className="text-base font-semibold text-body">TOTAL % Comparison (Volume / Revenue / Gross Margin)</h4>
+              <h4 className="text-base font-semibold text-body">TOTAL % Comparison (Volume / Revenue / Net Margin)</h4>
               <div className="flex items-center gap-2">
                 <select
                   value={sortMetric}
@@ -1553,7 +1637,7 @@ const ScenarioComparison = ({
                   title="Sort metric"
                 >
                   <option value="revenue_pct">Sort: Revenue %</option>
-                  <option value="profit_pct">Sort: Gross Margin %</option>
+                  <option value="profit_pct">Sort: Net Margin %</option>
                   <option value="volume_pct">Sort: Volume %</option>
                 </select>
                 <button
@@ -1613,7 +1697,7 @@ const ScenarioComparison = ({
                 )}
                 <div style={{ width: '100%', height: 360 }}>
                   <ResponsiveContainer width="100%" height="100%">
-                    <BarChart data={visibleChartData} margin={{ top: 30, right: 16, left: 8, bottom: 8 }} barCategoryGap="30%" barGap={8}>
+                    <BarChart data={visibleChartData} margin={{ top: 52, right: 16, left: 8, bottom: 8 }} barCategoryGap="30%" barGap={8}>
                       <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
                       <XAxis dataKey="axis_label" tick={{ fontSize: 12, fill: '#334155', fontWeight: 600 }} />
                       <YAxis domain={yDomain} tickFormatter={(value) => `${Number(value).toFixed(0)}%`} />
@@ -1623,31 +1707,19 @@ const ScenarioComparison = ({
                       <Bar dataKey="volume_pct" name="Volume %" fill="#2563eb" radius={[6, 6, 0, 0]} cursor="pointer" onClick={openScenarioModalFromChart}>
                         <LabelList
                           dataKey="volume_pct"
-                          position="top"
-                          formatter={(v) => fmtPct(v)}
-                          fontSize={12}
-                          fontWeight={800}
-                          fill="#0f172a"
+                          content={(props) => <ScenarioBarValueLabel {...props} dataKey="volume_pct" />}
                         />
                       </Bar>
                       <Bar dataKey="revenue_pct" name="Revenue %" fill="#16a34a" radius={[6, 6, 0, 0]} cursor="pointer" onClick={openScenarioModalFromChart}>
                         <LabelList
                           dataKey="revenue_pct"
-                          position="top"
-                          formatter={(v) => fmtPct(v)}
-                          fontSize={12}
-                          fontWeight={800}
-                          fill="#0f172a"
+                          content={(props) => <ScenarioBarValueLabel {...props} dataKey="revenue_pct" />}
                         />
                       </Bar>
-                      <Bar dataKey="profit_pct" name="Gross Margin %" fill="#f59e0b" radius={[6, 6, 0, 0]} cursor="pointer" onClick={openScenarioModalFromChart}>
+                      <Bar dataKey="profit_pct" name="Net Margin %" fill="#f59e0b" radius={[6, 6, 0, 0]} cursor="pointer" onClick={openScenarioModalFromChart}>
                         <LabelList
                           dataKey="profit_pct"
-                          position="top"
-                          formatter={(v) => fmtPct(v)}
-                          fontSize={12}
-                          fontWeight={800}
-                          fill="#0f172a"
+                          content={(props) => <ScenarioBarValueLabel {...props} dataKey="profit_pct" />}
                         />
                       </Bar>
                     </BarChart>
@@ -1754,7 +1826,7 @@ const ScenarioComparison = ({
                   <div className="text-base font-semibold text-body">{fmtPct(readSummary(modalDraft || modalScenario, '12-ML').revenue_pct)}</div>
                 </div>
                 <div className="rounded-lg border border-slate-200 bg-white p-3">
-                  <div className="text-[11px] uppercase text-muted">12-ML Gross Margin %</div>
+                  <div className="text-[11px] uppercase text-muted">12-ML Net Margin %</div>
                   <div className="text-base font-semibold text-body">{fmtPct(readSummary(modalDraft || modalScenario, '12-ML').profit_pct)}</div>
                 </div>
                 <div className="rounded-lg border border-slate-200 bg-white p-3">
@@ -1770,7 +1842,7 @@ const ScenarioComparison = ({
                   <div className="text-base font-semibold text-body">{fmtPct(readSummary(modalDraft || modalScenario, '18-ML').revenue_pct)}</div>
                 </div>
                 <div className="rounded-lg border border-slate-200 bg-white p-3">
-                  <div className="text-[11px] uppercase text-muted">18-ML Gross Margin %</div>
+                  <div className="text-[11px] uppercase text-muted">18-ML Net Margin %</div>
                   <div className="text-base font-semibold text-body">{fmtPct(readSummary(modalDraft || modalScenario, '18-ML').profit_pct)}</div>
                 </div>
                 <div className="rounded-lg border border-slate-200 bg-white p-3">
@@ -1786,7 +1858,7 @@ const ScenarioComparison = ({
                   <div className="text-base font-semibold text-body">{fmtPct(readSummary(modalDraft || modalScenario, 'TOTAL').revenue_pct)}</div>
                 </div>
                 <div className="rounded-lg border border-slate-200 bg-white p-3">
-                  <div className="text-[11px] uppercase text-muted">TOTAL Gross Margin %</div>
+                  <div className="text-[11px] uppercase text-muted">TOTAL Net Margin %</div>
                   <div className="text-base font-semibold text-body">{fmtPct(readSummary(modalDraft || modalScenario, 'TOTAL').profit_pct)}</div>
                 </div>
                 <div className="rounded-lg border border-slate-200 bg-white p-3">

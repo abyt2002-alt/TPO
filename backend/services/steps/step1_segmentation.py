@@ -352,7 +352,7 @@ class Step1SegmentationMixin:
             "subcategories": sorted(df['Subcategory'].dropna().unique().tolist()),
             "brands": sorted(df['Brand'].dropna().unique().tolist()),
             "sizes": sorted(df['Sizes'].dropna().unique().tolist()),
-            "outlet_classifications": sorted(df['Final_Outlet_Classification'].dropna().unique().tolist()) if 'Final_Outlet_Classification' in df.columns else [],
+            "outlet_classifications": self._normalized_outlet_classification_options(df['Final_Outlet_Classification']) if 'Final_Outlet_Classification' in df.columns else [],
         }
 
 
@@ -394,5 +394,5 @@ class Step1SegmentationMixin:
             "subcategories": sorted(df_for_subcategories['Subcategory'].dropna().unique().tolist()),
             "brands": sorted(df_for_brands['Brand'].dropna().unique().tolist()),
             "sizes": sorted(df_for_sizes['Sizes'].dropna().unique().tolist()),
-            "outlet_classifications": sorted(df_for_outlet_classifications['Final_Outlet_Classification'].dropna().unique().tolist()) if 'Final_Outlet_Classification' in df_for_outlet_classifications.columns else [],
+            "outlet_classifications": self._normalized_outlet_classification_options(df_for_outlet_classifications['Final_Outlet_Classification']) if 'Final_Outlet_Classification' in df_for_outlet_classifications.columns else [],
         }

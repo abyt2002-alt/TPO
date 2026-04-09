@@ -14,7 +14,6 @@ import {
 } from 'recharts'
 
 const formatQty = (value) => Number(value || 0).toLocaleString(undefined, { maximumFractionDigits: 0 })
-const clamp = (value, min, max) => Math.min(max, Math.max(min, value))
 const formatAxisTick = (value) => {
   const n = Number(value || 0)
   if (!Number.isFinite(n)) return '0'
@@ -31,27 +30,13 @@ const toMonthLabel = (period) => {
   return d.toLocaleDateString(undefined, { month: 'short', year: '2-digit' })
 }
 
-const shiftPeriod = (period, monthOffset) => {
-  const txt = String(period || '')
-  const m = txt.match(/^(\d{4})-(\d{2})$/)
-  if (!m) return ''
-  const year = Number(m[1])
-  const month = Number(m[2])
-  if (!Number.isFinite(year) || !Number.isFinite(month)) return ''
-  const idx = (year * 12) + (month - 1) + Number(monthOffset || 0)
-  if (!Number.isFinite(idx) || idx < 0) return ''
-  const y = Math.floor(idx / 12)
-  const mm = (idx % 12) + 1
-  return `${String(y).padStart(4, '0')}-${String(mm).padStart(2, '0')}`
-}
-
 const BaselineForecast = ({
   data,
+  plannerData,
   isLoading,
   isError,
   errorMessage,
   actualVolumeByPeriod = {},
-  demoTargets = null,
 }) => {
   const [showIntroLoading, setShowIntroLoading] = useState(() => {
     if (typeof window === 'undefined') return true
@@ -155,120 +140,73 @@ const BaselineForecast = ({
     }
   })
 
-  const historyAdjustedRows = parsedPoints.map((row) => {
-    let total12 = Number(row.total12 || 0)
-    let total18 = Number(row.total18 || 0)
-
-    if (!row.is_forecast) {
-      const periodKey = String(row.period || '')
-      const actualPair = actualVolumeByPeriod?.[periodKey]
-      const actual12 = Number(actualPair?.['12-ML'])
-      const actual18 = Number(actualPair?.['18-ML'])
-      if (Number.isFinite(actual12) && actual12 > 0) total12 = actual12
-      if (Number.isFinite(actual18) && actual18 > 0) total18 = actual18
-    }
-
+  const plannerMonthlyResults = Array.isArray(plannerData?.monthly_results) ? plannerData.monthly_results : []
+  const plannerForecastPoints = plannerMonthlyResults.map((row) => {
+    const size12 = row?.sizes?.['12-ML'] || {}
+    const size18 = row?.sizes?.['18-ML'] || {}
+    const baseline12 = Number(size12?.baseline_total_qty || 0)
+    const baseline18 = Number(size18?.baseline_total_qty || 0)
+    const total12 = Number(size12?.final_total_qty ?? size12?.pre_cross_total_qty ?? 0)
+    const total18 = Number(size18?.final_total_qty ?? size18?.pre_cross_total_qty ?? 0)
     return {
-      ...row,
+      period: String(row?.period || ''),
+      is_forecast: true,
+      baseline12,
+      discount12: total12 - baseline12,
+      baseline18,
+      discount18: total18 - baseline18,
       total12,
       total18,
     }
-  })
+  }).filter((row) => row.period)
 
-  const rawForecast12 = historyAdjustedRows
-    .filter((row) => row.is_forecast)
-    .reduce((sum, row) => sum + Number(row.total12 || 0), 0)
-  const rawForecast18 = historyAdjustedRows
-    .filter((row) => row.is_forecast)
-    .reduce((sum, row) => sum + Number(row.total18 || 0), 0)
-  const scenarioTarget12 = Number(demoTargets?.scenario?.['12-ML'] || 0)
-  const scenarioTarget18 = Number(demoTargets?.scenario?.['18-ML'] || 0)
-  const forecastScale12 = (scenarioTarget12 > 0 && rawForecast12 > 0) ? (scenarioTarget12 / rawForecast12) : 1
-  const forecastScale18 = (scenarioTarget18 > 0 && rawForecast18 > 0) ? (scenarioTarget18 / rawForecast18) : 1
-  const forecastPeriods = historyAdjustedRows.filter((row) => row.is_forecast).map((row) => String(row.period || ''))
-  const lyPeriods = new Set(forecastPeriods.map((period) => shiftPeriod(period, -12)).filter(Boolean))
-  const rawLy12 = historyAdjustedRows
-    .filter((row) => !row.is_forecast && lyPeriods.has(String(row.period || '')))
-    .reduce((sum, row) => sum + Number(row.total12 || 0), 0)
-  const rawLy18 = historyAdjustedRows
-    .filter((row) => !row.is_forecast && lyPeriods.has(String(row.period || '')))
-    .reduce((sum, row) => sum + Number(row.total18 || 0), 0)
-  const lyTarget12 = Number(demoTargets?.ly?.['12-ML'] || 0)
-  const lyTarget18 = Number(demoTargets?.ly?.['18-ML'] || 0)
-  const lyScale12 = (lyTarget12 > 0 && rawLy12 > 0) ? (lyTarget12 / rawLy12) : 1
-  const lyScale18 = (lyTarget18 > 0 && rawLy18 > 0) ? (lyTarget18 / rawLy18) : 1
-  const historyRows = historyAdjustedRows.filter((row) => !row.is_forecast)
-  const historyTailRows = historyRows.slice(-9)
-  const baseShare12Start = historyTailRows.length
-    ? clamp(
-      historyTailRows.reduce((sum, row) => {
-        const t = Number(row.total12 || 0)
-        const b = Number(row.baseline12 || 0)
-        return sum + (t > 0 ? (b / t) : 0)
-      }, 0) / historyTailRows.length,
-      0.06,
-      0.4
-    )
-    : 0.12
-  const baseShare18Start = historyTailRows.length
-    ? clamp(
-      historyTailRows.reduce((sum, row) => {
-        const t = Number(row.total18 || 0)
-        const b = Number(row.baseline18 || 0)
-        return sum + (t > 0 ? (b / t) : 0)
-      }, 0) / historyTailRows.length,
-      0.18,
-      0.55
-    )
-    : 0.35
-  const lastHistory = historyRows[historyRows.length - 1] || null
-  const startBaseline12 = Number(lastHistory?.baseline12 || (lastHistory?.total12 || 0) * baseShare12Start || 0)
-  const startBaseline18 = Number(lastHistory?.baseline18 || (lastHistory?.total18 || 0) * baseShare18Start || 0)
-  const forecastRows = historyAdjustedRows.filter((row) => row.is_forecast)
-  const forecastIndexByPeriod = {}
-  forecastRows.forEach((row, idx) => {
-    forecastIndexByPeriod[String(row.period || `f-${idx}`)] = idx
-  })
+  const historicalPoints = parsedPoints
+    .filter((row) => !row.is_forecast)
+    .map((row) => {
+      const periodKey = String(row.period || '')
+      const actualPair = actualVolumeByPeriod?.[periodKey] || {}
+      const actual12 = Number(actualPair?.['12-ML'])
+      const actual18 = Number(actualPair?.['18-ML'])
+      const total12 = Number.isFinite(actual12) && actual12 > 0 ? actual12 : Number(row.total12 || 0)
+      const total18 = Number.isFinite(actual18) && actual18 > 0 ? actual18 : Number(row.total18 || 0)
+      const baseline12 = Math.min(Math.max(Number(row.baseline12 || 0), 0), total12)
+      const baseline18 = Math.min(Math.max(Number(row.baseline18 || 0), 0), total18)
+      return {
+        period: periodKey,
+        is_forecast: false,
+        baseline12,
+        discount12: Math.max(total12 - baseline12, 0),
+        baseline18,
+        discount18: Math.max(total18 - baseline18, 0),
+        total12,
+        total18,
+      }
+    })
 
-  const chartData = historyAdjustedRows.map((row, index) => {
-    const next = historyAdjustedRows[index + 1]
+  const combinedPoints = [
+    ...historicalPoints,
+    ...(plannerForecastPoints.length > 0 ? plannerForecastPoints : parsedPoints.filter((row) => row.is_forecast)),
+  ]
+
+  const renderForecastDot = ({ cx, cy, payload }) => {
+    if (!payload?.is_forecast) return null
+    return <circle cx={cx} cy={cy} r={3} strokeWidth={1.5} stroke="currentColor" fill="#ffffff" />
+  }
+
+  const chartData = combinedPoints.map((row, index) => {
+    const next = combinedPoints[index + 1]
     const isLastHistoryPoint = !row.is_forecast && next?.is_forecast
-    const inLyWindow = !row.is_forecast && lyPeriods.has(String(row.period || ''))
-    const total12 = row.is_forecast
-      ? (Number(row.total12 || 0) * forecastScale12)
-      : (inLyWindow ? (Number(row.total12 || 0) * lyScale12) : Number(row.total12 || 0))
-    const total18 = row.is_forecast
-      ? (Number(row.total18 || 0) * forecastScale18)
-      : (inLyWindow ? (Number(row.total18 || 0) * lyScale18) : Number(row.total18 || 0))
-
-    let share12 = row.total12 > 0 ? clamp(row.baseline12 / row.total12, 0.05, 0.95) : baseShare12Start
-    let share18 = row.total18 > 0 ? clamp(row.baseline18 / row.total18, 0.05, 0.95) : baseShare18Start
-    let baseline12 = total12 * share12
-    let baseline18 = total18 * share18
-
-    if (row.is_forecast) {
-      const fIdx = Number(forecastIndexByPeriod[String(row.period || '')] ?? 0)
-      const trendShare12 = clamp(baseShare12Start + (0.028 * (fIdx + 1)), 0.1, 0.52)
-      const trendShare18 = clamp(baseShare18Start - (0.01 * (fIdx + 1)), 0.16, 0.52)
-      share12 = clamp((share12 * 0.3) + (trendShare12 * 0.7), 0.07, 0.5)
-      share18 = clamp((share18 * 0.4) + (trendShare18 * 0.6), 0.15, 0.55)
-
-      const targetBaseline12 = startBaseline12 * (1 + (0.12 * (fIdx + 1)))
-      const targetBaseline18 = startBaseline18 * (1 - (0.03 * (fIdx + 1)))
-      baseline12 = clamp((total12 * share12 * 0.4) + (targetBaseline12 * 0.6), total12 * 0.08, total12 * 0.72)
-      baseline18 = clamp((total18 * share18 * 0.65) + (targetBaseline18 * 0.35), total18 * 0.15, total18 * 0.58)
-    }
-
-    const discount12 = Math.max(total12 - baseline12, 0)
-    const discount18 = Math.max(total18 - baseline18, 0)
+    const total12 = Number(row.total12 || 0)
+    const total18 = Number(row.total18 || 0)
 
     return {
       ...row,
       month: toMonthLabel(row.period),
-      baseline_12_ml: baseline12,
-      baseline_18_ml: baseline18,
-      discount_component_12_ml: discount12,
-      discount_component_18_ml: discount18,
+      baseline_12_ml: Number(row.baseline12 || 0),
+      baseline_18_ml: Number(row.baseline18 || 0),
+      discount_component_12_ml: Number(row.discount12 || 0),
+      discount_component_18_ml: Number(row.discount18 || 0),
+      total_baseline: Number(row.baseline12 || 0) + Number(row.baseline18 || 0),
       total_12_ml: total12,
       total_18_ml: total18,
       total_12_ml_history: row.is_forecast ? null : total12,
@@ -284,8 +222,9 @@ const BaselineForecast = ({
   const firstForecastIndex = chartData.findIndex((row) => row.is_forecast)
   const forecastStartLabel = firstForecastIndex >= 0 ? chartData[firstForecastIndex]?.month : null
   const forecastEndLabel = firstForecastIndex >= 0 ? chartData[chartData.length - 1]?.month : null
-  const latestHistory = [...points].reverse().find((row) => !row.is_forecast)
-  const forecastOnly = points.filter((row) => row.is_forecast)
+  const latestHistory = [...chartData].reverse().find((row) => !row.is_forecast)
+  const forecastOnly = chartData.filter((row) => row.is_forecast)
+  const nextForecast = forecastOnly[0] || null
 
   return (
     <div className="space-y-6">
@@ -300,7 +239,7 @@ const BaselineForecast = ({
           <div className="rounded-lg border border-sky-200 bg-sky-50 px-4 py-3 text-sm text-sky-900 max-w-md">
             <p className="font-semibold">Method</p>
             <p className="mt-1">
-              Project raw 12-ML and 18-ML baseline separately, then sum to total. Forecast zone starts after{' '}
+              Historical months use backend baseline history. Forecast months use the current Step 4 planner scenario when available. Forecast zone starts after{' '}
               <span className="font-semibold">{latestHistory ? toMonthLabel(latestHistory.period) : '-'}</span>.
             </p>
           </div>
@@ -329,19 +268,19 @@ const BaselineForecast = ({
 
         <div className="bg-white rounded-xl shadow-md border border-primary/20 p-4">
           <p className="text-xs font-semibold tracking-wide text-primary uppercase">Next Month Projection</p>
-          <p className="text-sm text-muted mt-1">{forecastOnly[0] ? toMonthLabel(forecastOnly[0].period) : '-'}</p>
+          <p className="text-sm text-muted mt-1">{nextForecast ? toMonthLabel(nextForecast.period) : '-'}</p>
           <div className="grid grid-cols-3 gap-3 mt-4">
             <div className="rounded-lg bg-blue-50 border border-blue-200 p-3">
               <p className="text-xs text-muted">12-ML</p>
-              <p className="font-bold text-body text-xl mt-1">{formatQty(data?.next_month_12_ml)}</p>
+              <p className="font-bold text-body text-xl mt-1">{formatQty(nextForecast?.total12)}</p>
             </div>
             <div className="rounded-lg bg-rose-50 border border-rose-200 p-3">
               <p className="text-xs text-muted">18-ML</p>
-              <p className="font-bold text-body text-xl mt-1">{formatQty(data?.next_month_18_ml)}</p>
+              <p className="font-bold text-body text-xl mt-1">{formatQty(nextForecast?.total18)}</p>
             </div>
             <div className="rounded-lg bg-teal-50 border border-teal-200 p-3">
               <p className="text-xs text-muted">Total</p>
-              <p className="font-bold text-body text-xl mt-1">{formatQty(data?.next_month_total)}</p>
+              <p className="font-bold text-body text-xl mt-1">{formatQty((Number(nextForecast?.total12 || 0) + Number(nextForecast?.total18 || 0)))}</p>
             </div>
           </div>
         </div>
@@ -440,7 +379,7 @@ const BaselineForecast = ({
                     stroke="#0F766E"
                     strokeWidth={2.5}
                     strokeDasharray="7 5"
-                    dot={{ r: 3, strokeWidth: 1.5, fill: '#ffffff' }}
+                    dot={renderForecastDot}
                     connectNulls
                   />
                 </ComposedChart>
@@ -512,7 +451,7 @@ const BaselineForecast = ({
                     stroke="#B91C1C"
                     strokeWidth={2.5}
                     strokeDasharray="7 5"
-                    dot={{ r: 3, strokeWidth: 1.5, fill: '#ffffff' }}
+                    dot={renderForecastDot}
                     connectNulls
                   />
                 </ComposedChart>
