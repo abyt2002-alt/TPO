@@ -38,6 +38,106 @@ from models.rfm_models import (
 
 class Step1SegmentationMixin:
 
+    def _segment_summaries_fast(self, rfm: pd.DataFrame, outlet_sales: dict, total_sales: float) -> List[SegmentSummary]:
+        """Segment summaries using pre-computed outlet sales dict — no full df needed."""
+        all_segments = [
+            'Recent-High-High', 'Recent-High-Low',
+            'Recent-Low-High', 'Recent-Low-Low',
+            'Stale-High-High', 'Stale-High-Low',
+            'Stale-Low-High', 'Stale-Low-Low'
+        ]
+        segment_summaries = []
+        for seg in all_segments:
+            seg_data = rfm[rfm['RFM_Segment'] == seg]
+            total_outlets = len(seg_data)
+            pct_total = (total_outlets / len(rfm) * 100) if len(rfm) > 0 else 0
+            state_breakdown = seg_data['Final_State'].value_counts().to_dict()
+            mah_count = state_breakdown.get('MAH', 0)
+            up_count = state_breakdown.get('UP', 0)
+            avg_order_days = seg_data['unique_order_days'].mean() if total_outlets > 0 else 0
+            avg_aov = seg_data['AOV'].mean() if total_outlets > 0 else 0
+            avg_recency = seg_data['Recency_days'].mean() if total_outlets > 0 else 0
+            seg_outlet_ids = set(seg_data['Outlet_ID'].astype(str).tolist())
+            seg_sales = sum(outlet_sales.get(oid, 0) for oid in seg_outlet_ids)
+            market_share_pct = (seg_sales / total_sales * 100) if total_sales > 0 else 0
+            segment_summaries.append(SegmentSummary(
+                segment=seg,
+                total_outlets=total_outlets,
+                percentage=round(pct_total, 2),
+                mah_count=mah_count,
+                up_count=up_count,
+                avg_order_days=round(float(avg_order_days), 2),
+                avg_aov=round(float(avg_aov), 2),
+                avg_recency=round(float(avg_recency), 2),
+                market_share=round(float(market_share_pct), 2)
+            ))
+        return segment_summaries
+
+    def calculate_rfm_from_aggregated(self, rfm_agg: pd.DataFrame, max_date,
+                                       recency_days: int = 90, frequency_threshold: int = 20):
+        """Run RFM labelling on pre-aggregated outlet-level data from SQL.
+
+        rfm_agg must have: Outlet_ID, Final_State, first_order, last_order,
+                           unique_order_days, orders_count, AOV, Total_Net_Amt
+        Skips the expensive transaction-level pandas groupbys entirely.
+        """
+        rfm = rfm_agg.copy()
+
+        # Recency
+        rfm['Recency_days'] = (max_date - rfm['last_order']).dt.days
+        rfm['Recency_flag'] = (rfm['Recency_days'] <= recency_days).astype(int)
+        rfm['R_label'] = rfm['Recency_flag'].map({1: 'Recent', 0: 'Stale'})
+
+        # Frequency
+        rfm['active_days'] = ((rfm['last_order'] - rfm['first_order']).dt.days + 1).clip(lower=1)
+        rfm['orders_per_day'] = rfm['orders_count'] / rfm['active_days']
+        rfm['F_label'] = np.where(rfm['unique_order_days'] >= frequency_threshold, 'High', 'Low')
+        rfm['F_cluster_id'] = np.where(rfm['unique_order_days'] >= frequency_threshold, 1, 0)
+
+        # Monetary — KMeans on outlet AOV
+        valid_m = rfm['AOV'].notna()
+        if valid_m.sum() >= 10:
+            m_values = np.log1p(rfm.loc[valid_m, 'AOV'].values).reshape(-1, 1)
+            m_scaled = StandardScaler().fit_transform(m_values)
+            kmeans_m = KMeans(n_clusters=2, random_state=42, n_init=20)
+            m_clusters = kmeans_m.fit_predict(m_scaled)
+            cluster_means = [rfm.loc[valid_m, 'AOV'].values[m_clusters == i].mean() for i in range(2)]
+            high_cluster_m = int(np.argmax(cluster_means))
+            rfm.loc[valid_m, 'M_cluster_id'] = m_clusters
+            rfm.loc[valid_m, 'M_label'] = ['High' if c == high_cluster_m else 'Low' for c in m_clusters]
+        else:
+            median_m = rfm['AOV'].median()
+            rfm['M_label'] = rfm['AOV'].apply(lambda x: 'High' if x >= median_m else 'Low')
+            rfm['M_cluster_id'] = np.nan
+
+        m_means = rfm.groupby('M_label', dropna=False)['AOV'].mean()
+        if 'High' in m_means.index and 'Low' in m_means.index:
+            if pd.notna(m_means['High']) and pd.notna(m_means['Low']) and m_means['High'] < m_means['Low']:
+                rfm['M_label'] = rfm['M_label'].replace({'High': 'Low', 'Low': 'High'})
+
+        rfm['RFM_Segment'] = rfm['R_label'] + '-' + rfm['F_label'] + '-' + rfm['M_label']
+
+        freq_cluster_summary = (
+            rfm.groupby('F_label', dropna=False)['orders_per_day']
+            .agg(['count', 'min', 'max', 'mean']).reset_index()
+            .rename(columns={'F_label': 'Frequency_Cluster', 'count': 'Outlets',
+                             'min': 'Min_Orders_Per_Day', 'max': 'Max_Orders_Per_Day',
+                             'mean': 'Mean_Orders_Per_Day'})
+            .sort_values('Frequency_Cluster')
+        )
+        monetary_cluster_summary = (
+            rfm.groupby('M_label', dropna=False)['AOV']
+            .agg(['count', 'min', 'max', 'mean']).reset_index()
+            .rename(columns={'M_label': 'Monetary_Cluster', 'count': 'Outlets',
+                             'min': 'Min_AOV', 'max': 'Max_AOV', 'mean': 'Mean_AOV'})
+            .sort_values('Monetary_Cluster')
+        )
+        cluster_summary = {
+            'frequency': freq_cluster_summary.to_dict('records'),
+            'monetary': monetary_cluster_summary.to_dict('records'),
+        }
+        return rfm, cluster_summary
+
     def _segment_summaries(self, rfm: pd.DataFrame, df: pd.DataFrame) -> List[SegmentSummary]:
         total_sales_value = df['SalesValue_atBasicRate'].sum()
         all_segments = [

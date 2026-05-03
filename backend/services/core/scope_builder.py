@@ -94,34 +94,44 @@ class ScopeBuilderMixin:
         if cached is not None:
             return cached
 
-        # Load only the filtered rows from SQLite — avoids loading full dataset into RAM
-        df = self._fetch_filtered(
+        filter_kwargs = dict(
             states=request.states or [],
             categories=request.categories or [],
             subcategories=request.subcategories or [],
             brands=request.brands or [],
             sizes=request.sizes or [],
-            outlet_classifications=getattr(request, 'outlet_classifications', None) or [],
         )
-        if df.empty:
+
+        # SQL aggregation: returns outlet-level rows only (thousands, not millions)
+        rfm_agg, max_date = self._fetch_rfm_aggregated(**filter_kwargs)
+        if rfm_agg.empty or max_date is None:
             return None
 
-        input_rows = len(df)
-        input_outlets = df['Outlet_ID'].nunique()
+        input_outlets = len(rfm_agg)
 
-        rfm, max_date, cluster_summary = self.calculate_rfm_metrics(
-            df,
+        # Get total transaction row count and SalesValue from SQL (no pandas load)
+        conn = self._get_db_conn()
+        where, params = self._build_filter_clause(**filter_kwargs)
+        input_rows = conn.execute(
+            f"SELECT COUNT(*) FROM transactions WHERE {where}", params
+        ).fetchone()[0]
+        conn.close()
+
+        outlet_sales, total_sales = self._fetch_outlet_sales_value(**filter_kwargs)
+
+        rfm, cluster_summary = self.calculate_rfm_from_aggregated(
+            rfm_agg, max_date,
             recency_days=request.recency_threshold,
-            frequency_threshold=request.frequency_threshold
+            frequency_threshold=request.frequency_threshold,
         )
 
-        outlet_totals = df.groupby('Outlet_ID')['Net_Amt'].sum().reset_index()
-        outlet_totals.columns = ['Outlet_ID', 'Total_Net_Amt']
-        rfm = rfm.merge(outlet_totals, on='Outlet_ID', how='left')
-        segment_summaries = self._segment_summaries(rfm, df)
+        segment_summaries = self._segment_summaries_fast(rfm, outlet_sales, total_sales)
 
+        # df is not loaded here — deferred to step 2 (_build_step2_scope) to keep step 1 fast
         dataset = {
-            'df': df,
+            'df': None,
+            '_filter_kwargs': filter_kwargs,
+            '_outlet_classifications': getattr(request, 'outlet_classifications', None) or [],
             'rfm': rfm,
             'max_date': max_date,
             'cluster_summary': cluster_summary,
@@ -141,6 +151,13 @@ class ScopeBuilderMixin:
         dataset = self._build_rfm_dataset(request)
         if dataset is None:
             return None
+
+        # Load full df lazily — not loaded during step 1 to keep calculate fast
+        if dataset.get('df') is None and dataset.get('_filter_kwargs') is not None:
+            dataset['df'] = self._fetch_filtered(
+                outlet_classifications=dataset.get('_outlet_classifications', []),
+                **dataset['_filter_kwargs'],
+            )
 
         df = dataset['df']
         rfm = dataset['rfm']

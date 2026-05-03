@@ -330,3 +330,96 @@ class DataLoaderMixin:
                 df = df[class_groups.isin(normalized_targets)]
 
         return df
+
+    def _build_filter_clause(self, states=None, categories=None, subcategories=None,
+                             brands=None, sizes=None):
+        """Build a SQL WHERE clause and params list from filter lists."""
+        clauses: list[str] = []
+        params: list = []
+
+        def _add(col, values):
+            if values:
+                placeholders = ','.join(['?'] * len(values))
+                clauses.append(f"{col} IN ({placeholders})")
+                params.extend(values)
+
+        _add("Final_State", states or [])
+        _add("Category", categories or [])
+        _add("Subcategory", subcategories or [])
+        _add("Brand", brands or [])
+        _add("Sizes", sizes or [])
+
+        where = " AND ".join(clauses) if clauses else "1=1"
+        return where, params
+
+    def _fetch_rfm_aggregated(self, states=None, categories=None, subcategories=None,
+                              brands=None, sizes=None):
+        """Return outlet-level RFM metrics computed entirely in SQL.
+
+        Replaces two expensive pandas groupbys on millions of rows.
+        Returns a DataFrame with one row per (Outlet_ID, Final_State) and
+        columns: Outlet_ID, Final_State, first_order, last_order,
+                 unique_order_days, orders_count, AOV, Total_Net_Amt, max_date.
+        """
+        if not self.db_path:
+            return pd.DataFrame(), None
+
+        where, params = self._build_filter_clause(states, categories, subcategories, brands, sizes)
+
+        sql = f"""
+        WITH bill_level AS (
+            SELECT
+                Outlet_ID, Date, Bill_No, Final_State,
+                SUM(Net_Amt) AS bill_net_amt
+            FROM transactions
+            WHERE {where}
+            GROUP BY Outlet_ID, Date, Bill_No, Final_State
+        )
+        SELECT
+            Outlet_ID,
+            Final_State,
+            MIN(Date)            AS first_order,
+            MAX(Date)            AS last_order,
+            COUNT(DISTINCT Date) AS unique_order_days,
+            COUNT(Bill_No)       AS orders_count,
+            AVG(bill_net_amt)    AS AOV,
+            SUM(bill_net_amt)    AS Total_Net_Amt
+        FROM bill_level
+        GROUP BY Outlet_ID, Final_State
+        """
+
+        conn = self._get_db_conn()
+        rfm_agg = pd.read_sql_query(sql, conn, params=params)
+
+        max_date_row = conn.execute(
+            f"SELECT MAX(Date) FROM transactions WHERE {where}", params
+        ).fetchone()
+        conn.close()
+
+        max_date = pd.to_datetime(max_date_row[0]) if max_date_row and max_date_row[0] else None
+        rfm_agg['first_order'] = pd.to_datetime(rfm_agg['first_order'], errors='coerce')
+        rfm_agg['last_order'] = pd.to_datetime(rfm_agg['last_order'], errors='coerce')
+
+        return rfm_agg, max_date
+
+    def _fetch_outlet_sales_value(self, states=None, categories=None, subcategories=None,
+                                  brands=None, sizes=None):
+        """Return per-outlet SalesValue_atBasicRate totals from SQL."""
+        if not self.db_path:
+            return {}, 0.0
+
+        where, params = self._build_filter_clause(states, categories, subcategories, brands, sizes)
+
+        sql = f"""
+        SELECT Outlet_ID, SUM(SalesValue_atBasicRate) AS sales_value
+        FROM transactions
+        WHERE {where}
+        GROUP BY Outlet_ID
+        """
+        conn = self._get_db_conn()
+        df_sv = pd.read_sql_query(sql, conn, params=params)
+        conn.close()
+
+        outlet_sales = dict(zip(df_sv['Outlet_ID'].astype(str), df_sv['sales_value'].fillna(0)))
+        total_sales = float(df_sv['sales_value'].sum())
+        return outlet_sales, total_sales
