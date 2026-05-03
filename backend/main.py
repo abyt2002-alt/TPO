@@ -490,46 +490,9 @@ async def get_available_filters():
 
 @app.post("/api/rfm/filters/cascade")
 async def get_cascading_filters(filters: Dict[str, List[str]]):
-    """Get cascading filter options based on current selections"""
+    """Get cascading filter options — delegates to SQLite-backed service method."""
     try:
-        if rfm_service.data_cache is None:
-            return await rfm_service.get_available_filters()
-
-        df_all = rfm_service.data_cache
-        states = filters.get("states") or []
-        categories = filters.get("categories") or []
-        subcategories = filters.get("subcategories") or []
-        brands = filters.get("brands") or []
-
-        df_for_categories = df_all[df_all["Final_State"].isin(states)] if states else df_all
-
-        df_for_subcategories = df_for_categories
-        if categories:
-            df_for_subcategories = df_for_subcategories[df_for_subcategories["Category"].isin(categories)]
-
-        df_for_brands = df_for_subcategories
-        if subcategories:
-            df_for_brands = df_for_brands[df_for_brands["Subcategory"].isin(subcategories)]
-
-        df_for_sizes = df_for_brands
-        if brands:
-            df_for_sizes = df_for_sizes[df_for_sizes["Brand"].isin(brands)]
-        df_for_outlet_classifications = df_for_sizes
-        if filters.get("sizes"):
-            df_for_outlet_classifications = df_for_outlet_classifications[
-                df_for_outlet_classifications["Sizes"].isin(filters.get("sizes") or [])
-            ]
-
-        return {
-            "states": sorted(df_all["Final_State"].dropna().unique().tolist()),
-            "categories": sorted(df_for_categories["Category"].dropna().unique().tolist()),
-            "subcategories": sorted(df_for_subcategories["Subcategory"].dropna().unique().tolist()),
-            "brands": sorted(df_for_brands["Brand"].dropna().unique().tolist()),
-            "sizes": sorted(df_for_sizes["Sizes"].dropna().unique().tolist()),
-            "outlet_classifications": rfm_service._normalized_outlet_classification_options(
-                df_for_outlet_classifications["Final_Outlet_Classification"]
-            ) if "Final_Outlet_Classification" in df_for_outlet_classifications.columns else [],
-        }
+        return await rfm_service.get_cascading_filters(filters)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

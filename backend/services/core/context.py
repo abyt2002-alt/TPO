@@ -42,7 +42,8 @@ class ContextMixin:
 
     def _init_service_context(self):
 
-        self.data_cache = None
+        self.data_cache = None          # kept for legacy None-checks; data lives in SQLite
+        self.db_path: Optional[str] = None  # path to SQLite data cache file
 
         self.rfm_result_cache = {}
 

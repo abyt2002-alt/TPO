@@ -126,14 +126,17 @@ class EDAServiceMixin:
 
 
     def _apply_eda_scope(self, request: EDARequest) -> Optional[pd.DataFrame]:
-        if self.data_cache is None:
+        if not getattr(self, 'db_path', None):
             return None
-        # Avoid copying full dataset on every EDA request; filters create new frames.
-        df = self._apply_base_filters(self.data_cache, request)
-        selected_classes = [str(x) for x in (request.outlet_classifications or []) if str(x).strip()]
-        if selected_classes and 'Final_Outlet_Classification' in df.columns:
-            df = df[df['Final_Outlet_Classification'].astype(str).isin(selected_classes)]
-        return df
+        df = self._fetch_filtered(
+            states=getattr(request, 'states', None) or [],
+            categories=getattr(request, 'categories', None) or [],
+            subcategories=getattr(request, 'subcategories', None) or [],
+            brands=getattr(request, 'brands', None) or [],
+            sizes=getattr(request, 'sizes', None) or [],
+            outlet_classifications=getattr(request, 'outlet_classifications', None) or [],
+        )
+        return df if not df.empty else None
 
 
     async def get_eda_options(self, request: EDARequest) -> EDAOptionsResponse:

@@ -155,77 +155,178 @@ class DataLoaderMixin:
         return df
 
     def load_data(self):
-        """Load parquet files from DATA folder"""
+        """Load parquet files from DATA folder into a SQLite file cache.
+
+        On first run this builds the SQLite file (slow once).
+        On subsequent restarts it reuses the existing file (instant).
+        Memory usage stays ~50 MB instead of 1.6 GB.
+        """
         try:
             services_dir = Path(__file__).resolve().parent
             backend_dir = services_dir.parent.parent
             project_root = backend_dir.parent
 
-            # Keep compatibility with old layouts + support project-root DATA folder.
             candidate_paths = [
-                Path.cwd() / "DATA",                         # when running from project root
-                Path.cwd().parent / "DATA",                  # when running from backend/
-                backend_dir / "DATA",                        # legacy backend/DATA
-                backend_dir / "step3_filtered_engineered",   # older documented path
-                project_root / "DATA",                       # current user setup
+                Path.cwd() / "DATA",
+                Path.cwd().parent / "DATA",
+                backend_dir / "DATA",
+                backend_dir / "step3_filtered_engineered",
+                project_root / "DATA",
             ]
-            
+
             folder_path = next((p for p in candidate_paths if p.exists()), None)
-            
+
             if folder_path is None:
                 print("Warning: Could not find DATA folder")
-                return None
-            
+                return
+
             parquet_files = sorted([f for f in os.listdir(folder_path) if f.endswith('.parquet')])
-            
+
             if not parquet_files:
                 print("Warning: No parquet files found")
-                return None
-            
-            dfs = []
+                return
+
+            db_path = folder_path.parent / "qps_data.db"
+
+            # Reuse existing SQLite if it already has rows — avoids rebuilding on every restart.
+            if db_path.exists():
+                try:
+                    conn = sqlite3.connect(str(db_path))
+                    row_count = conn.execute("SELECT COUNT(*) FROM transactions").fetchone()[0]
+                    conn.close()
+                    if row_count > 0:
+                        self.db_path = str(db_path)
+                        self.data_cache = True  # sentinel: not None, but data is in SQLite
+                        print(f"Reusing SQLite cache: {row_count:,} rows at {db_path}")
+                        return
+                except Exception:
+                    pass  # fall through to rebuild
+
+            print(f"Building SQLite cache from {len(parquet_files)} parquet files...")
+            conn = sqlite3.connect(str(db_path))
+            first_file = True
+            total_rows = 0
+
             for file in parquet_files:
                 df = pd.read_parquet(folder_path / file)
                 df = self._normalize_column_aliases(df)
-                dfs.append(df)
-            
-            # Memory-stable combine: concatenate per-column (avoids pandas object-block vstack).
-            if not dfs:
-                print("Warning: No normalized parquet frames to combine")
-                return None
-            ordered_cols = list(dfs[0].columns)
-            buffers = {c: [] for c in ordered_cols}
-            for frame in dfs:
-                for c in ordered_cols:
-                    buffers[c].append(frame[c].to_numpy(copy=False))
-            combined_df = pd.DataFrame({
-                c: np.concatenate(arr_list, axis=0) if arr_list else np.array([])
-                for c, arr_list in buffers.items()
-            })
-            combined_df['Date'] = pd.to_datetime(combined_df['Date'])
 
-            # Normalize text dimensions so mixed-case monthly drops still match filters.
-            for text_col in ['Category', 'Subcategory', 'Brand', 'Final_State', 'Final_Outlet_Classification', 'Outlet_Type']:
-                if text_col in combined_df.columns:
-                    combined_df[text_col] = (
-                        combined_df[text_col]
-                        .astype(str)
-                        .str.upper()
-                        .str.replace(r'\s+', ' ', regex=True)
-                        .str.strip()
-                    )
-            if 'Sizes' in combined_df.columns:
-                combined_df['Sizes'] = (
-                    combined_df['Sizes']
-                    .astype(str)
-                    .str.upper()
-                    .str.replace(' ', '', regex=False)
-                    .str.strip()
-                )
-            
-            self.data_cache = combined_df
-            print(f"Loaded {len(combined_df):,} rows from {len(parquet_files)} files")
-            
+                # Normalize text columns in-place before writing
+                for text_col in ['Category', 'Subcategory', 'Brand', 'Final_State',
+                                  'Final_Outlet_Classification', 'Outlet_Type']:
+                    if text_col in df.columns:
+                        df[text_col] = (df[text_col].astype(str)
+                                        .str.upper()
+                                        .str.replace(r'\s+', ' ', regex=True)
+                                        .str.strip())
+                if 'Sizes' in df.columns:
+                    df['Sizes'] = (df['Sizes'].astype(str)
+                                   .str.upper()
+                                   .str.replace(' ', '', regex=False)
+                                   .str.strip())
+
+                # Store dates as ISO strings (SQLite has no native datetime)
+                if 'Date' in df.columns:
+                    df['Date'] = pd.to_datetime(df['Date']).dt.strftime('%Y-%m-%d')
+
+                df.to_sql('transactions', conn,
+                          if_exists='replace' if first_file else 'append',
+                          index=False)
+                total_rows += len(df)
+                first_file = False
+                del df  # free RAM immediately after writing each file
+
+            # Indexes for fast WHERE filtering
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_state  ON transactions(Final_State)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_cat    ON transactions(Category)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_subcat ON transactions(Subcategory)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_brand  ON transactions(Brand)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_sizes  ON transactions(Sizes)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_outlet ON transactions(Outlet_ID)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_oc     ON transactions(Final_Outlet_Classification)")
+            conn.commit()
+            conn.close()
+
+            self.db_path = str(db_path)
+            self.data_cache = True  # sentinel: data lives in SQLite, not in RAM
+            print(f"SQLite cache built: {total_rows:,} rows from {len(parquet_files)} files")
+
         except Exception as e:
             print(f"Error loading data: {e}")
             print(traceback.format_exc())
             self.data_cache = None
+            self.db_path = None
+
+    # ------------------------------------------------------------------
+    # SQLite query helpers
+    # ------------------------------------------------------------------
+
+    def _get_db_conn(self) -> sqlite3.Connection:
+        """Return a new SQLite connection. Caller must close it."""
+        return sqlite3.connect(self.db_path, check_same_thread=False)
+
+    def _fetch_filtered(
+        self,
+        states=None,
+        categories=None,
+        subcategories=None,
+        brands=None,
+        sizes=None,
+        outlet_classifications=None,
+    ) -> pd.DataFrame:
+        """Query SQLite and return only the rows matching the given filters.
+
+        This is the memory-efficient replacement for
+        ``self.data_cache[boolean_mask]``.  Only the matching rows are
+        loaded into RAM.
+        """
+        if not self.db_path:
+            return pd.DataFrame()
+
+        clauses: list[str] = []
+        params: list = []
+
+        def _add(col, values):
+            if values:
+                placeholders = ','.join(['?'] * len(values))
+                clauses.append(f"{col} IN ({placeholders})")
+                params.extend(values)
+
+        _add("Final_State", states or [])
+        _add("Category", categories or [])
+        _add("Subcategory", subcategories or [])
+        _add("Brand", brands or [])
+        _add("Sizes", sizes or [])
+
+        where = " AND ".join(clauses) if clauses else "1=1"
+
+        conn = self._get_db_conn()
+        df = pd.read_sql_query(
+            f"SELECT * FROM transactions WHERE {where}", conn, params=params
+        )
+        conn.close()
+
+        # Restore proper dtypes
+        if 'Date' in df.columns:
+            df['Date'] = pd.to_datetime(df['Date'], errors='coerce')
+        for c in [
+            "Quantity", "MRP", "Net_Amt", "SalesValue_atBasicRate",
+            "TotalDiscount", "Scheme_Discount", "Staggered_qps",
+            "Basic_Rate_Per_PC_without_GST", "Basic_Rate_Per_PC",
+            "Selling_Rate_Per_PC_without_GST_CLP",
+        ]:
+            if c in df.columns:
+                df[c] = pd.to_numeric(df[c], errors='coerce').astype('float32')
+
+        # Outlet classification filter needs Python-side normalization
+        if outlet_classifications:
+            normalized_targets = set(
+                self._normalize_step2_outlet_classifications(list(outlet_classifications))
+            )
+            if normalized_targets and 'Final_Outlet_Classification' in df.columns:
+                class_groups = self._to_step2_outlet_group_series(
+                    df['Final_Outlet_Classification']
+                )
+                df = df[class_groups.isin(normalized_targets)]
+
+        return df

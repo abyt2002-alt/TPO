@@ -86,7 +86,7 @@ class ScopeBuilderMixin:
 
 
     def _build_rfm_dataset(self, request: RFMRequest):
-        if self.data_cache is None:
+        if not getattr(self, 'db_path', None):
             return None
 
         cache_key = self._base_filter_cache_key(request)
@@ -94,7 +94,15 @@ class ScopeBuilderMixin:
         if cached is not None:
             return cached
 
-        df = self._apply_base_filters(self.data_cache.copy(), request)
+        # Load only the filtered rows from SQLite — avoids loading full dataset into RAM
+        df = self._fetch_filtered(
+            states=request.states or [],
+            categories=request.categories or [],
+            subcategories=request.subcategories or [],
+            brands=request.brands or [],
+            sizes=request.sizes or [],
+            outlet_classifications=getattr(request, 'outlet_classifications', None) or [],
+        )
         if df.empty:
             return None
 

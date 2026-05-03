@@ -248,7 +248,7 @@ class Step1SegmentationMixin:
     async def calculate_rfm(self, request: RFMRequest) -> RFMResponse:
         """Calculate RFM based on request filters"""
         try:
-            if self.data_cache is None:
+            if not getattr(self, 'db_path', None):
                 return RFMResponse(
                     success=False,
                     message="Data not loaded. Please check data files.",
@@ -334,34 +334,47 @@ class Step1SegmentationMixin:
 
 
     async def get_available_filters(self) -> Dict[str, List[str]]:
-        """Get available filter options"""
-        if self.data_cache is None:
+        """Get available filter options — queries SQLite, no full data load."""
+        empty = {"states": [], "categories": [], "subcategories": [],
+                 "brands": [], "sizes": [], "outlet_classifications": []}
+        if not getattr(self, 'db_path', None):
+            return empty
+        try:
+            conn = sqlite3.connect(self.db_path, check_same_thread=False)
+            def distinct(col):
+                rows = conn.execute(
+                    f"SELECT DISTINCT {col} FROM transactions "
+                    f"WHERE {col} IS NOT NULL AND {col} != '' ORDER BY {col}"
+                ).fetchall()
+                return [r[0] for r in rows if r[0]]
+            states = distinct("Final_State")
+            categories = distinct("Category")
+            subcategories = distinct("Subcategory")
+            brands = distinct("Brand")
+            sizes = distinct("Sizes")
+            oc_raw = conn.execute(
+                "SELECT DISTINCT Final_Outlet_Classification FROM transactions "
+                "WHERE Final_Outlet_Classification IS NOT NULL AND Final_Outlet_Classification != ''"
+            ).fetchall()
+            conn.close()
+            oc_series = pd.Series([r[0] for r in oc_raw if r[0]])
             return {
-                "states": [],
-                "categories": [],
-                "subcategories": [],
-                "brands": [],
-                "sizes": [],
-                "outlet_classifications": [],
+                "states": states,
+                "categories": categories,
+                "subcategories": subcategories,
+                "brands": brands,
+                "sizes": sizes,
+                "outlet_classifications": self._normalized_outlet_classification_options(oc_series) if len(oc_series) > 0 else [],
             }
-        
-        df = self.data_cache
-        return {
-            "states": sorted(df['Final_State'].dropna().unique().tolist()),
-            "categories": sorted(df['Category'].dropna().unique().tolist()),
-            "subcategories": sorted(df['Subcategory'].dropna().unique().tolist()),
-            "brands": sorted(df['Brand'].dropna().unique().tolist()),
-            "sizes": sorted(df['Sizes'].dropna().unique().tolist()),
-            "outlet_classifications": self._normalized_outlet_classification_options(df['Final_Outlet_Classification']) if 'Final_Outlet_Classification' in df.columns else [],
-        }
+        except Exception as e:
+            print(f"get_available_filters error: {e}")
+            return empty
 
 
     async def get_cascading_filters(self, current_filters: dict) -> Dict[str, List[str]]:
-        """Get filtered options based on current selections (cascading filters)"""
-        if self.data_cache is None:
+        """Get filtered options based on current selections — pure SQL, no full data load."""
+        if not getattr(self, 'db_path', None):
             return await self.get_available_filters()
-
-        df_all = self.data_cache
 
         states = current_filters.get('states') or []
         categories = current_filters.get('categories') or []
@@ -369,30 +382,43 @@ class Step1SegmentationMixin:
         brands = current_filters.get('brands') or []
         sizes = current_filters.get('sizes') or []
 
-        # For each level, apply only parent filters (not the field's own filter).
-        df_for_categories = df_all[df_all['Final_State'].isin(states)] if states else df_all
+        conn = sqlite3.connect(self.db_path, check_same_thread=False)
 
-        df_for_subcategories = df_for_categories
-        if categories:
-            df_for_subcategories = df_for_subcategories[df_for_subcategories['Category'].isin(categories)]
+        def _w(filters_map):
+            clauses, params = [], []
+            for col, vals in filters_map.items():
+                if vals:
+                    placeholders = ','.join(['?'] * len(vals))
+                    clauses.append(f"{col} IN ({placeholders})")
+                    params.extend(vals)
+            return (" AND ".join(clauses) if clauses else "1=1"), params
 
-        df_for_brands = df_for_subcategories
-        if subcategories:
-            df_for_brands = df_for_brands[df_for_brands['Subcategory'].isin(subcategories)]
+        def distinct(col, filters_map):
+            w, p = _w(filters_map)
+            rows = conn.execute(
+                f"SELECT DISTINCT {col} FROM transactions WHERE {w} AND {col} IS NOT NULL AND {col} != '' ORDER BY {col}", p
+            ).fetchall()
+            return [r[0] for r in rows if r[0]]
 
-        df_for_sizes = df_for_brands
-        if brands:
-            df_for_sizes = df_for_sizes[df_for_sizes['Brand'].isin(brands)]
-        df_for_outlet_classifications = df_for_sizes
-        if sizes:
-            df_for_outlet_classifications = df_for_outlet_classifications[df_for_outlet_classifications['Sizes'].isin(sizes)]
+        all_states      = distinct("Final_State", {})
+        all_categories  = distinct("Category",    {"Final_State": states})
+        all_subcategories = distinct("Subcategory", {"Final_State": states, "Category": categories})
+        all_brands      = distinct("Brand",       {"Final_State": states, "Category": categories, "Subcategory": subcategories})
+        all_sizes       = distinct("Sizes",       {"Final_State": states, "Category": categories, "Subcategory": subcategories, "Brand": brands})
 
-        # States always show all options (top level), others follow parent cascade.
+        w, p = _w({"Final_State": states, "Category": categories, "Subcategory": subcategories, "Brand": brands, "Sizes": sizes})
+        oc_raw = conn.execute(
+            f"SELECT DISTINCT Final_Outlet_Classification FROM transactions WHERE {w} "
+            f"AND Final_Outlet_Classification IS NOT NULL AND Final_Outlet_Classification != ''", p
+        ).fetchall()
+        conn.close()
+
+        oc_series = pd.Series([r[0] for r in oc_raw if r[0]])
         return {
-            "states": sorted(df_all['Final_State'].dropna().unique().tolist()),
-            "categories": sorted(df_for_categories['Category'].dropna().unique().tolist()),
-            "subcategories": sorted(df_for_subcategories['Subcategory'].dropna().unique().tolist()),
-            "brands": sorted(df_for_brands['Brand'].dropna().unique().tolist()),
-            "sizes": sorted(df_for_sizes['Sizes'].dropna().unique().tolist()),
-            "outlet_classifications": self._normalized_outlet_classification_options(df_for_outlet_classifications['Final_Outlet_Classification']) if 'Final_Outlet_Classification' in df_for_outlet_classifications.columns else [],
+            "states": all_states,
+            "categories": all_categories,
+            "subcategories": all_subcategories,
+            "brands": all_brands,
+            "sizes": all_sizes,
+            "outlet_classifications": self._normalized_outlet_classification_options(oc_series) if len(oc_series) > 0 else [],
         }
