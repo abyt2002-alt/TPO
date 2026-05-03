@@ -34,9 +34,12 @@ dist-ssr/
 
 # Data files
 step3_filtered_engineered/
-*.parquet
 *.csv
 *.xlsx
+
+# Parquet blocked everywhere except DATA folder
+*.parquet
+!DATA/*.parquet
 
 # OS
 .DS_Store
