@@ -152,14 +152,6 @@ class ScopeBuilderMixin:
         if dataset is None:
             return None
 
-        # Load full df lazily — not loaded during step 1 to keep calculate fast
-        if dataset.get('df') is None and dataset.get('_filter_kwargs') is not None:
-            dataset['df'] = self._fetch_filtered(
-                outlet_classifications=dataset.get('_outlet_classifications', []),
-                **dataset['_filter_kwargs'],
-            )
-
-        df = dataset['df']
         rfm = dataset['rfm']
 
         selected_segments = list(getattr(request, 'rfm_segments', []) or [])
@@ -179,14 +171,19 @@ class ScopeBuilderMixin:
 
         outlet_ids = set(rfm_scope['Outlet_ID'].astype(str).tolist())
 
-        if selected_classifications and 'Final_Outlet_Classification' in df.columns:
-            class_groups = self._to_step2_outlet_group_series(df['Final_Outlet_Classification'])
-            class_outlets = set(
-                df[class_groups.isin(selected_classifications)]['Outlet_ID'].astype(str).tolist()
-            )
-            outlet_ids = outlet_ids.intersection(class_outlets)
+        # Classification filter: fetch only per-outlet classification (tiny query) not full df
+        if selected_classifications:
+            oc_df = self._fetch_outlet_classifications(list(outlet_ids))
+            if not oc_df.empty and 'Final_Outlet_Classification' in oc_df.columns:
+                class_groups = self._to_step2_outlet_group_series(oc_df['Final_Outlet_Classification'])
+                class_outlets = set(
+                    oc_df[class_groups.isin(selected_classifications)]['Outlet_ID'].astype(str).tolist()
+                )
+                outlet_ids = outlet_ids.intersection(class_outlets)
 
-        df_scope = df[df['Outlet_ID'].astype(str).isin(outlet_ids)].copy()
+        # Load only transactions for the selected outlet IDs — not the full 706k rows
+        fk = dataset.get('_filter_kwargs', {})
+        df_scope = self._fetch_filtered_by_outlets(list(outlet_ids), **fk)
         df_scope_all_slabs = df_scope.copy()
         df_scope_all_slabs = self._apply_step2_slab_definition(df_scope_all_slabs, request)
         df_scope = self._apply_step2_slab_definition(df_scope, request)

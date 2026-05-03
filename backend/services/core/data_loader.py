@@ -423,3 +423,52 @@ class DataLoaderMixin:
         outlet_sales = dict(zip(df_sv['Outlet_ID'].astype(str), df_sv['sales_value'].fillna(0)))
         total_sales = float(df_sv['sales_value'].sum())
         return outlet_sales, total_sales
+
+    def _fetch_filtered_by_outlets(self, outlet_ids: list, states=None, categories=None,
+                                   subcategories=None, brands=None, sizes=None) -> pd.DataFrame:
+        """Load transactions for a specific set of outlet IDs only.
+
+        Used by step 2 to avoid loading the full filtered dataset when only
+        a subset of outlets (post-RFM-segment filter) is needed.
+        """
+        if not self.db_path or not outlet_ids:
+            return pd.DataFrame()
+
+        where, params = self._build_filter_clause(states, categories, subcategories, brands, sizes)
+
+        placeholders = ','.join(['?'] * len(outlet_ids))
+        outlet_clause = f"Outlet_ID IN ({placeholders})"
+        full_where = f"({where}) AND {outlet_clause}" if where != "1=1" else outlet_clause
+        all_params = params + list(outlet_ids)
+
+        conn = self._get_db_conn()
+        df = pd.read_sql_query(
+            f"SELECT * FROM transactions WHERE {full_where}", conn, params=all_params
+        )
+        conn.close()
+
+        if 'Date' in df.columns:
+            df['Date'] = pd.to_datetime(df['Date'], errors='coerce')
+        for c in ["Quantity", "MRP", "Net_Amt", "SalesValue_atBasicRate",
+                  "TotalDiscount", "Scheme_Discount", "Staggered_qps",
+                  "Basic_Rate_Per_PC_without_GST", "Basic_Rate_Per_PC",
+                  "Selling_Rate_Per_PC_without_GST_CLP"]:
+            if c in df.columns:
+                df[c] = pd.to_numeric(df[c], errors='coerce').astype('float32')
+        return df
+
+    def _fetch_outlet_classifications(self, outlet_ids: list) -> pd.DataFrame:
+        """Return one row per outlet with its Final_Outlet_Classification — no transaction rows."""
+        if not self.db_path or not outlet_ids:
+            return pd.DataFrame(columns=['Outlet_ID', 'Final_Outlet_Classification'])
+        placeholders = ','.join(['?'] * len(outlet_ids))
+        sql = f"""
+        SELECT Outlet_ID, Final_Outlet_Classification
+        FROM transactions
+        WHERE Outlet_ID IN ({placeholders})
+        GROUP BY Outlet_ID
+        """
+        conn = self._get_db_conn()
+        df = pd.read_sql_query(sql, conn, params=list(outlet_ids))
+        conn.close()
+        return df
