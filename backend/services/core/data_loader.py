@@ -236,7 +236,7 @@ class DataLoaderMixin:
                 first_file = False
                 del df  # free RAM immediately after writing each file
 
-            # Indexes for fast WHERE filtering
+            # Single-column indexes for WHERE filtering
             conn.execute("CREATE INDEX IF NOT EXISTS idx_state  ON transactions(Final_State)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_cat    ON transactions(Category)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_subcat ON transactions(Subcategory)")
@@ -244,6 +244,12 @@ class DataLoaderMixin:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_sizes  ON transactions(Sizes)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_outlet ON transactions(Outlet_ID)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_oc     ON transactions(Final_Outlet_Classification)")
+            # Composite indexes for cascade filter DISTINCT queries (index-only scans)
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_cas_cat    ON transactions(Final_State, Category)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_cas_subcat ON transactions(Final_State, Category, Subcategory)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_cas_brand  ON transactions(Final_State, Category, Subcategory, Brand)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_cas_size   ON transactions(Final_State, Category, Subcategory, Brand, Sizes)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_cas_oc     ON transactions(Final_State, Category, Subcategory, Brand, Sizes, Final_Outlet_Classification)")
             conn.commit()
             conn.close()
 
