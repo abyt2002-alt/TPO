@@ -160,10 +160,18 @@ const normalizeStep2Filters = (filters = {}) => ({
   defined_slab_profiles: normalizeDefinedSlabProfiles(filters?.defined_slab_profiles || {}),
 })
 
+const STATIC_RFM_SEGMENTS = [
+  'Recent-High-High', 'Recent-High-Low',
+  'Recent-Low-High', 'Recent-Low-Low',
+  'Stale-High-High', 'Stale-High-Low',
+  'Stale-Low-High', 'Stale-Low-Low',
+]
+const STATIC_OUTLET_TYPES = ['WH', 'OtherGT']
+
 const normalizeDiscountOptions = (options = {}) => ({
   ...options,
-  rfm_segments: Array.isArray(options?.rfm_segments) ? options.rfm_segments.map((v) => String(v)) : [],
-  outlet_classifications: normalizeStep2OutletClassifications(options?.outlet_classifications || []),
+  rfm_segments: STATIC_RFM_SEGMENTS,
+  outlet_classifications: STATIC_OUTLET_TYPES,
   slabs: normalizeStep2Slabs(options?.slabs || []),
   matching_outlets: Number(options?.matching_outlets || 0),
 })
@@ -533,8 +541,8 @@ const RFMAnalysis = () => {
   const runInitializationStartedRef = useRef(false)
   const [step2Filters, setStep2Filters] = useState(DEFAULT_STEP2_FILTERS)
   const [discountOptions, setDiscountOptions] = useState({
-    rfm_segments: [],
-    outlet_classifications: [],
+    rfm_segments: STATIC_RFM_SEGMENTS,
+    outlet_classifications: STATIC_OUTLET_TYPES,
     slabs: [],
     matching_outlets: 0,
   })
