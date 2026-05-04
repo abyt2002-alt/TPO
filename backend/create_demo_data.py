@@ -14,24 +14,29 @@ DEMO_DIR.mkdir(exist_ok=True)
 parquet_files = sorted([f for f in os.listdir(DATA_DIR) if f.endswith('.parquet')])
 print(f"Found {len(parquet_files)} parquet files in {DATA_DIR}")
 
-# Load all parquets to compute per-outlet total SalesValue_atBasicRate
-print("Computing outlet sales totals...")
+# Load all parquets to compute per-outlet total SalesValue_atBasicRate per state
+print("Computing outlet sales totals per state...")
 frames = []
 for f in parquet_files:
-    df = pd.read_parquet(DATA_DIR / f, columns=['Outlet_ID', 'SalesValue_atBasicRate'])
+    df = pd.read_parquet(DATA_DIR / f, columns=['Outlet_ID', 'Final_State', 'SalesValue_atBasicRate'])
     frames.append(df)
 
 all_data = pd.concat(frames, ignore_index=True)
 outlet_totals = (
-    all_data.groupby('Outlet_ID')['SalesValue_atBasicRate']
+    all_data.groupby(['Outlet_ID', 'Final_State'])['SalesValue_atBasicRate']
     .sum()
     .reset_index()
-    .sort_values('SalesValue_atBasicRate', ascending=False)
 )
 
-top_10_pct = int(len(outlet_totals) * 0.10)
-top_outlets = set(outlet_totals.head(top_10_pct)['Outlet_ID'].tolist())
-print(f"Total outlets: {len(outlet_totals):,} — keeping top 10%: {top_10_pct:,} outlets")
+top_outlets = set()
+for state, group in outlet_totals.groupby('Final_State'):
+    group_sorted = group.sort_values('SalesValue_atBasicRate', ascending=False)
+    top_n = max(1, int(len(group_sorted) * 0.10))
+    state_top = set(group_sorted.head(top_n)['Outlet_ID'].tolist())
+    top_outlets.update(state_top)
+    print(f"  {state}: {len(group_sorted):,} outlets → keeping top 10%: {top_n:,}")
+
+print(f"Total outlets kept: {len(top_outlets):,}")
 del all_data, frames, outlet_totals
 
 # Filter each parquet and write to demo_data/
