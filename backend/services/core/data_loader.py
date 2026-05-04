@@ -167,6 +167,10 @@ class DataLoaderMixin:
             project_root = backend_dir.parent
 
             candidate_paths = [
+                Path.cwd() / "demo_data",
+                Path.cwd().parent / "demo_data",
+                backend_dir / "demo_data",
+                project_root / "demo_data",
                 Path.cwd() / "DATA",
                 Path.cwd().parent / "DATA",
                 backend_dir / "DATA",
@@ -177,7 +181,7 @@ class DataLoaderMixin:
             folder_path = next((p for p in candidate_paths if p.exists()), None)
 
             if folder_path is None:
-                print("Warning: Could not find DATA folder")
+                print("Warning: Could not find DATA or demo_data folder")
                 return
 
             parquet_files = sorted([f for f in os.listdir(folder_path) if f.endswith('.parquet')])
