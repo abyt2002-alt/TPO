@@ -1256,10 +1256,8 @@ const RFMAnalysis = () => {
         }
 
         const stepFromUrl = resolveStepTabFromQuery(initialParams.get('step'))
-        const restoredStep = ['step1', 'step2', 'step3', 'step4', 'step5', 'step6'].includes(state.active_step)
-          ? (state.active_step === 'step6' ? 'step5' : state.active_step)
-          : 'step1'
-        const effectiveStep = initialParams.get('step') === null ? restoredStep : stepFromUrl
+        // Always start at step1 on fresh page load — only restore if URL has ?step= param
+        const effectiveStep = initialParams.get('step') !== null ? stepFromUrl : 'step1'
         setActiveStepTab(effectiveStep)
 
         const nextParams = new URLSearchParams(initialParams)
@@ -2494,42 +2492,16 @@ const RFMAnalysis = () => {
     slabTrendMutation.mutate(buildSlabTrendPayload())
   }
 
+  // RFM segments and outlet types are static — no API call needed
   useEffect(() => {
     if (!lastCalculatedFilters || !rfmData?.success) return
-
-    let isActive = true
-    const timer = setTimeout(async () => {
-      try {
-        setIsDiscountOptionsLoading(true)
-        const options = await getDiscountOptions({
-          run_id: runId || undefined,
-          ...lastCalculatedFilters,
-          ...step2Filters,
-        })
-        if (isActive && options?.success) {
-          setDiscountOptions(normalizeDiscountOptions(options))
-        }
-      } catch {
-        if (isActive) {
-          setDiscountOptions({
-            rfm_segments: [],
-            outlet_classifications: [],
-            slabs: [],
-            matching_outlets: 0,
-          })
-        }
-      } finally {
-        if (isActive) {
-          setIsDiscountOptionsLoading(false)
-        }
-      }
-    }, 350)
-
-    return () => {
-      isActive = false
-      clearTimeout(timer)
-    }
-  }, [lastCalculatedFilters, rfmData?.success, step2Filters, runId])
+    setDiscountOptions(prev => ({
+      ...prev,
+      rfm_segments: STATIC_RFM_SEGMENTS,
+      outlet_classifications: STATIC_OUTLET_TYPES,
+    }))
+    setIsDiscountOptionsLoading(false)
+  }, [lastCalculatedFilters, rfmData?.success])
 
   useEffect(() => {
     const validSegments = new Set((discountOptions?.rfm_segments || []).map((x) => String(x)))
