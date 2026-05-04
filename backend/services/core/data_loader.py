@@ -438,24 +438,34 @@ class DataLoaderMixin:
                                    subcategories=None, brands=None, sizes=None) -> pd.DataFrame:
         """Load transactions for a specific set of outlet IDs only.
 
-        Used by step 2 to avoid loading the full filtered dataset when only
-        a subset of outlets (post-RFM-segment filter) is needed.
+        Chunks the IN clause to stay within SQLite's 999-variable limit.
+        If outlet_ids is very large, falls back to full filter query.
         """
         if not self.db_path or not outlet_ids:
             return pd.DataFrame()
 
+        # If covering most outlets, just use the regular filter (no outlet restriction)
+        if len(outlet_ids) > 5000:
+            return self._fetch_filtered(states=states, categories=categories,
+                                        subcategories=subcategories, brands=brands, sizes=sizes)
+
         where, params = self._build_filter_clause(states, categories, subcategories, brands, sizes)
 
-        placeholders = ','.join(['?'] * len(outlet_ids))
-        outlet_clause = f"Outlet_ID IN ({placeholders})"
-        full_where = f"({where}) AND {outlet_clause}" if where != "1=1" else outlet_clause
-        all_params = params + list(outlet_ids)
-
+        # Chunk outlet_ids to stay under SQLite's 999-variable limit
+        CHUNK = 900
+        chunks = [outlet_ids[i:i+CHUNK] for i in range(0, len(outlet_ids), CHUNK)]
+        frames = []
         conn = self._get_db_conn()
-        df = pd.read_sql_query(
-            f"SELECT * FROM transactions WHERE {full_where}", conn, params=all_params
-        )
+        for chunk in chunks:
+            placeholders = ','.join(['?'] * len(chunk))
+            outlet_clause = f"Outlet_ID IN ({placeholders})"
+            full_where = f"({where}) AND {outlet_clause}" if where != "1=1" else outlet_clause
+            all_params = params + list(chunk)
+            frames.append(pd.read_sql_query(
+                f"SELECT * FROM transactions WHERE {full_where}", conn, params=all_params
+            ))
         conn.close()
+        df = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
         if 'Date' in df.columns:
             df['Date'] = pd.to_datetime(df['Date'], errors='coerce')
@@ -468,17 +478,21 @@ class DataLoaderMixin:
         return df
 
     def _fetch_outlet_classifications(self, outlet_ids: list) -> pd.DataFrame:
-        """Return one row per outlet with its Final_Outlet_Classification — no transaction rows."""
+        """Return one row per outlet with its Final_Outlet_Classification."""
         if not self.db_path or not outlet_ids:
             return pd.DataFrame(columns=['Outlet_ID', 'Final_Outlet_Classification'])
-        placeholders = ','.join(['?'] * len(outlet_ids))
-        sql = f"""
-        SELECT Outlet_ID, Final_Outlet_Classification
-        FROM transactions
-        WHERE Outlet_ID IN ({placeholders})
-        GROUP BY Outlet_ID
-        """
+        CHUNK = 900
+        chunks = [outlet_ids[i:i+CHUNK] for i in range(0, len(outlet_ids), CHUNK)]
+        frames = []
         conn = self._get_db_conn()
-        df = pd.read_sql_query(sql, conn, params=list(outlet_ids))
+        for chunk in chunks:
+            placeholders = ','.join(['?'] * len(chunk))
+            frames.append(pd.read_sql_query(
+                f"SELECT Outlet_ID, Final_Outlet_Classification FROM transactions "
+                f"WHERE Outlet_ID IN ({placeholders}) GROUP BY Outlet_ID",
+                conn, params=list(chunk)
+            ))
         conn.close()
-        return df
+        return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(
+            columns=['Outlet_ID', 'Final_Outlet_Classification']
+        )
