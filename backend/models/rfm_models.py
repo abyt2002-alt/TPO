@@ -302,6 +302,7 @@ class ModelingPoint(BaseModel):
     own_discount_qty: Optional[float] = None
     lag_discount_qty: Optional[float] = None
     cross_slab_qty: Optional[float] = None
+    holdout_predicted_qty: Optional[float] = None
 
 
 class ModelingSlabResult(BaseModel):
@@ -442,6 +443,7 @@ class CrossSizePlannerSlabState(BaseModel):
     coef_lag1_base_discount_pct: float
     coef_other_slabs_weighted_base_discount_pct: float
     coef_mrp_index_pct: float = 0.0
+    coef_stl_trend: float = 0.0
 
 
 class CrossSizePlannerSizeResult(BaseModel):

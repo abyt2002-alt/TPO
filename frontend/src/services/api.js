@@ -65,6 +65,7 @@ export const calculateModeling = async (payload) => {
   return response.data
 }
 
+// UNUSED — defined but never imported or called from any page
 export const calculate12MonthPlanner = async (payload) => {
   const response = await api.post('/api/planner/12-month', payload, {
     timeout: 180000,
@@ -86,6 +87,7 @@ export const calculateBaselineForecast = async (payload) => {
   return response.data
 }
 
+// UNUSED — defined but never imported or called from any page
 export const comparePlannerScenarios = async ({ payload, file }) => {
   const formData = new FormData()
   formData.append('payload_json', JSON.stringify(payload || {}))

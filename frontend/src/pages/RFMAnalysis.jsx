@@ -321,7 +321,7 @@ const DEFAULT_STEP5_SCENARIO_BUILDER = {
   mode: 'fixed_historical_ladders_v2',
 }
 const DEFAULT_STEP5_AI_SETTINGS = {
-  scenario_count: 5,
+  scenario_count: 1000,
   prompt: '',
 }
 
@@ -981,7 +981,7 @@ const RFMAnalysis = () => {
       })
       const aiPayload = {
         ...basePayload,
-        scenario_count: Math.min(10000, Math.max(1, Number(variables?.scenario_count || step5AISettings.scenario_count || 5))),
+        scenario_count: Math.min(10000, Math.max(1, Number(variables?.scenario_count || step5AISettings.scenario_count || 1000))),
         prompt: String(variables?.prompt || step5AISettings.prompt || ''),
         discount_constraints: Array.isArray(variables?.discount_constraints) ? variables.discount_constraints : [],
         metric_thresholds: variables?.metric_thresholds && typeof variables.metric_thresholds === 'object'
@@ -1221,7 +1221,7 @@ const RFMAnalysis = () => {
         setStep5AISettings((prev) => ({
           ...prev,
           ...restoredStep5AI,
-          scenario_count: Math.min(10000, Math.max(1, Number(restoredStep5AI?.scenario_count || prev.scenario_count || 5))),
+          scenario_count: Math.min(10000, Math.max(1, Number(restoredStep5AI?.scenario_count || prev.scenario_count || 1000))),
           prompt: String(restoredStep5AI?.prompt || prev.prompt || ''),
         }))
         if (restored?.step1_result) {
@@ -2312,7 +2312,7 @@ const RFMAnalysis = () => {
     }
     setScenarioErrorMessage('')
     aiScenarioJobMutation.mutate({
-      scenario_count: Math.min(10000, Math.max(1, Number(step5AISettings.scenario_count || 5))),
+      scenario_count: Math.min(10000, Math.max(1, Number(step5AISettings.scenario_count || 1000))),
       prompt: promptWithConstraints,
       discount_constraints: structuredFilters.discount_constraints,
       metric_thresholds: structuredFilters.metric_thresholds,
@@ -2334,7 +2334,7 @@ const RFMAnalysis = () => {
 
     setScenarioErrorMessage('')
     aiScenarioJobMutation.mutate({
-      scenario_count: Math.min(10000, Math.max(1, Number(step5AISettings.scenario_count || 5))),
+      scenario_count: Math.min(10000, Math.max(1, Number(step5AISettings.scenario_count || 1000))),
       prompt: promptWithConstraints,
       discount_constraints: structuredFilters.discount_constraints,
       metric_thresholds: structuredFilters.metric_thresholds,

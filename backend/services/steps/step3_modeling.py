@@ -23,6 +23,11 @@ try:
 except Exception:
     Holt = None
 
+try:
+    from statsmodels.tsa.seasonal import STL as STLDecomposition
+except Exception:
+    STLDecomposition = None
+
 from models.rfm_models import (
     RFMRequest, RFMResponse, OutletRFM,
     SegmentSummary, ClusterSummary,
@@ -283,6 +288,32 @@ class Step3ModelingMixin:
         return out
 
 
+    def _compute_stl_trend(self, period_series: pd.Series, qty_series: pd.Series) -> np.ndarray:
+        if STLDecomposition is None:
+            raise RuntimeError("statsmodels STL not available — cannot compute trend.")
+
+        # Sort by period and ensure a complete monthly grid with no gaps
+        df = pd.DataFrame({'Period': pd.to_datetime(period_series.values), 'qty': qty_series.values})
+        df = df.sort_values('Period').reset_index(drop=True)
+
+        full_index = pd.date_range(start=df['Period'].min(), end=df['Period'].max(), freq='MS')
+        df = df.set_index('Period').reindex(full_index)
+
+        # Interpolate any gaps so STL gets a continuous series
+        df['qty'] = df['qty'].interpolate(method='linear').ffill().bfill()
+
+        arr = df['qty'].to_numpy(dtype=float)
+        result = STLDecomposition(arr, period=12, robust=True).fit()
+        trend_full = np.asarray(result.trend, dtype=float)
+
+        # Align trend back to original period positions
+        orig_periods = pd.to_datetime(period_series.values)
+        trend_aligned = np.array([
+            trend_full[list(full_index).index(p)] if p in full_index else np.nan
+            for p in orig_periods
+        ], dtype=float)
+        return trend_aligned
+
     def _build_monthly_model_dataframe_new_strategy(
         self,
         df_scope_all_slabs: pd.DataFrame,
@@ -307,7 +338,16 @@ class Step3ModelingMixin:
             .bfill()
             .fillna(0.0)
         )
-        return monthly.sort_values('Period').reset_index(drop=True)
+        monthly = monthly.sort_values('Period').reset_index(drop=True)
+
+        _norm_size = self._normalize_step2_size_key(size_key)
+        _use_stl = (_norm_size == '12-ML') or (_norm_size == '18-ML' and str(slab_value) in ('slab3', 'slab4'))
+        if _use_stl:
+            monthly['stl_trend'] = self._compute_stl_trend(
+                monthly['Period'], monthly['quantity']
+            )
+
+        return monthly
 
 
     def _build_structural_roi_points(
@@ -402,6 +442,12 @@ class Step3ModelingMixin:
                 .fillna(0.0)
                 .to_numpy(dtype=float)
             )
+            hold_stl_trend = (
+                pd.to_numeric(hold_df.get('stl_trend', pd.Series(np.zeros(n_rows))), errors='coerce')
+                .replace([np.inf, -np.inf], 0.0)
+                .fillna(0.0)
+                .to_numpy(dtype=float)
+            )
 
             prev_struct = np.full(n_rows, prev_base, dtype=float)
             lag1_prev = np.full(n_rows, prev_base, dtype=float)
@@ -414,7 +460,10 @@ class Step3ModelingMixin:
                 prev_struct,
                 zeros,
                 lag1_prev,
-                extra_feature_values={'mrp_index_pct': hold_mrp_index},
+                extra_feature_values={
+                    'mrp_index_pct': hold_mrp_index,
+                    'stl_trend': hold_stl_trend,
+                },
             )
             qty_prev = np.maximum(qty_prev, 0.0)
 
@@ -745,6 +794,18 @@ class Step3ModelingMixin:
             x_cols.append(mrp_index)
             non_positive_indices.append(len(feature_order) - 1)
 
+        stl_trend = (
+            pd.to_numeric(monthly.get('stl_trend', pd.Series(np.zeros(len(monthly)))), errors='coerce')
+            .replace([np.inf, -np.inf], np.nan)
+            .fillna(0.0)
+            .to_numpy(dtype=float)
+        )
+        use_stl_trend = bool((np.nanmax(stl_trend) - np.nanmin(stl_trend)) > 1e-6)
+        if use_stl_trend:
+            feature_order.append('stl_trend')
+            x_cols.append(stl_trend)
+            # unconstrained — 12-ML trend is naturally positive, 18-ML naturally negative
+
         X2 = np.column_stack(x_cols)
         l2_floor = 0.1
         l2_penalty = max(float(l2_penalty), l2_floor)
@@ -856,6 +917,7 @@ class Step3ModelingMixin:
             extra_feature_values={
                 'other_slabs_weighted_base_discount_pct': other,
                 'mrp_index_pct': mrp_index,
+                'stl_trend': stl_trend,
             },
         )
         qty_base_ols = self._predict_stage2_quantity(
@@ -867,6 +929,7 @@ class Step3ModelingMixin:
             extra_feature_values={
                 'other_slabs_weighted_base_discount_pct': other,
                 'mrp_index_pct': mrp_index,
+                'stl_trend': stl_trend,
             },
         )
 
@@ -880,6 +943,7 @@ class Step3ModelingMixin:
             extra_feature_values={
                 'other_slabs_weighted_base_discount_pct': zeros,
                 'mrp_index_pct': mrp_index,
+                'stl_trend': stl_trend,
             },
         )
         qty_no_discount_ols = self._predict_stage2_quantity(
@@ -891,9 +955,41 @@ class Step3ModelingMixin:
             extra_feature_values={
                 'other_slabs_weighted_base_discount_pct': zeros,
                 'mrp_index_pct': mrp_index,
+                'stl_trend': stl_trend,
             },
         )
         qty_no_discount = np.maximum(qty_no_discount, 0.0)
+
+        # Out-of-sample holdout: refit stage2 on first (n-3) months, predict last 3
+        n_hold = 4
+        holdout_qty_pred = np.full(len(y_qty), np.nan)
+        holdout_mape = np.nan
+        holdout_r2 = np.nan
+        if len(y_qty) >= n_hold + 4:
+            try:
+                X2_tr = X2[:-n_hold]
+                y_qty_tr = y_qty[:-n_hold]
+                X2_te = X2[-n_hold:]
+                hold_model = CustomConstrainedRidge(
+                    l2_penalty=float(l2_used),
+                    non_negative_indices=non_negative_indices,
+                    non_positive_indices=non_positive_indices,
+                    maxiter=4000,
+                    constrain_intercept_non_negative=True,
+                )
+                hold_model.fit(X2_tr, y_qty_tr)
+                hold_model.feature_order_ = feature_order
+                hold_preds = np.maximum(hold_model.predict(X2_te), 0.0)
+                holdout_qty_pred[-n_hold:] = hold_preds
+                hold_act = y_qty[-n_hold:]
+                mask = hold_act > 0
+                if mask.any():
+                    holdout_mape = float(np.mean(np.abs((hold_act[mask] - hold_preds[mask]) / hold_act[mask])) * 100)
+                ss_res = float(np.sum((hold_act - hold_preds) ** 2))
+                ss_tot = float(np.sum((hold_act - np.mean(hold_act)) ** 2))
+                holdout_r2 = float(1.0 - (ss_res / ss_tot)) if ss_tot > 1e-12 else 0.0
+            except Exception:
+                pass
 
         actual_price = monthly['base_price'].to_numpy(dtype=float) * (1 - x_discount / 100.0)
         baseline_price = monthly['base_price'].to_numpy(dtype=float) * (1 - base / 100.0)
@@ -920,6 +1016,7 @@ class Step3ModelingMixin:
         result_df['incremental_revenue'] = incremental_revenue
         result_df['roi_1mo'] = roi
         result_df['residual_store'] = residual_store
+        result_df['holdout_predicted_quantity'] = holdout_qty_pred
 
         def _coef_for(model, name: str) -> float:
             order = list(getattr(model, 'feature_order_', []) or [])
@@ -945,6 +1042,10 @@ class Step3ModelingMixin:
             'coef_other_slabs_weighted_base_discount_pct': _coef_for(stage2, 'other_slabs_weighted_base_discount_pct'),
             'coef_mrp_index_pct': _coef_for(stage2, 'mrp_index_pct'),
             'uses_mrp_index_pct': 1.0 if use_mrp_index else 0.0,
+            'coef_stl_trend': _coef_for(stage2, 'stl_trend'),
+            'uses_stl_trend': 1.0 if use_stl_trend else 0.0,
+            'holdout_mape': float(holdout_mape) if np.isfinite(holdout_mape) else None,
+            'holdout_r2': float(holdout_r2) if np.isfinite(holdout_r2) else None,
             'avg_weighted_mrp': float(weighted_mrp_clean.mean()) if not weighted_mrp_clean.empty else 0.0,
             'min_weighted_mrp': float(weighted_mrp_clean.min()) if not weighted_mrp_clean.empty else 0.0,
             'max_weighted_mrp': float(weighted_mrp_clean.max()) if not weighted_mrp_clean.empty else 0.0,
@@ -1108,6 +1209,7 @@ class Step3ModelingMixin:
                             own_discount_qty=float(_beta_base * row['base_discount_pct']),
                             lag_discount_qty=float(_beta_lag * row.get('lag1_base_discount_pct', 0.0)),
                             cross_slab_qty=float(_beta_other * row.get('other_slabs_weighted_base_discount_pct', 0.0)),
+                            holdout_predicted_qty=float(row['holdout_predicted_quantity']) if pd.notna(row.get('holdout_predicted_quantity', np.nan)) else None,
                         )
                         for _, row in model_df.iterrows()
                     ]

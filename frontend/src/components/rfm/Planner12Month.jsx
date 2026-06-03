@@ -1,3 +1,4 @@
+// UNUSED — not imported or rendered anywhere in the app. Backend route /api/planner/12-month exists but is never called from the frontend.
 import { useEffect, useMemo, useState } from 'react'
 import { AlertCircle, Loader2, Play } from 'lucide-react'
 import {

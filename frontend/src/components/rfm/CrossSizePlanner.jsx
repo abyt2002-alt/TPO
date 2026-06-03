@@ -1123,7 +1123,7 @@ const CrossSizePlanner = ({
         </div>
         {saveReportMessage ? <div className="mt-2 text-xs text-muted">{saveReportMessage}</div> : null}
 
-        <div className="grid grid-cols-1 xl:grid-cols-3 gap-3 mt-4">
+        <div className="grid grid-cols-1 xl:grid-cols-3 gap-3 mt-4 items-stretch">
           {[
             { key: '12-ML', title: '12-ML', isTotal: false },
             { key: 'TOTAL', title: 'TOTAL (12-ML + 18-ML)', isTotal: true },
@@ -1206,10 +1206,10 @@ const CrossSizePlanner = ({
               )
             }
             const MetricCell = ({ label, value, pct, refValue }) => (
-              <div className="p-3 flex flex-col gap-1">
+              <div className="flex flex-col items-center justify-center text-center gap-1 p-3 h-full">
                 <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider">{label}</p>
-                <p className="text-[1.2rem] font-bold text-slate-800 leading-tight whitespace-nowrap">{value}</p>
-                <div className="flex flex-col gap-0.5 mt-0.5">
+                <p className="text-base font-bold text-slate-800 leading-tight whitespace-nowrap">{value}</p>
+                <div className="flex items-center justify-center gap-1.5 flex-wrap">
                   {pctPill(pct)}
                   <span className="text-[10px] text-slate-400">vs {refValue}</span>
                 </div>
@@ -1221,15 +1221,15 @@ const CrossSizePlanner = ({
               ? 'border-t-orange-400'
               : 'border-t-violet-500'
             const cardBase = card.isTotal
-              ? 'rounded-xl border border-violet-200 bg-violet-50/40 shadow-md overflow-hidden border-t-[3px] scale-[1.02] z-10'
-              : 'rounded-xl border border-slate-200 bg-white shadow-sm overflow-hidden border-t-[3px]'
+              ? 'rounded-xl border border-violet-200 bg-violet-50/40 shadow-md overflow-hidden border-t-[3px] scale-[1.02] z-10 flex flex-col'
+              : 'rounded-xl border border-slate-200 bg-white shadow-sm overflow-hidden border-t-[3px] flex flex-col'
             return (
               <div key={card.key} className={`${cardBase} ${accentColor}`}>
                 <div className={`px-4 py-2.5 border-b flex items-center justify-center gap-2 ${card.isTotal ? 'border-violet-100 bg-violet-50/60' : 'border-slate-100'}`}>
                   <p className={`text-sm font-bold ${card.isTotal ? 'text-violet-800' : 'text-slate-700'}`}>{card.title}</p>
                   {pctPill(volumePct)}
                 </div>
-                <div className="grid grid-cols-2 divide-x divide-y divide-slate-100">
+                <div className="grid grid-cols-2 grid-rows-2 divide-x divide-y divide-slate-100 flex-1">
                   <MetricCell
                     label={card.isTotal ? 'Volume Units' : 'Volume'}
                     value={formatCompact(volumeAbs)}

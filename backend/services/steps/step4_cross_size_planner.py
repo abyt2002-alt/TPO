@@ -1228,6 +1228,7 @@ class Step4CrossSizePlannerMixin:
                 coef_base = float(getattr(slab_state, "coef_base_discount_pct", 0.0) or 0.0)
                 coef_lag = float(getattr(slab_state, "coef_lag1_base_discount_pct", 0.0) or 0.0)
                 coef_other = float(getattr(slab_state, "coef_other_slabs_weighted_base_discount_pct", 0.0) or 0.0)
+                coef_stl = float(getattr(slab_state, "coef_stl_trend", 0.0) or 0.0)
                 default_disc = float(getattr(slab_state, "default_discount_pct", 0.0) or 0.0)
                 slab_map[slab_key] = {
                     "default_discount_pct": float(round(default_disc, 4)),
@@ -1237,6 +1238,7 @@ class Step4CrossSizePlannerMixin:
                     "coef_base_discount_pct": float(round(coef_base, 6)),
                     "coef_lag1_base_discount_pct": float(round(coef_lag, 6)),
                     "coef_other_slabs_weighted_base_discount_pct": float(round(coef_other, 6)),
+                    "coef_stl_trend": float(round(coef_stl, 6)),
                     "coef_signal": float(round(abs(coef_base) + abs(coef_lag) + abs(coef_other), 6)),
                 }
                 w = max(anchor_qty, 0.0)
@@ -2522,6 +2524,7 @@ class Step4CrossSizePlannerMixin:
                         extra_feature_values={
                             'other_slabs_weighted_base_discount_pct': np.array([other_disc], dtype=float),
                             'mrp_index_pct': np.array([float(state.get('mrp_index_pct', 0.0))], dtype=float),
+                            'stl_trend': np.array([float(state.get('stl_trend_last', 0.0))], dtype=float),
                         },
                     )[0]
                 )
@@ -2793,6 +2796,19 @@ class Step4CrossSizePlannerMixin:
                     zeros_forecast = np.zeros(int(forecast_months), dtype=float)
                     latest_mrp_index = float(last_row.get('mrp_index_pct', 0.0)) if pd.notna(last_row.get('mrp_index_pct', np.nan)) else 0.0
                     mrp_index_forecast = np.full(int(forecast_months), latest_mrp_index, dtype=float)
+
+                    # Extrapolate STL trend forward for 12-ML slabs that used it
+                    stl_trend_forecast = zeros_forecast
+                    if float(coeff.get('uses_stl_trend', 0.0)) > 0.0 and 'stl_trend' in model_df.columns:
+                        stl_hist = pd.to_numeric(
+                            model_df['stl_trend'], errors='coerce'
+                        ).replace([np.inf, -np.inf], np.nan).fillna(0.0).to_numpy(dtype=float)
+                        stl_trend_forecast = np.asarray(
+                            self._forecast_unbounded_series(stl_hist.tolist(), forecast_months),
+                            dtype=float,
+                        )
+                        # no clip — 18-ML trend can be negative (declining)
+
                     baseline_forecast = self._predict_stage2_quantity(
                         stage2_model,
                         residual_forecast,
@@ -2802,6 +2818,7 @@ class Step4CrossSizePlannerMixin:
                         extra_feature_values={
                             'other_slabs_weighted_base_discount_pct': zeros_forecast,
                             'mrp_index_pct': mrp_index_forecast,
+                            'stl_trend': stl_trend_forecast,
                         },
                     )
                     baseline_forecast = np.clip(np.asarray(baseline_forecast, dtype=float), 0.0, None)
@@ -2827,6 +2844,7 @@ class Step4CrossSizePlannerMixin:
                                 coeff.get('coef_other_slabs_weighted_base_discount_pct', 0.0)
                             ),
                             coef_mrp_index_pct=float(coeff.get('coef_mrp_index_pct', 0.0)),
+                            coef_stl_trend=float(coeff.get('coef_stl_trend', 0.0)),
                         )
                     )
                     slab_state[str(slab)] = {
@@ -2847,6 +2865,9 @@ class Step4CrossSizePlannerMixin:
                         'cogs_per_unit': float(cogs_for_slab),
                         'weighted_mrp': float(last_row.get('weighted_mrp', 0.0)) if pd.notna(last_row.get('weighted_mrp', np.nan)) else 0.0,
                         'mrp_index_pct': float(latest_mrp_index),
+                        'stl_trend_forecast': stl_trend_forecast.tolist(),
+                        'uses_stl_trend': float(coeff.get('uses_stl_trend', 0.0)),
+                        'stl_trend_last': float(stl_trend_forecast[0]) if stl_trend_forecast.size > 0 and float(coeff.get('uses_stl_trend', 0.0)) > 0 else 0.0,
                     }
 
                 if not slab_rows:

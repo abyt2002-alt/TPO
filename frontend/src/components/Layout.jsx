@@ -1,6 +1,7 @@
 import { Link, useLocation } from 'react-router-dom'
 import { BarChart3, Menu, X, Settings, Percent, LineChart, CalendarDays, Upload } from 'lucide-react'
 import { useState } from 'react'
+import logo from '../assets/logo.jpg'
 
 const Layout = ({ children, rightSidebar }) => {
   const location = useLocation()
@@ -40,16 +41,22 @@ const Layout = ({ children, rightSidebar }) => {
       {/* Header */}
       <header className="bg-white shadow-sm border-b border-gray-200 flex-shrink-0 z-30">
         <div className="px-4 sm:px-6 lg:px-8">
-          <div className="flex justify-between items-center h-16">
-            <div className="flex items-center">
-              <BarChart3 className="w-8 h-8 text-primary" />
-              <h1 className="ml-3 text-xl font-bold text-body">
-                QPS Optimization
-              </h1>
+          <div className="flex items-center h-16">
+            {/* Left: company logo */}
+            <div className="flex items-center w-48 flex-shrink-0">
+              <img src={logo} alt="Company logo" className="h-10 w-auto object-contain" />
             </div>
-            
-            {/* Mobile buttons */}
-            <div className="flex items-center gap-2 lg:hidden">
+
+            {/* Centre: QPS Optimization */}
+            <div className="flex-1 flex justify-center">
+              <div className="flex items-center gap-2.5">
+                <BarChart3 className="w-6 h-6 text-primary" />
+                <span className="text-xl font-bold text-body tracking-tight">QPS Optimization</span>
+              </div>
+            </div>
+
+            {/* Right: mobile buttons */}
+            <div className="flex items-center gap-2 w-40 justify-end lg:hidden">
               {rightSidebar && (
                 <button
                   onClick={() => setIsMobileSidebarOpen(!isMobileSidebarOpen)}
@@ -66,6 +73,7 @@ const Layout = ({ children, rightSidebar }) => {
               </button>
             </div>
           </div>
+
         </div>
 
         {/* Mobile Navigation */}

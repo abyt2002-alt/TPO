@@ -79,6 +79,7 @@ const ModelingROI = ({
   const [activeSize, setActiveSize] = useState('')
   const [activeSlab, setActiveSlab] = useState('')
   const [isModelModalOpen, setIsModelModalOpen] = useState(false)
+  const [modelModalTab, setModelModalTab] = useState('insample')
   const [includeLagDiscount, setIncludeLagDiscount] = useState(true)
   const [cogsPerUnit, setCogsPerUnit] = useState(0)
   const [roiMode, setRoiMode] = useState('both')
@@ -372,6 +373,9 @@ const ModelingROI = ({
             <CoefRow label="Base Discount" value={slabData?.model_coefficients?.coef_structural_discount} hint="structural level effect" />
             <CoefRow label="Lag Discount" value={slabData?.model_coefficients?.coef_lag1_structural_discount} hint="prior month base" />
             <CoefRow label="Other Slabs" value={slabData?.model_coefficients?.coef_other_slabs_weighted_base_discount_pct} hint="cross-slab weighted base" />
+            {slabData?.model_coefficients?.uses_stl_trend === 1 && (
+              <CoefRow label="STL Trend" value={slabData?.model_coefficients?.coef_stl_trend} hint="structural growth trend" />
+            )}
           </div>
 
           {/* Regularisation */}
@@ -690,25 +694,127 @@ const ModelingROI = ({
         </>
       )}
 
-      {isModelModalOpen && slabData && (
-        <div className="fixed inset-0 z-50 bg-black/40 flex items-start justify-center p-4 overflow-y-auto">
-          <div className="w-full max-w-6xl bg-white rounded-lg shadow-xl">
-            <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200">
-              <h3 className="text-lg font-semibold text-body">Model View - {slabSizeKey} {slabData.slab}</h3>
-              <button
-                type="button"
-                onClick={() => setIsModelModalOpen(false)}
-                className="p-1 rounded border border-gray-300 text-body"
-              >
-                <X size={16} />
-              </button>
-            </div>
-            <div className="p-6 space-y-6">
-              {renderModelContent()}
+      {isModelModalOpen && slabData && (() => {
+        const holdoutPoints = (slabData.predicted_vs_actual || []).filter(p => p.holdout_predicted_qty != null)
+        const holdoutMape = slabData?.model_coefficients?.holdout_mape
+        const showHoldoutTab = holdoutPoints.length > 0
+        return (
+          <div className="fixed inset-0 z-50 bg-black/40 flex items-start justify-center p-4 overflow-y-auto">
+            <div className="w-full max-w-6xl bg-white rounded-lg shadow-xl">
+              <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200">
+                <div className="flex items-center gap-4">
+                  <h3 className="text-lg font-semibold text-body">Model View - {slabSizeKey} {slabData.slab}</h3>
+                  {showHoldoutTab && (
+                    <div className="flex rounded-lg border border-slate-200 overflow-hidden text-sm">
+                      <button
+                        className={`px-3 py-1.5 font-medium transition-colors ${modelModalTab === 'insample' ? 'bg-slate-800 text-white' : 'bg-white text-slate-600 hover:bg-slate-50'}`}
+                        onClick={() => setModelModalTab('insample')}
+                      >In-Sample</button>
+                      <button
+                        className={`px-3 py-1.5 font-medium transition-colors ${modelModalTab === 'holdout' ? 'bg-slate-800 text-white' : 'bg-white text-slate-600 hover:bg-slate-50'}`}
+                        onClick={() => setModelModalTab('holdout')}
+                      >Out of Sample</button>
+                    </div>
+                  )}
+                </div>
+                <button type="button" onClick={() => setIsModelModalOpen(false)} className="p-1 rounded border border-gray-300 text-body">
+                  <X size={16} />
+                </button>
+              </div>
+
+              <div className="p-6 space-y-6">
+                {modelModalTab === 'insample' || !showHoldoutTab ? renderModelContent() : (() => {
+                  const holdoutR2 = slabData?.model_coefficients?.holdout_r2
+                  const mapeColor = holdoutMape == null ? '#64748b' : holdoutMape <= 15 ? '#16a34a' : holdoutMape <= 30 ? '#d97706' : '#dc2626'
+                  const mapeBg   = holdoutMape == null ? '#f8fafc' : holdoutMape <= 15 ? '#f0fdf4' : holdoutMape <= 30 ? '#fffbeb' : '#fef2f2'
+                  const r2Color  = holdoutR2  == null ? '#64748b' : holdoutR2  >= 0.85 ? '#16a34a' : holdoutR2 >= 0.65 ? '#d97706' : '#dc2626'
+                  const r2Bg     = holdoutR2  == null ? '#f8fafc' : holdoutR2  >= 0.85 ? '#f0fdf4' : holdoutR2 >= 0.65 ? '#fffbeb' : '#fef2f2'
+                  const showMetrics = slabSizeKey === '18-ML' && (slabData?.slab === 'slab3' || slabData?.slab === 'slab4')
+                  return (
+                    <div className="space-y-5">
+                      {showMetrics && (
+                        <div className="flex items-center gap-3">
+                          <div className="rounded-xl border border-slate-200 px-5 py-3 flex flex-col items-center" style={{ background: r2Bg }}>
+                            <span className="text-[10px] uppercase tracking-wide text-slate-400 mb-1">Holdout R²</span>
+                            <span className="text-xl font-bold" style={{ color: r2Color }}>
+                              {holdoutR2 != null ? Number(holdoutR2).toFixed(2) : '—'}
+                            </span>
+                          </div>
+                          <div className="rounded-xl border border-slate-200 px-5 py-3 flex flex-col items-center" style={{ background: mapeBg }}>
+                            <span className="text-[10px] uppercase tracking-wide text-slate-400 mb-1">Holdout MAPE</span>
+                            <span className="text-xl font-bold" style={{ color: mapeColor }}>
+                              {holdoutMape != null ? `${Number(holdoutMape).toFixed(1)}%` : '—'}
+                            </span>
+                          </div>
+                        </div>
+                      )}
+
+                      <div className="bg-white rounded-xl border border-slate-200 p-5">
+                        <div className="flex items-start justify-between mb-3">
+                          <div>
+                            <h4 className="text-base font-semibold text-body">Out-of-Sample Prediction — Last 4 Months</h4>
+                            <p className="text-xs text-muted mt-0.5">{slabSizeKey} · {slabData.slab} · holdout vs actual</p>
+                          </div>
+                          <div className="flex gap-2">
+                            <span className="text-xs px-2 py-1 rounded-full bg-blue-50 text-blue-700 font-medium">● Actual</span>
+                            <span className="text-xs px-2 py-1 rounded-full bg-emerald-50 text-emerald-700 font-medium">-- Holdout Predicted</span>
+                          </div>
+                        </div>
+                        <div style={{ width: '100%', height: 320 }}>
+                          <ResponsiveContainer>
+                            <ComposedChart data={holdoutPoints} margin={{ top: 8, right: 16, left: 8, bottom: 4 }}>
+                              <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                              <XAxis dataKey="period" tickFormatter={v => { try { return new Date(v).toLocaleDateString('en-GB', { month: 'short', year: '2-digit' }) } catch { return v } }} tick={{ fontSize: 11 }} />
+                              <YAxis tickFormatter={v => v >= 1e6 ? `${(v/1e6).toFixed(1)}M` : v >= 1e3 ? `${(v/1e3).toFixed(0)}K` : v} tick={{ fontSize: 11 }} width={64} />
+                              <Tooltip
+                                formatter={(v, name) => [v == null ? '—' : Number(v).toLocaleString(), name]}
+                                labelFormatter={v => { try { return new Date(v).toLocaleDateString('en-GB', { month: 'long', year: 'numeric' }) } catch { return v } }}
+                                contentStyle={{ fontSize: 12 }}
+                              />
+                              <Line type="monotone" dataKey="actual_quantity" name="Actual" stroke="#1D4ED8" strokeWidth={2} dot={{ r: 5, fill: '#1D4ED8' }} />
+                              <Line type="monotone" dataKey="holdout_predicted_qty" name="Holdout Predicted" stroke="#059669" strokeWidth={2} strokeDasharray="6 3" dot={{ r: 5, fill: '#059669' }} />
+                            </ComposedChart>
+                          </ResponsiveContainer>
+                        </div>
+                      </div>
+
+                      <div className="rounded-xl border border-slate-200 overflow-hidden">
+                        <table className="w-full text-sm">
+                          <thead className="bg-slate-50 text-xs text-slate-500 uppercase tracking-wide">
+                            <tr>
+                              <th className="text-left px-4 py-2">Month</th>
+                              <th className="text-right px-4 py-2">Actual</th>
+                              <th className="text-right px-4 py-2">Predicted</th>
+                              <th className="text-right px-4 py-2">Error %</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-100">
+                            {holdoutPoints.map((p, i) => {
+                              const act = Number(p.actual_quantity || 0)
+                              const pred = Number(p.holdout_predicted_qty || 0)
+                              const err = act > 0 ? ((pred - act) / act * 100) : null
+                              return (
+                                <tr key={i} className="hover:bg-slate-50">
+                                  <td className="px-4 py-2.5 font-medium">{(() => { try { return new Date(p.period).toLocaleDateString('en-GB', { month: 'short', year: 'numeric' }) } catch { return p.period } })()}</td>
+                                  <td className="px-4 py-2.5 text-right tabular-nums">{act.toLocaleString()}</td>
+                                  <td className="px-4 py-2.5 text-right tabular-nums">{pred.toLocaleString(undefined, { maximumFractionDigits: 0 })}</td>
+                                  <td className={`px-4 py-2.5 text-right tabular-nums font-semibold ${err == null ? '' : Math.abs(err) <= 15 ? 'text-green-600' : Math.abs(err) <= 30 ? 'text-amber-600' : 'text-red-600'}`}>
+                                    {err != null ? `${err > 0 ? '+' : ''}${err.toFixed(1)}%` : '—'}
+                                  </td>
+                                </tr>
+                              )
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  )
+                })()}
+              </div>
             </div>
           </div>
-        </div>
-      )}
+        )
+      })()}
     </div>
   )
 }
