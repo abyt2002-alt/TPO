@@ -466,15 +466,6 @@ const BaseDepthEstimator = ({
                         Actual vs Estimated Base Discount {activeDisplayLabel ? `- ${activeDisplayLabel}` : ''}
                       </h4>
                       <div className="flex items-center gap-3">
-                        <label className="inline-flex items-center gap-2 text-sm text-body">
-                          <input
-                            type="checkbox"
-                            checked={showActualDiscount}
-                            onChange={(e) => setShowActualDiscount(e.target.checked)}
-                            className="h-4 w-4 rounded border-gray-300 text-primary focus:ring-primary"
-                          />
-                          Show Actual Discount
-                        </label>
                         <button
                           type="button"
                           onClick={() => setIsChartModalOpen(true)}

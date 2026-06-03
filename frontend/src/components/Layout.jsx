@@ -49,10 +49,10 @@ const Layout = ({ children, rightSidebar }) => {
 
             {/* Centre: QPS Optimization */}
             <div className="flex-1 flex justify-center">
-              <div className="flex items-center gap-2.5">
+              <Link to="/" className="flex items-center gap-2.5 hover:opacity-80 transition-opacity">
                 <BarChart3 className="w-6 h-6 text-primary" />
                 <span className="text-xl font-bold text-body tracking-tight">QPS Optimization</span>
-              </div>
+              </Link>
             </div>
 
             {/* Right: mobile buttons */}

@@ -119,7 +119,7 @@ const ModelingROI = ({
           .map((item) => String(item?.size || item?.model_coefficients?.size_key || '').trim())
           .filter(Boolean)
       )
-    )
+    ).sort((a, b) => (a === '18-ML' ? -1 : b === '18-ML' ? 1 : 0))
   ), [validResults])
 
   const validSlabs = useMemo(() => {
