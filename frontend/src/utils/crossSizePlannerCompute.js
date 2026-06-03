@@ -70,6 +70,12 @@ const computeOtherWeightedDiscount = (slabKey, discountMap, weightMap) => {
   return num / den
 }
 
+const crossConfidence = (value) => {
+  const n = Number(value)
+  if (!Number.isFinite(n)) return 0
+  return Math.min(1, Math.max(0, n))
+}
+
 export const computeCrossSizePlannerData = ({ data, periods, scenarioDiscountsByPeriod }) => {
   if (!data?.success || !periods?.length) return data
 
@@ -87,6 +93,8 @@ export const computeCrossSizePlannerData = ({ data, periods, scenarioDiscountsBy
   const ref18Qty = Number(baseSummary?.['18-ML']?.reference_qty || 0)
   const e12From18 = Number(data?.cross_elasticity_12_from_18 || 0)
   const e18From12 = Number(data?.cross_elasticity_18_from_12 || 0)
+  const effectiveE12From18 = e12From18 * crossConfidence(data?.cross_model_r2_12)
+  const effectiveE18From12 = e18From12 * crossConfidence(data?.cross_model_r2_18)
 
   const monthlyResults = periods.map((periodKey, monthIdx) => {
     const sizes = {}
@@ -193,38 +201,55 @@ export const computeCrossSizePlannerData = ({ data, periods, scenarioDiscountsBy
     }
   })
 
-  const pre12_3m = monthlyResults.reduce((s, row) => s + Number(row?.sizes?.['12-ML']?.pre_cross_total_qty || 0), 0)
-  const pre18_3m = monthlyResults.reduce((s, row) => s + Number(row?.sizes?.['18-ML']?.pre_cross_total_qty || 0), 0)
-  const own12 = ref12Qty > 0 ? ((pre12_3m - ref12Qty) / ref12Qty) * 100 : 0
-  const own18 = ref18Qty > 0 ? ((pre18_3m - ref18Qty) / ref18Qty) * 100 : 0
-  const adjusted12Pct = own12 + (e12From18 * own18)
-  const adjusted18Pct = own18 + (e18From12 * own12)
-  const final12_3m = ref12Qty > 0 ? Math.max(ref12Qty * (1 + adjusted12Pct / 100), 0) : Math.max(pre12_3m, 0)
-  const final18_3m = ref18Qty > 0 ? Math.max(ref18Qty * (1 + adjusted18Pct / 100), 0) : Math.max(pre18_3m, 0)
+  let prev12 = Number(data?.monthly_results?.[0]?.impact?.prev12_qty || 0)
+  let prev18 = Number(data?.monthly_results?.[0]?.impact?.prev18_qty || 0)
+  if (!(prev12 > 0) && ref12Qty > 0 && periods.length) prev12 = ref12Qty / periods.length
+  if (!(prev18 > 0) && ref18Qty > 0 && periods.length) prev18 = ref18Qty / periods.length
 
-  ;['12-ML', '18-ML'].forEach((sizeKey) => {
-    const target = sizeKey === '12-ML' ? final12_3m : final18_3m
-    const cells = []
-    let sumPre = 0
-    let sumBase = 0
-    monthlyResults.forEach((row) => {
-      const slabs = row?.sizes?.[sizeKey]?.slabs || []
+  monthlyResults.forEach((row) => {
+    const pre12 = Number(row?.sizes?.['12-ML']?.pre_cross_total_qty || 0)
+    const pre18 = Number(row?.sizes?.['18-ML']?.pre_cross_total_qty || 0)
+    const own12 = prev12 > 0 ? ((pre12 - prev12) / prev12) * 100 : 0
+    const own18 = prev18 > 0 ? ((pre18 - prev18) / prev18) * 100 : 0
+    const adjusted12Pct = own12 + (effectiveE12From18 * own18)
+    const adjusted18Pct = own18 + (effectiveE18From12 * own12)
+    const final12 = prev12 > 0 ? Math.max(prev12 * (1 + adjusted12Pct / 100), 0) : Math.max(pre12, 0)
+    const final18 = prev18 > 0 ? Math.max(prev18 * (1 + adjusted18Pct / 100), 0) : Math.max(pre18, 0)
+
+    ;[
+      ['12-ML', final12],
+      ['18-ML', final18],
+    ].forEach(([sizeKey, target]) => {
+      const block = row?.sizes?.[sizeKey]
+      const slabs = block?.slabs || []
+      if (!slabs.length) return
+      const sumPre = slabs.reduce((s, slab) => s + Math.max(Number(slab?.pre_cross_qty || 0), 0), 0)
+      const sumBase = slabs.reduce((s, slab) => s + Math.max(Number(slab?.non_discount_baseline_qty || 0), 0), 0)
       slabs.forEach((slab) => {
         const pre = Math.max(Number(slab?.pre_cross_qty || 0), 0)
         const base = Math.max(Number(slab?.non_discount_baseline_qty || 0), 0)
-        sumPre += pre
-        sumBase += base
-        cells.push({ slab, pre, base })
+        let share = 1 / Math.max(slabs.length, 1)
+        if (sumPre > 0) share = pre / sumPre
+        else if (sumBase > 0) share = base / sumBase
+        slab.final_qty = Math.max(Number(target || 0) * share, 0)
       })
+      block.final_total_qty = slabs.reduce((s, slab) => s + Number(slab?.final_qty || 0), 0)
     })
-    if (!cells.length) return
-    let shares
-    if (sumPre > 0) shares = cells.map((c) => c.pre / sumPre)
-    else if (sumBase > 0) shares = cells.map((c) => c.base / sumBase)
-    else shares = cells.map(() => 1 / cells.length)
-    cells.forEach((c, idx) => {
-      c.slab.final_qty = Math.max(target * shares[idx], 0)
-    })
+
+    row.impact = {
+      prev12_qty: prev12,
+      prev18_qty: prev18,
+      pre12_qty: pre12,
+      pre18_qty: pre18,
+      final12_qty: final12,
+      final18_qty: final18,
+      own12_pct: own12,
+      own18_pct: own18,
+      overall12_pct: adjusted12Pct,
+      overall18_pct: adjusted18Pct,
+    }
+    prev12 = final12
+    prev18 = final18
   })
 
   const summary = {

@@ -1368,82 +1368,66 @@ const ScenarioComparison = ({
     if (!exists) setSelectedSavedReportKey('')
   }, [savedReports, selectedSavedReportKey])
 
+  const savedCount = Array.isArray(savedReports) ? savedReports.length : 0
+
   return (
     <div className="space-y-6">
-      <div className="bg-white rounded-lg shadow-md p-3 sticky top-0 z-20">
-        <div className="flex items-center gap-2 flex-wrap">
-          <span className="text-sm font-semibold text-body whitespace-nowrap">Saved Scenarios</span>
-          <select
-            value={selectedSavedReportKey}
-            onChange={(e) => {
-              const key = String(e.target.value || '').trim()
-              setSelectedSavedReportKey(key)
-              if (key) openSavedScenarioModal(key)
-            }}
-            className="min-w-[240px] max-w-[420px] px-3 py-2 text-sm border border-slate-300 rounded-lg bg-white"
-          >
-            <option value="">Select saved Step 5 scenario</option>
-            {(Array.isArray(savedReports) ? savedReports : []).slice(0, 300).map((row) => (
-              <option key={String(row?.report_key || '')} value={String(row?.report_key || '')}>
-                {String(row?.name || '').trim() || 'Saved Scenario'}
-              </option>
-            ))}
-          </select>
-          <button
-            type="button"
-            onClick={() => {
-              if (!selectedSavedReportKey) return
-              openSavedScenarioModal(selectedSavedReportKey)
-            }}
-            disabled={!selectedSavedReportKey}
-            className="inline-flex items-center gap-1 px-2.5 py-2 rounded-lg border border-slate-300 text-body hover:bg-slate-50 text-sm disabled:opacity-40"
-          >
-            <FolderOpen size={14} />
-            Open
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              if (!selectedSavedReportKey || typeof onDeleteSavedReport !== 'function') return
-              onDeleteSavedReport(selectedSavedReportKey)
-            }}
-            disabled={!selectedSavedReportKey}
-            className="inline-flex items-center gap-1 px-2.5 py-2 rounded-lg border border-slate-300 text-body hover:bg-slate-50 text-sm disabled:opacity-40"
-          >
-            <X size={14} />
-            Delete
-          </button>
-          <button
-            type="button"
-            onClick={handleDownloadSavedScenariosWorkbook}
-            disabled={!Array.isArray(savedReports) || savedReports.length === 0}
-            className="inline-flex items-center gap-1 px-2.5 py-2 rounded-lg border border-slate-300 text-body hover:bg-slate-50 text-sm disabled:opacity-40"
-          >
-            <Download size={14} />
-            Download All
-          </button>
-          {saveReportMessage ? (
-            <span className="text-xs text-muted truncate">{saveReportMessage}</span>
-          ) : null}
-        </div>
-        {discountConstraintError ? (
-          <div className="mt-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-danger">
-            {discountConstraintError}
-          </div>
-        ) : null}
-      </div>
-
       <div className="bg-white rounded-lg shadow-md p-4">
         <div className="flex items-center justify-between gap-3 mb-2">
           <h3 className="text-base font-bold text-body">Input Filters (Discount %)</h3>
-          <button
-            type="button"
-            onClick={clearInputFilters}
-            className="px-2.5 py-1 rounded-md border border-slate-300 bg-white text-xs font-medium text-body"
-          >
-            Clear
-          </button>
+          <div className="flex items-center gap-2">
+            {/* Compact saved scenarios */}
+            <div className="relative flex items-center gap-1.5">
+              <select
+                value={selectedSavedReportKey}
+                onChange={(e) => {
+                  const key = String(e.target.value || '').trim()
+                  setSelectedSavedReportKey(key)
+                  if (key) openSavedScenarioModal(key)
+                }}
+                className="pl-3 pr-7 py-1.5 text-xs border border-slate-200 rounded-lg bg-white text-slate-600 font-medium focus:outline-none focus:ring-2 focus:ring-violet-300 max-w-[160px]"
+              >
+                <option value="">Saved {savedCount > 0 ? `(${savedCount})` : ''}</option>
+                {(Array.isArray(savedReports) ? savedReports : []).slice(0, 300).map((row) => (
+                  <option key={String(row?.report_key || '')} value={String(row?.report_key || '')}>
+                    {String(row?.name || '').trim() || 'Saved Scenario'}
+                  </option>
+                ))}
+              </select>
+              {selectedSavedReportKey && (
+                <button
+                  type="button"
+                  onClick={() => { if (selectedSavedReportKey || typeof onDeleteSavedReport !== 'function') return; onDeleteSavedReport(selectedSavedReportKey) }}
+                  className="p-1.5 rounded-lg border border-slate-200 text-slate-400 hover:text-red-500 hover:border-red-200 transition-colors"
+                  title="Delete"
+                >
+                  <X size={12} />
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={handleDownloadSavedScenariosWorkbook}
+                disabled={savedCount === 0}
+                className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-slate-200 text-xs text-slate-600 font-medium hover:bg-slate-50 disabled:opacity-40 transition-colors"
+              >
+                <Download size={12} /> Download
+              </button>
+            </div>
+            <button
+              type="button"
+              onClick={clearInputFilters}
+              className="px-2.5 py-1.5 rounded-lg border border-slate-200 bg-white text-xs font-medium text-slate-500 hover:bg-slate-50"
+            >
+              Clear
+            </button>
+          </div>
         </div>
+        {saveReportMessage ? <p className="text-xs text-muted mb-2">{saveReportMessage}</p> : null}
+        {discountConstraintError ? (
+          <div className="mb-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-danger">
+            {discountConstraintError}
+          </div>
+        ) : null}
         <p className="text-[11px] text-muted mb-3">Set slab-month min/max. Example: Jan 12-ML slab2 max = 18.</p>
         <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
           {['12-ML', '18-ML'].map((sizeKey) => (

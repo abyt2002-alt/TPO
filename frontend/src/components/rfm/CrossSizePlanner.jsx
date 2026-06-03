@@ -25,6 +25,12 @@ const pctToneClass = (value) => {
   return n > 0 ? 'text-success' : 'text-danger'
 }
 
+const crossConfidence = (value) => {
+  const n = Number(value)
+  if (!Number.isFinite(n)) return 0
+  return Math.min(1, Math.max(0, n))
+}
+
 const formatWhole = (value) => {
   const n = Number(value)
   if (!Number.isFinite(n)) return 'NA'
@@ -481,7 +487,8 @@ const CrossSizePlanner = ({
     const ref18Profit = Number(baseSummary?.['18-ML']?.reference_profit || 0)
     const e12From18 = Number(data?.cross_elasticity_12_from_18 || 0)
     const e18From12 = Number(data?.cross_elasticity_18_from_12 || 0)
-
+    const effectiveE12From18 = e12From18 * crossConfidence(data?.cross_model_r2_12)
+    const effectiveE18From12 = e18From12 * crossConfidence(data?.cross_model_r2_18)
     const monthlyResults = periods.map((periodKey, monthIdx) => {
       const sizes = {}
       ;['12-ML', '18-ML'].forEach((sizeKey) => {
@@ -524,7 +531,10 @@ const CrossSizePlanner = ({
           const clpPrice = Number(model?.clp_price || basePrice)
           const cogsPerUnit = Number(model?.cogs_per_unit || 0)
           const nonDiscountBaseline = Number(baselineSlabMatrix?.[sizeKey]?.[slabKey]?.[monthIdx] || 0)
-          const discountComponentScenario = (coefBase * scenarioDiscount) + (coefLag * lagUsed) + (coefOther * otherWeighted)
+          const ownDiscountQty = coefBase * scenarioDiscount
+          const lagDiscountQty = coefLag * lagUsed
+          const crossSlabQty = coefOther * otherWeighted
+          const discountComponentScenario = ownDiscountQty + lagDiscountQty + crossSlabQty
           const preCrossQty = Math.max(nonDiscountBaseline + discountComponentScenario, 0)
           return {
             slab: slabKey,
@@ -534,6 +544,9 @@ const CrossSizePlanner = ({
             lag_used_pct: lagUsed,
             other_weighted_default_pct: otherWeighted,
             other_weighted_scenario_pct: otherWeighted,
+            own_discount_component_qty: ownDiscountQty,
+            lag_discount_component_qty: lagDiscountQty,
+            cross_slab_component_qty: crossSlabQty,
             discount_component_default_qty: discountComponentScenario,
             discount_component_scenario_qty: discountComponentScenario,
             non_discount_baseline_qty: nonDiscountBaseline,
@@ -584,38 +597,55 @@ const CrossSizePlanner = ({
       }
     })
 
-    const pre12_3m = monthlyResults.reduce((s, row) => s + Number(row?.sizes?.['12-ML']?.pre_cross_total_qty || 0), 0)
-    const pre18_3m = monthlyResults.reduce((s, row) => s + Number(row?.sizes?.['18-ML']?.pre_cross_total_qty || 0), 0)
-    const own12 = ref12Qty > 0 ? ((pre12_3m - ref12Qty) / ref12Qty) * 100 : 0
-    const own18 = ref18Qty > 0 ? ((pre18_3m - ref18Qty) / ref18Qty) * 100 : 0
-    const adjusted12Pct = own12 + (e12From18 * own18)
-    const adjusted18Pct = own18 + (e18From12 * own12)
-    const final12_3m = ref12Qty > 0 ? Math.max(ref12Qty * (1 + adjusted12Pct / 100), 0) : Math.max(pre12_3m, 0)
-    const final18_3m = ref18Qty > 0 ? Math.max(ref18Qty * (1 + adjusted18Pct / 100), 0) : Math.max(pre18_3m, 0)
+    let prev12 = Number(data?.monthly_results?.[0]?.impact?.prev12_qty || 0)
+    let prev18 = Number(data?.monthly_results?.[0]?.impact?.prev18_qty || 0)
+    if (!(prev12 > 0) && ref12Qty > 0 && periods.length) prev12 = ref12Qty / periods.length
+    if (!(prev18 > 0) && ref18Qty > 0 && periods.length) prev18 = ref18Qty / periods.length
 
-    ;['12-ML', '18-ML'].forEach((sizeKey) => {
-      const target = sizeKey === '12-ML' ? final12_3m : final18_3m
-      const cells = []
-      let sumPre = 0
-      let sumBase = 0
-      monthlyResults.forEach((row) => {
-        const slabs = row?.sizes?.[sizeKey]?.slabs || []
+    monthlyResults.forEach((row) => {
+      const pre12 = Number(row?.sizes?.['12-ML']?.pre_cross_total_qty || 0)
+      const pre18 = Number(row?.sizes?.['18-ML']?.pre_cross_total_qty || 0)
+      const own12 = prev12 > 0 ? ((pre12 - prev12) / prev12) * 100 : 0
+      const own18 = prev18 > 0 ? ((pre18 - prev18) / prev18) * 100 : 0
+      const adjusted12Pct = own12 + (effectiveE12From18 * own18)
+      const adjusted18Pct = own18 + (effectiveE18From12 * own12)
+      const final12 = prev12 > 0 ? Math.max(prev12 * (1 + adjusted12Pct / 100), 0) : Math.max(pre12, 0)
+      const final18 = prev18 > 0 ? Math.max(prev18 * (1 + adjusted18Pct / 100), 0) : Math.max(pre18, 0)
+
+      ;[
+        ['12-ML', final12],
+        ['18-ML', final18],
+      ].forEach(([sizeKey, target]) => {
+        const block = row?.sizes?.[sizeKey]
+        const slabs = block?.slabs || []
+        if (!slabs.length) return
+        const sumPre = slabs.reduce((s, slab) => s + Math.max(Number(slab?.pre_cross_qty || 0), 0), 0)
+        const sumBase = slabs.reduce((s, slab) => s + Math.max(Number(slab?.non_discount_baseline_qty || 0), 0), 0)
         slabs.forEach((slab) => {
           const pre = Math.max(Number(slab?.pre_cross_qty || 0), 0)
           const base = Math.max(Number(slab?.non_discount_baseline_qty || 0), 0)
-          sumPre += pre
-          sumBase += base
-          cells.push({ slab, pre, base })
+          let share = 1 / Math.max(slabs.length, 1)
+          if (sumPre > 0) share = pre / sumPre
+          else if (sumBase > 0) share = base / sumBase
+          slab.final_qty = Math.max(Number(target || 0) * share, 0)
         })
+        block.final_total_qty = slabs.reduce((s, slab) => s + Number(slab?.final_qty || 0), 0)
       })
-      if (!cells.length) return
-      let shares
-      if (sumPre > 0) shares = cells.map((c) => c.pre / sumPre)
-      else if (sumBase > 0) shares = cells.map((c) => c.base / sumBase)
-      else shares = cells.map(() => 1 / cells.length)
-      cells.forEach((c, idx) => {
-        c.slab.final_qty = Math.max(target * shares[idx], 0)
-      })
+
+      row.impact = {
+        prev12_qty: prev12,
+        prev18_qty: prev18,
+        pre12_qty: pre12,
+        pre18_qty: pre18,
+        final12_qty: final12,
+        final18_qty: final18,
+        own12_pct: own12,
+        own18_pct: own18,
+        overall12_pct: adjusted12Pct,
+        overall18_pct: adjusted18Pct,
+      }
+      prev12 = final12
+      prev18 = final18
     })
 
     const summary = {
@@ -847,16 +877,11 @@ const CrossSizePlanner = ({
 
     monthlyResults.forEach((row) => {
       row.impact = {
-        prev12_qty: Number(row?.sizes?.['12-ML']?.baseline_total_qty || 0),
-        prev18_qty: Number(row?.sizes?.['18-ML']?.baseline_total_qty || 0),
+        ...(row?.impact || {}),
         pre12_qty: Number(row?.sizes?.['12-ML']?.pre_cross_total_qty || 0),
         pre18_qty: Number(row?.sizes?.['18-ML']?.pre_cross_total_qty || 0),
         final12_qty: Number(row?.sizes?.['12-ML']?.final_total_qty || 0),
         final18_qty: Number(row?.sizes?.['18-ML']?.final_total_qty || 0),
-        own12_pct: own12,
-        own18_pct: own18,
-        overall12_pct: adjusted12Pct,
-        overall18_pct: adjusted18Pct,
       }
     })
 
@@ -1139,81 +1164,111 @@ const CrossSizePlanner = ({
             const hasReference = Number(refSummary?.reference_available || 0) > 0 && referenceQty > 0
             const volumePct = hasReference
               ? Number(((volumeAbs - referenceQty) / referenceQty) * 100)
-              : Number(summary.volume_delta_pct ?? summary.volume_delta_additive_pct ?? 0)
+              : Number.NaN
             const revenueGrossAbs = Number((summary.scenario_revenue_gross ?? summary.scenario_revenue) || 0)
             const revenueNetAbs = Number(summary.scenario_revenue_net || 0)
             const profitAbs = Number(summary.scenario_profit || 0)
             const investmentAbs = Number(summary.scenario_investment ?? 0)
             const revenueGrossPct = hasReference
               ? Number(referenceRevenueGross > 0 ? ((revenueGrossAbs - referenceRevenueGross) / referenceRevenueGross) * 100 : 0)
-              : Number((summary.revenue_gross_delta_pct ?? summary.revenue_delta_pct) || 0)
+              : Number.NaN
             const revenueNetPct = hasReference
               ? Number(referenceRevenueNet > 0 ? ((revenueNetAbs - referenceRevenueNet) / referenceRevenueNet) * 100 : 0)
-              : Number(summary.revenue_net_delta_pct || 0)
+              : Number.NaN
             const netMarginAbs = revenueNetAbs > 0 ? ((profitAbs / revenueNetAbs) * 100) : 0
             const referenceNetMargin = referenceRevenueNet > 0 ? ((referenceProfit / referenceRevenueNet) * 100) : 0
             const netMarginPct = hasReference
               ? Number(netMarginAbs - referenceNetMargin)
-              : 0
+              : Number.NaN
             const hasReferenceInvestment = referenceInvestment > 0
             const investmentPct = hasReferenceInvestment
               ? Number(((investmentAbs - referenceInvestment) / referenceInvestment) * 100)
-              : 0
+              : Number.NaN
             const ctsAbs = Number(revenueGrossAbs > 0 ? (investmentAbs / revenueGrossAbs) * 100 : 0)
             const referenceCts = Number(referenceRevenueGross > 0 ? (referenceInvestment / referenceRevenueGross) * 100 : 0)
             const hasReferenceCts = referenceCts > 0
             const ctsPct = hasReferenceCts
               ? Number(((ctsAbs - referenceCts) / referenceCts) * 100)
-              : 0
+              : Number.NaN
+            const pctPill = (pct) => {
+              const isPos = Number.isFinite(pct) && pct > 0
+              const isNeg = Number.isFinite(pct) && pct < 0
+              const arrow = isPos ? '↑' : isNeg ? '↓' : '→'
+              const cls = isPos
+                ? 'bg-green-50 text-green-700'
+                : isNeg
+                ? 'bg-red-50 text-red-600'
+                : 'bg-slate-100 text-slate-500'
+              return (
+                <span className={`inline-flex items-center gap-0.5 text-[11px] font-bold px-1.5 py-0.5 rounded-full w-fit ${cls}`}>
+                  {arrow} {formatSignedPct(pct)}
+                </span>
+              )
+            }
+            const MetricCell = ({ label, value, pct, refValue }) => (
+              <div className="p-3 flex flex-col gap-1">
+                <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider">{label}</p>
+                <p className="text-[1.2rem] font-bold text-slate-800 leading-tight whitespace-nowrap">{value}</p>
+                <div className="flex flex-col gap-0.5 mt-0.5">
+                  {pctPill(pct)}
+                  <span className="text-[10px] text-slate-400">vs {refValue}</span>
+                </div>
+              </div>
+            )
+            const accentColor = card.key === '12-ML'
+              ? 'border-t-blue-500'
+              : card.key === '18-ML'
+              ? 'border-t-orange-400'
+              : 'border-t-violet-500'
+            const cardBase = card.isTotal
+              ? 'rounded-xl border border-violet-200 bg-violet-50/40 shadow-md overflow-hidden border-t-[3px] scale-[1.02] z-10'
+              : 'rounded-xl border border-slate-200 bg-white shadow-sm overflow-hidden border-t-[3px]'
             return (
-              <div key={card.key} className="rounded-lg border border-slate-200 bg-slate-50 p-3">
-                <p className="text-sm font-semibold text-body">{card.title}</p>
-                <div className={`grid gap-3 mt-3 ${card.isTotal ? 'grid-cols-2 md:grid-cols-3' : 'grid-cols-2 md:grid-cols-4'}`}>
-                  <div className="min-w-0">
-                    <p className="text-[10px] uppercase tracking-wide text-muted">{card.isTotal ? 'Volume Units' : 'Volume'}</p>
-                    <p className="text-xl md:text-2xl leading-tight mt-2 font-semibold text-body whitespace-nowrap">{formatCompact(volumeAbs)}</p>
-                    <p className={`text-sm font-semibold mt-1 ${pctToneClass(volumePct)}`}>
-                      {formatSignedPct(volumePct)}
-                    </p>
-                  </div>
-                  <div className="min-w-0">
-                    <p className="text-[10px] uppercase tracking-wide text-muted">Gross Revenue</p>
-                    <p className="text-xl md:text-2xl leading-tight mt-2 font-semibold text-body whitespace-nowrap">{formatCompact(revenueGrossAbs)}</p>
-                    <p className={`text-sm font-semibold mt-1 ${pctToneClass(revenueGrossPct)}`}>
-                      {formatSignedPct(revenueGrossPct)}
-                    </p>
-                  </div>
-                  <div className="min-w-0">
-                    <p className="text-[10px] uppercase tracking-wide text-muted">Net Revenue</p>
-                    <p className="text-xl md:text-2xl leading-tight mt-2 font-semibold text-body whitespace-nowrap">{formatCompact(revenueNetAbs)}</p>
-                    <p className={`text-sm font-semibold mt-1 ${pctToneClass(revenueNetPct)}`}>
-                      {formatSignedPct(revenueNetPct)}
-                    </p>
-                  </div>
-                  <div className="min-w-0">
-                    <p className="text-[10px] uppercase tracking-wide text-muted">Net Margin %</p>
-                    <p className="text-xl md:text-2xl leading-tight mt-2 font-semibold text-body whitespace-nowrap">{formatFixed(netMarginAbs, 2)}%</p>
-                    <p className={`text-sm font-semibold mt-1 ${pctToneClass(netMarginPct)}`}>
-                      {formatSignedPct(netMarginPct)}
-                    </p>
-                  </div>
+              <div key={card.key} className={`${cardBase} ${accentColor}`}>
+                <div className={`px-4 py-2.5 border-b flex items-center justify-center gap-2 ${card.isTotal ? 'border-violet-100 bg-violet-50/60' : 'border-slate-100'}`}>
+                  <p className={`text-sm font-bold ${card.isTotal ? 'text-violet-800' : 'text-slate-700'}`}>{card.title}</p>
+                  {pctPill(volumePct)}
+                </div>
+                <div className="grid grid-cols-2 divide-x divide-y divide-slate-100">
+                  <MetricCell
+                    label={card.isTotal ? 'Volume Units' : 'Volume'}
+                    value={formatCompact(volumeAbs)}
+                    pct={volumePct}
+                    refValue={formatCompact(referenceQty)}
+                  />
+                  <MetricCell
+                    label="Gross Revenue"
+                    value={formatCompact(revenueGrossAbs)}
+                    pct={revenueGrossPct}
+                    refValue={formatCompact(referenceRevenueGross)}
+                  />
+                  <MetricCell
+                    label="Net Revenue"
+                    value={formatCompact(revenueNetAbs)}
+                    pct={revenueNetPct}
+                    refValue={formatCompact(referenceRevenueNet)}
+                  />
+                  <MetricCell
+                    label="Net Margin"
+                    value={`${formatFixed(netMarginAbs, 2)}%`}
+                    pct={netMarginPct}
+                    refValue={`${formatFixed(referenceNetMargin, 2)}%`}
+                  />
                   {card.isTotal ? (
-                    <div className="min-w-0">
-                      <p className="text-[10px] uppercase tracking-wide text-muted">Investment</p>
-                      <p className="text-xl md:text-2xl leading-tight mt-2 font-semibold text-body whitespace-nowrap">{formatCompact(investmentAbs)}</p>
-                      <p className={`text-sm font-semibold mt-1 ${pctToneClass(investmentPct)}`}>
-                        {formatSignedPct(investmentPct)}
-                      </p>
-                    </div>
+                    <MetricCell
+                      label="Investment"
+                      value={formatCompact(investmentAbs)}
+                      pct={investmentPct}
+                      refValue={formatCompact(referenceInvestment)}
+                    />
                   ) : null}
                   {card.isTotal ? (
-                    <div className="min-w-0">
-                      <p className="text-[10px] uppercase tracking-wide text-muted">CTS</p>
-                      <p className="text-xl md:text-2xl leading-tight mt-2 font-semibold text-body whitespace-nowrap">{formatFixed(ctsAbs, 2)}%</p>
-                      <p className={`text-sm font-semibold mt-1 ${pctToneClass(ctsPct)}`}>
-                        {formatSignedPct(ctsPct)}
-                      </p>
-                    </div>
+                    <MetricCell
+                      label="CTS"
+                      value={`${formatFixed(ctsAbs, 2)}%`}
+                      pct={ctsPct}
+                      refValue={`${formatFixed(referenceCts, 2)}%`}
+                    />
                   ) : null}
                 </div>
               </div>

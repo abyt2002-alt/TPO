@@ -516,21 +516,27 @@ class EDAServiceMixin:
         work["MRP"] = pd.to_numeric(work.get("MRP"), errors="coerce").fillna(0.0)
         work["Quantity"] = pd.to_numeric(work.get("Quantity"), errors="coerce").fillna(0.0)
         work["mrp_x_qty"] = work["MRP"] * work["Quantity"]
+        # weighted disc numerator: Total_Scheme_Pct × Qty — same formula as Step 2
+        work["_weighted_disc"] = (
+            pd.to_numeric(work.get("Total_Scheme_Pct"), errors="coerce").fillna(0.0)
+            * work["Quantity"]
+        )
 
         grouped = (
             work.groupby(["period", "Sizes", "Slab"], as_index=False)
             .agg(
                 quantity=("Quantity", "sum"),
-                sales_value=("SalesValue_atBasicRate", "sum"),
-                discount_value=("TotalDiscount", "sum"),
+                sales_value=("Net_Amt", "sum"),        # CLP-based revenue
+                _weighted_disc=("_weighted_disc", "sum"),
                 mrp_x_qty=("mrp_x_qty", "sum"),
             )
             .sort_values(["Sizes", "Slab", "period"], kind="mergesort")
         )
 
+        # discount_pct = Σ(Total_Scheme_Pct × Qty) / Σ(Qty) — quantity-weighted, consistent with Step 2
         grouped["discount_pct"] = np.where(
-            grouped["sales_value"] > 0,
-            grouped["discount_value"] / grouped["sales_value"] * 100.0,
+            grouped["quantity"] > 0,
+            grouped["_weighted_disc"] / grouped["quantity"],
             0.0,
         )
         grouped["volume_change_pct"] = (

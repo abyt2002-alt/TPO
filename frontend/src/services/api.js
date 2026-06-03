@@ -81,7 +81,7 @@ export const calculateCrossSizePlanner = async (payload) => {
 
 export const calculateBaselineForecast = async (payload) => {
   const response = await api.post('/api/forecast/baseline', payload, {
-    timeout: 180000,
+    timeout: 360000,
   })
   return response.data
 }

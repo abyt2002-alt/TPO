@@ -30,9 +30,46 @@ const toMonthLabel = (period) => {
   return d.toLocaleDateString(undefined, { month: 'short', year: '2-digit' })
 }
 
+const SizeBaselineTooltip = ({ active, payload, sizeKey }) => {
+  if (!active || !Array.isArray(payload) || !payload.length) return null
+  const row = payload[0]?.payload || {}
+  const is12 = sizeKey === '12-ML'
+  const baseline = Number(row[is12 ? 'baseline_12_ml' : 'baseline_18_ml'] || 0)
+  const discount = Number(row[is12 ? 'discount_component_12_ml' : 'discount_component_18_ml'] || 0)
+  const total = baseline + discount
+  const accent = is12 ? 'text-blue-700' : 'text-red-700'
+  const discountTone = is12 ? 'text-teal-700' : 'text-amber-700'
+
+  return (
+    <div className="rounded-lg border border-slate-200 bg-white px-4 py-3 shadow-lg min-w-[230px]">
+      <div className="flex items-center justify-between gap-3">
+        <p className="text-sm font-semibold text-body">{toMonthLabel(row.period)}</p>
+        <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-600">
+          {row.is_forecast ? 'Forecast' : 'History'}
+        </span>
+      </div>
+      <div className="mt-3 border-t border-slate-100 pt-3 space-y-2">
+        <div className="flex items-center justify-between gap-4">
+          <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">{sizeKey} Total</span>
+          <span className="text-base font-bold text-body">{formatQty(total)}</span>
+        </div>
+        <div className="flex items-center justify-between gap-4">
+          <span className={`text-sm font-medium ${accent}`}>Baseline</span>
+          <span className={`text-sm font-semibold ${accent}`}>{formatQty(baseline)}</span>
+        </div>
+        <div className="flex items-center justify-between gap-4">
+          <span className={`text-sm font-medium ${discountTone}`}>Discount Component</span>
+          <span className={`text-sm font-semibold ${discountTone}`}>{formatQty(discount)}</span>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 const BaselineForecast = ({
   data,
   plannerData,
+  modelingResult,
   isLoading,
   isError,
   errorMessage,
@@ -114,6 +151,8 @@ const BaselineForecast = ({
     )
   }
 
+  const slabPoints = Array.isArray(data?.slab_points) ? data.slab_points : []
+
   const points = Array.isArray(data?.points) ? data.points : []
   if (!points.length) {
     return (
@@ -140,26 +179,6 @@ const BaselineForecast = ({
     }
   })
 
-  const plannerMonthlyResults = Array.isArray(plannerData?.monthly_results) ? plannerData.monthly_results : []
-  const plannerForecastPoints = plannerMonthlyResults.map((row) => {
-    const size12 = row?.sizes?.['12-ML'] || {}
-    const size18 = row?.sizes?.['18-ML'] || {}
-    const baseline12 = Number(size12?.baseline_total_qty || 0)
-    const baseline18 = Number(size18?.baseline_total_qty || 0)
-    const total12 = Number(size12?.final_total_qty ?? size12?.pre_cross_total_qty ?? 0)
-    const total18 = Number(size18?.final_total_qty ?? size18?.pre_cross_total_qty ?? 0)
-    return {
-      period: String(row?.period || ''),
-      is_forecast: true,
-      baseline12,
-      discount12: total12 - baseline12,
-      baseline18,
-      discount18: total18 - baseline18,
-      total12,
-      total18,
-    }
-  }).filter((row) => row.period)
-
   const historicalPoints = parsedPoints
     .filter((row) => !row.is_forecast)
     .map((row) => {
@@ -183,9 +202,35 @@ const BaselineForecast = ({
       }
     })
 
+  const forecastPoints = (() => {
+    const backendForecast = parsedPoints
+      .filter((row) => row.is_forecast)
+      .sort((a, b) => String(a.period || '').localeCompare(String(b.period || '')))
+    const lagDiscountSource = [...historicalPoints]
+      .sort((a, b) => String(a.period || '').localeCompare(String(b.period || '')))
+      .slice(-backendForecast.length)
+
+    return backendForecast.map((row, index) => {
+      const src = lagDiscountSource[index] || {}
+      const baseline12 = Number(row.baseline12 || 0)
+      const baseline18 = Number(row.baseline18 || 0)
+      const discount12 = Number(src.discount12 ?? row.discount12 ?? 0)
+      const discount18 = Number(src.discount18 ?? row.discount18 ?? 0)
+      return {
+        ...row,
+        baseline12,
+        baseline18,
+        discount12,
+        discount18,
+        total12: baseline12 + discount12,
+        total18: baseline18 + discount18,
+      }
+    })
+  })()
+
   const combinedPoints = [
     ...historicalPoints,
-    ...(plannerForecastPoints.length > 0 ? plannerForecastPoints : parsedPoints.filter((row) => row.is_forecast)),
+    ...forecastPoints,
   ]
 
   const renderForecastDot = ({ cx, cy, payload }) => {
@@ -226,6 +271,62 @@ const BaselineForecast = ({
   const forecastOnly = chartData.filter((row) => row.is_forecast)
   const nextForecast = forecastOnly[0] || null
 
+  // Per-slab: actual historical volume + lag-3 carry-forward forecast (May = Feb actual, Jun = Mar, Jul = Apr)
+  const slabChartsBySizeAndSlab = (() => {
+    const result = {}
+    const slabResultsList = Array.isArray(modelingResult?.slab_results) ? modelingResult.slab_results : []
+    slabResultsList.forEach((slabRes) => {
+      const sizeKey = String(slabRes?.size || '')
+      const slabLabel = String(slabRes?.slab || '')
+      if (!sizeKey || !slabLabel) return
+      const key = `${sizeKey}||${slabLabel}`
+      if (!result[key]) result[key] = { size: sizeKey, slab: slabLabel, points: [] }
+      const pts = Array.isArray(slabRes?.predicted_vs_actual) ? slabRes.predicted_vs_actual : []
+      pts.forEach((pt) => {
+        const periodStr = pt.period ? String(pt.period).slice(0, 7) : ''
+        if (!periodStr) return
+        result[key].points.push({
+          period: periodStr,
+          month: toMonthLabel(periodStr),
+          actual: Math.max(Number(pt.actual_quantity || 0), 0),
+          forecast: null,
+          is_forecast: false,
+        })
+      })
+      // Forecast: shift last 3 actuals forward by 3 months
+      const sorted = [...result[key].points].sort((a, b) => a.period.localeCompare(b.period))
+      const last3 = sorted.slice(-3)
+      last3.forEach((src, i) => {
+        const [yr, mo] = src.period.split('-').map(Number)
+        const shifted = new Date(yr, mo - 1 + 3, 1)
+        const fcPeriod = `${shifted.getFullYear()}-${String(shifted.getMonth() + 1).padStart(2, '0')}`
+        result[key].points.push({
+          period: fcPeriod,
+          month: toMonthLabel(fcPeriod),
+          actual: null,
+          forecast: src.actual,
+          is_forecast: true,
+        })
+      })
+      // Bridge: duplicate last history point as start of forecast line so it connects
+      result[key].points.sort((a, b) => a.period.localeCompare(b.period))
+      const lastHistIdx = result[key].points.map((p) => p.is_forecast).lastIndexOf(false)
+      const firstFcIdx = result[key].points.findIndex((p) => p.is_forecast)
+      if (lastHistIdx >= 0 && firstFcIdx > lastHistIdx) {
+        const bridge = { ...result[key].points[lastHistIdx], forecast: result[key].points[lastHistIdx].actual, actual: null, is_forecast: true }
+        result[key].points.splice(firstFcIdx, 0, bridge)
+      }
+    })
+    return result
+  })()
+
+  const slabChartEntries12 = Object.values(slabChartsBySizeAndSlab)
+    .filter((e) => e.size === '12-ML')
+    .sort((a, b) => a.slab.localeCompare(b.slab))
+  const slabChartEntries18 = Object.values(slabChartsBySizeAndSlab)
+    .filter((e) => e.size === '18-ML')
+    .sort((a, b) => a.slab.localeCompare(b.slab))
+
   return (
     <div className="space-y-6">
       <div className="bg-white rounded-xl shadow-md border border-slate-200 p-6">
@@ -239,7 +340,7 @@ const BaselineForecast = ({
           <div className="rounded-lg border border-sky-200 bg-sky-50 px-4 py-3 text-sm text-sky-900 max-w-md">
             <p className="font-semibold">Method</p>
             <p className="mt-1">
-              Historical months use backend baseline history. Forecast months use the current Step 4 planner scenario when available. Forecast zone starts after{' '}
+              Historical months show actual volume. Forecast months use the backend baseline forecast, keeping baseline and discount component separate. Forecast zone starts after{' '}
               <span className="font-semibold">{latestHistory ? toMonthLabel(latestHistory.period) : '-'}</span>.
             </p>
           </div>
@@ -323,8 +424,14 @@ const BaselineForecast = ({
                   <CartesianGrid strokeDasharray="4 4" stroke="#d8dde6" />
                   <XAxis dataKey="month" minTickGap={20} />
                   <YAxis width={72} tickFormatter={formatAxisTick} />
-                  <Tooltip formatter={(value, name) => [formatQty(value), name]} />
-                  <Legend />
+                  <Tooltip content={<SizeBaselineTooltip sizeKey="12-ML" />} />
+                  <Legend
+                    payload={[
+                      { value: 'Baseline', type: 'square', color: '#1D4ED8' },
+                      { value: 'Discount Component', type: 'square', color: '#0F766E' },
+                      { value: 'Total', type: 'line', color: '#0F766E' },
+                    ]}
+                  />
                   {forecastStartLabel && forecastEndLabel && (
                     <ReferenceArea
                       x1={forecastStartLabel}
@@ -335,7 +442,7 @@ const BaselineForecast = ({
                     />
                   )}
                   <Area
-                    type="monotone"
+                    type="linear"
                     dataKey="baseline_12_ml"
                     name="12-ML Baseline"
                     stackId="12ml-stack"
@@ -345,7 +452,7 @@ const BaselineForecast = ({
                     dot={false}
                   />
                   <Area
-                    type="monotone"
+                    type="linear"
                     dataKey="discount_component_12_ml"
                     name="12-ML Discount Component"
                     stackId="12ml-stack"
@@ -355,27 +462,30 @@ const BaselineForecast = ({
                     dot={false}
                   />
                   <Line
-                    type="monotone"
+                    type="linear"
                     dataKey="baseline_12_ml"
-                    name="12-ML Baseline Line"
+                    name="Baseline"
+                    legendType="none"
                     stroke="#1D4ED8"
                     strokeWidth={1.8}
                     dot={false}
                     connectNulls
                   />
                   <Line
-                    type="monotone"
+                    type="linear"
                     dataKey="total_12_ml_history"
-                    name="12-ML Discount-Applied (History)"
+                    name="Total"
+                    legendType="none"
                     stroke="#0F766E"
                     strokeWidth={2.5}
                     dot={false}
                     connectNulls
                   />
                   <Line
-                    type="monotone"
+                    type="linear"
                     dataKey="total_12_ml_forecast_path"
-                    name="12-ML Discount-Applied (Forecast)"
+                    name="Total Forecast"
+                    legendType="none"
                     stroke="#0F766E"
                     strokeWidth={2.5}
                     strokeDasharray="7 5"
@@ -395,8 +505,14 @@ const BaselineForecast = ({
                   <CartesianGrid strokeDasharray="4 4" stroke="#d8dde6" />
                   <XAxis dataKey="month" minTickGap={20} />
                   <YAxis width={72} tickFormatter={formatAxisTick} />
-                  <Tooltip formatter={(value, name) => [formatQty(value), name]} />
-                  <Legend />
+                  <Tooltip content={<SizeBaselineTooltip sizeKey="18-ML" />} />
+                  <Legend
+                    payload={[
+                      { value: 'Baseline', type: 'square', color: '#DC2626' },
+                      { value: 'Discount Component', type: 'square', color: '#F59E0B' },
+                      { value: 'Total', type: 'line', color: '#B91C1C' },
+                    ]}
+                  />
                   {forecastStartLabel && forecastEndLabel && (
                     <ReferenceArea
                       x1={forecastStartLabel}
@@ -407,7 +523,7 @@ const BaselineForecast = ({
                     />
                   )}
                   <Area
-                    type="monotone"
+                    type="linear"
                     dataKey="baseline_18_ml"
                     name="18-ML Baseline"
                     stackId="18ml-stack"
@@ -417,7 +533,7 @@ const BaselineForecast = ({
                     dot={false}
                   />
                   <Area
-                    type="monotone"
+                    type="linear"
                     dataKey="discount_component_18_ml"
                     name="18-ML Discount Component"
                     stackId="18ml-stack"
@@ -427,27 +543,30 @@ const BaselineForecast = ({
                     dot={false}
                   />
                   <Line
-                    type="monotone"
+                    type="linear"
                     dataKey="baseline_18_ml"
-                    name="18-ML Baseline Line"
+                    name="Baseline"
+                    legendType="none"
                     stroke="#DC2626"
                     strokeWidth={1.8}
                     dot={false}
                     connectNulls
                   />
                   <Line
-                    type="monotone"
+                    type="linear"
                     dataKey="total_18_ml_history"
-                    name="18-ML Discount-Applied (History)"
+                    name="Total"
+                    legendType="none"
                     stroke="#B91C1C"
                     strokeWidth={2.5}
                     dot={false}
                     connectNulls
                   />
                   <Line
-                    type="monotone"
+                    type="linear"
                     dataKey="total_18_ml_forecast_path"
-                    name="18-ML Discount-Applied (Forecast)"
+                    name="Total Forecast"
+                    legendType="none"
                     stroke="#B91C1C"
                     strokeWidth={2.5}
                     strokeDasharray="7 5"
@@ -460,6 +579,7 @@ const BaselineForecast = ({
           </div>
         </div>
       </div>
+
     </div>
   )
 }

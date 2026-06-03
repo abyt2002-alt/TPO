@@ -94,6 +94,7 @@ class DataLoaderMixin:
             "TotalDiscount",
             "Scheme_Discount",
             "Staggered_qps",
+            "Total_Scheme_Pct",
             "Basic_Rate_Per_PC_without_GST",
             "Basic_Rate_Per_PC",
             "Selling_Rate_Per_PC_without_GST_CLP",
@@ -163,6 +164,7 @@ class DataLoaderMixin:
 
             # Keep compatibility with old layouts + support project-root DATA folder.
             candidate_paths = [
+                project_root / "scheme utilisation flow" / "final_source_data",  # new source: deduped scheme utilisation data
                 Path.cwd() / "DATA",                         # when running from project root
                 Path.cwd().parent / "DATA",                  # when running from backend/
                 backend_dir / "DATA",                        # legacy backend/DATA

@@ -41,11 +41,12 @@ from models.rfm_models import (
 class CustomConstrainedRidge:
     """Ridge regression with sign-constrained coefficients."""
 
-    def __init__(self, l2_penalty=1.0, non_negative_indices=None, non_positive_indices=None, maxiter=2000):
+    def __init__(self, l2_penalty=1.0, non_negative_indices=None, non_positive_indices=None, maxiter=2000, constrain_intercept_non_negative=False):
         self.l2_penalty = float(l2_penalty)
         self.non_negative_indices = tuple(non_negative_indices or [])
         self.non_positive_indices = tuple(non_positive_indices or [])
         self.maxiter = int(maxiter)
+        self.constrain_intercept_non_negative = bool(constrain_intercept_non_negative)
         self.intercept_ = 0.0
         self.coef_ = None
         self.n_features_in_ = 0
@@ -91,12 +92,24 @@ class CustomConstrainedRidge:
             g_w = 2.0 * (Xs.T @ resid) / n + 2.0 * lam * w
             return np.concatenate([[g_b0], g_w])
 
+        if self.constrain_intercept_non_negative:
+            # Constraint: b0_s - sum(w_s * x_mean / x_std) >= 0
+            # This is equivalent to original-space intercept >= 0.
+            # b0_s is theta[0]; w_s is theta[1:].
+            c_vec = np.concatenate([[1.0], -x_mean / x_std])
+            constraints = [{'type': 'ineq', 'fun': lambda t: float(c_vec @ t), 'jac': lambda t: c_vec}]
+            opt_method = 'SLSQP'
+        else:
+            constraints = []
+            opt_method = 'L-BFGS-B'
+
         res = minimize(
             obj,
             theta0,
             jac=grad,
-            method='L-BFGS-B',
+            method=opt_method,
             bounds=bounds,
+            constraints=constraints,
             options={'maxiter': self.maxiter}
         )
         self.success_ = bool(res.success)

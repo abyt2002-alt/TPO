@@ -566,6 +566,12 @@ const RFMAnalysis = () => {
   const [step5ScenarioBuilder, setStep5ScenarioBuilder] = useState(DEFAULT_STEP5_SCENARIO_BUILDER)
   const [step5AISettings, setStep5AISettings] = useState(DEFAULT_STEP5_AI_SETTINGS)
   const [step5AIJob, setStep5AIJob] = useState(null)
+  const [showAIModal, setShowAIModal] = useState(false)
+  const [aiModalState, setAiModalState] = useState('idle') // 'idle' | 'busy' | 'done'
+  const [aiAnimMsgIdx, setAiAnimMsgIdx] = useState(0)
+  const [aiPanelOpen, setAiPanelOpen] = useState(true)
+  const [aiElapsed, setAiElapsed] = useState(0)
+  const wasAIBusyRef = useRef(false)
   const [step5CurrentFilterContext, setStep5CurrentFilterContext] = useState({
     discount_constraints: [],
     metric_thresholds: {},
@@ -2367,6 +2373,38 @@ const RFMAnalysis = () => {
   const isStep5AIApplyingResults = step5AIStatus === 'completed' && scenarioMutation.isPending
   const isStep5AIBusy = Boolean(aiScenarioJobMutation.isPending || isStep5AIJobRunning || isStep5AIApplyingResults)
 
+  const AI_ANIM_MSGS = [
+    'Reading your business objective…',
+    'Parsing discount constraints…',
+    'Identifying target pack priorities…',
+    'Loading 12-ML slab elasticities…',
+    'Reading cross-pack coupling signals…',
+    'Calibrating lag discount effects…',
+    'Building scenario families…',
+    'Optimising slab discount ladders…',
+    'Finalising and validating scenarios…',
+  ]
+  const AI_PHASES = ['Understanding', 'Modelling Context']
+  useEffect(() => {
+    if (!isStep5AIBusy) {
+      setAiAnimMsgIdx(0)
+      setAiElapsed(0)
+      if (wasAIBusyRef.current) {
+        setAiModalState('done')
+        setTimeout(() => { setAiModalState('idle'); setShowAIModal(false); setAiPanelOpen(false) }, 2000)
+      }
+      wasAIBusyRef.current = false
+      return
+    }
+    wasAIBusyRef.current = true
+    setAiModalState('busy')
+    setAiPanelOpen(true)
+    setAiElapsed(0)
+    const msgT = setInterval(() => setAiAnimMsgIdx(i => (i + 1) % AI_ANIM_MSGS.length), 1800)
+    const elapsedT = setInterval(() => setAiElapsed(e => e + 1), 1000)
+    return () => { clearInterval(msgT); clearInterval(elapsedT) }
+  }, [isStep5AIBusy])
+
   const handleRunBaselineForecast = () => {
     if (!modelingResult?.success) {
       setForecastErrorMessage('Run Step 3 modeling before baseline forecast.')
@@ -2862,107 +2900,7 @@ const RFMAnalysis = () => {
   } else if (activeStepTab === 'step4' && rfmData?.success) {
     rightSidebarContent = null
   } else if (activeStepTab === 'step5') {
-    rightSidebarContent = (
-      <div className="bg-white rounded-lg shadow-md overflow-visible">
-        <div className="bg-primary text-white p-4">
-          <h3 className="text-lg font-semibold">Step 5: Scenario Settings</h3>
-        </div>
-        <div className="p-4 space-y-3">
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Reference For % Comparison</label>
-            <select
-              value={step4DisplayReferenceMode}
-              onChange={(e) => setStep4DisplayReferenceMode(String(e.target.value || 'ly_same_3m'))}
-              className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg"
-            >
-              <option value="ly_same_3m">Y-o-Y</option>
-              <option value="last_3m_before_projection">Q-o-Q</option>
-            </select>
-          </div>
-          <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 space-y-2">
-            <div className="text-xs font-semibold text-body">Scenario Engine</div>
-            <div className="text-[11px] text-muted">
-              Anchors: {STEP5_ANCHOR_SCENARIOS.length}
-            </div>
-            <div className="text-[11px] text-muted">
-              Planned scenarios: {step5ScenarioDefs.length}
-            </div>
-          </div>
-          <button
-            type="button"
-            onClick={handleOpenCreateScenario}
-            disabled={!modelingResult?.success}
-            className="w-full px-4 py-2 rounded-md bg-white border border-slate-300 text-body text-sm font-semibold disabled:opacity-50"
-          >
-            Create Scenario
-          </button>
-          <div className="rounded-lg border border-slate-200 bg-white p-3 space-y-2">
-            <div className="text-xs font-semibold text-body">Scenario Generator (Append)</div>
-            <div>
-              <label className="block text-[11px] font-medium text-gray-700 mb-1">Scenario Count (1-10000)</label>
-              <input
-                type="number"
-                min="1"
-                max="10000"
-                step="1"
-                value={step5AISettings.scenario_count}
-                onChange={(e) => setStep5AISettings((prev) => ({
-                  ...prev,
-                  scenario_count: Math.min(10000, Math.max(1, Number(e.target.value || 1))),
-                }))}
-                className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg"
-              />
-            </div>
-            <div>
-              <label className="block text-[11px] font-medium text-gray-700 mb-1">Prompt</label>
-              <textarea
-                rows={3}
-                value={step5AISettings.prompt}
-                onChange={(e) => setStep5AISettings((prev) => ({ ...prev, prompt: String(e.target.value || '') }))}
-                className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg"
-                placeholder="Example: Protect margin but keep 12-ML growth positive; avoid aggressive slab jumps."
-              />
-            </div>
-            <button
-              type="button"
-              onClick={handleGenerateAIScenarios}
-              disabled={!modelingResult?.success || isStep5AIBusy}
-              className="w-full px-4 py-2 rounded-md bg-primary text-white text-sm font-semibold disabled:opacity-50"
-            >
-              {isStep5AIBusy ? 'Generating...' : 'Generate AI Scenarios (Add)'}
-            </button>
-            <button
-              type="button"
-              onClick={handleDeleteAIScenarios}
-              disabled={aiScenarioCount <= 0 || isStep5AIBusy}
-              className="w-full px-4 py-2 rounded-md bg-white border border-slate-300 text-body text-sm font-semibold disabled:opacity-50"
-            >
-              Delete AI Scenarios{aiScenarioCount > 0 ? ` (${aiScenarioCount})` : ''}
-            </button>
-            {step5AIJob?.jobId && (
-              <div className="rounded border border-slate-200 bg-slate-50 px-2 py-2 text-[11px] text-muted space-y-1">
-                <div className="flex items-center justify-between">
-                  <span>Status</span>
-                  <span className="font-semibold text-body">{String(step5AIJob.status || '').toUpperCase()}</span>
-                </div>
-                <div className="flex items-center justify-between">
-                  <span>Progress</span>
-                  <span className="font-semibold text-body">
-                    {Number(step5AIJob.progressCurrent || 0)} / {Number(step5AIJob.progressTotal || 0)}
-                  </span>
-                </div>
-                {step5AIJob?.errorDetail ? (
-                  <div className="text-danger">{String(step5AIJob.errorDetail)}</div>
-                ) : null}
-              </div>
-            )}
-            <p className="text-[11px] text-muted">
-              AI scenarios are appended to the default scenario set.
-            </p>
-          </div>
-        </div>
-      </div>
-    )
+    rightSidebarContent = null
   } else if (activeStepTab === 'step1') {
     rightSidebarContent = null
   } else {
@@ -3204,6 +3142,7 @@ const RFMAnalysis = () => {
             <BaselineForecast
               data={forecastResult}
               plannerData={plannerDisplayResult || plannerResult}
+              modelingResult={modelingResult}
               isLoading={forecastMutation.isPending}
               isError={forecastMutation.isError || Boolean(forecastErrorMessage)}
               errorMessage={forecastErrorMessage || forecastMutation.error?.message}
@@ -3230,6 +3169,164 @@ const RFMAnalysis = () => {
 
         {activeStepTab === 'step5' && (
           <div className="space-y-6">
+            {/* TrinityAI Panel */}
+            {modelingResult?.success && (
+              <div className="rounded-2xl border border-violet-200 bg-white shadow-md overflow-hidden sticky top-0 z-20">
+                <style>{`
+                  @keyframes aiGradient{0%,100%{background-position:0% 50%}50%{background-position:100% 50%}}
+                  @keyframes aiFadeUp{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+                  @keyframes aiPulseRing{0%,100%{transform:scale(1);opacity:.5}50%{transform:scale(1.2);opacity:1}}
+                  @keyframes aiFloat{0%,100%{transform:translateY(0)}50%{transform:translateY(-7px)}}
+                  .ai-gradient-bg{background:linear-gradient(135deg,#667eea,#764ba2,#4facfe,#a855f7);background-size:300% 300%;animation:aiGradient 4s ease infinite;}
+                  .ai-fade-msg{animation:aiFadeUp .45s ease forwards;}
+                  .ai-pulse-ring{animation:aiPulseRing 1.6s ease-in-out infinite;}
+                  .ai-float{animation:aiFloat 3s ease-in-out infinite;}
+                `}</style>
+
+                {/* Header toggle */}
+                <button
+                  className="w-full px-5 py-3.5 flex items-center gap-2 hover:bg-violet-50/60 transition-colors"
+                  onClick={() => setAiPanelOpen(o => !o)}
+                >
+                  <span className="text-yellow-400">✦</span>
+                  <span className="text-sm text-slate-500">Simulate QPS scenarios with</span>
+                  <span className="text-sm font-bold bg-gradient-to-r from-violet-600 to-blue-500 bg-clip-text text-transparent">TrinityAI</span>
+                  <span className="text-violet-300 text-xs">✦</span>
+                  {aiScenarioCount > 0 && !isStep5AIBusy && (
+                    <span className="ml-1 text-[10px] font-semibold bg-violet-100 text-violet-700 px-1.5 py-0.5 rounded-full">{aiScenarioCount} ready</span>
+                  )}
+                  <span className={`ml-auto text-slate-400 text-sm transition-transform duration-200 ${aiPanelOpen ? 'rotate-180' : ''}`}>▾</span>
+                </button>
+
+                {/* Body */}
+                {aiPanelOpen && (
+                  aiModalState === 'busy' ? (() => {
+                    const CONTEXT_ITEMS = [
+                      'Analysing discount patterns',
+                      'Cross-pack dynamics',
+                      'Cross-slab dynamics',
+                      'Lag discount effects',
+                      '12-ML slab elasticities',
+                      '18-ML slab elasticities',
+                      'Structural vs tactical decomposition',
+                      'Volume response curves',
+                      'Slab volume anchors',
+                      'Baseline forecast trajectory',
+                    ]
+                    // Phase 0: 0–6s (objective), Phase 1: 6–46s (context items, 4s each)
+                    const aiPhase = aiElapsed < 6 ? 0 : 1
+                    const activeItemIdx = aiPhase === 1 ? Math.min(Math.floor((aiElapsed - 6) / 4), CONTEXT_ITEMS.length - 1) : -1
+                    const windowStart = Math.max(0, activeItemIdx - 4)
+                    return (
+                      <div className="ai-gradient-bg px-6 py-8 flex flex-col items-center gap-5 text-center border-t border-violet-100 min-h-[260px] justify-center">
+                        {/* Stage pills */}
+                        <div className="flex items-center gap-2">
+                          {AI_PHASES.map((label, i) => (
+                            <div key={i} className={`flex items-center gap-1 px-3 py-1 rounded-full text-xs font-semibold transition-all duration-500 ${
+                              i === aiPhase ? 'bg-white text-violet-700 shadow-md' :
+                              i < aiPhase   ? 'bg-white/30 text-white' :
+                                              'bg-white/10 text-white/25'
+                            }`}>
+                              {i < aiPhase ? '✓ ' : ''}{label}
+                            </div>
+                          ))}
+                        </div>
+
+                        {/* Phase 0 — show objective */}
+                        {aiPhase === 0 && (
+                          <div className="ai-fade-msg bg-white/10 border border-white/20 rounded-2xl px-5 py-4 max-w-lg w-full text-left">
+                            <p className="text-white/50 text-[10px] uppercase tracking-wider mb-2">Business objective</p>
+                            <p className="text-white text-sm leading-relaxed">
+                              "{step5AISettings.prompt?.trim() || 'Optimise discount strategy across 12-ML and 18-ML packs'}"
+                            </p>
+                          </div>
+                        )}
+
+                        {/* Phase 1 — process log */}
+                        {aiPhase === 1 && (
+                          <div className="w-full max-w-md space-y-1.5">
+                            {CONTEXT_ITEMS.slice(windowStart, activeItemIdx + 1).map((item, i) => {
+                              const globalIdx = windowStart + i
+                              const isDone = globalIdx < activeItemIdx
+                              const isActive = globalIdx === activeItemIdx
+                              return (
+                                <div
+                                  key={item}
+                                  className={`flex items-center gap-3 px-4 py-2.5 rounded-xl transition-all duration-500 ${isActive ? 'bg-white/15' : 'bg-white/5'}`}
+                                >
+                                  {isDone
+                                    ? <span className="text-emerald-300 text-sm shrink-0">✓</span>
+                                    : <span className="w-2.5 h-2.5 rounded-full bg-white shrink-0 ai-pulse-ring" />
+                                  }
+                                  <span className={`text-sm text-left ${isDone ? 'text-white/40' : 'text-white font-medium'}`}>
+                                    {item}{isActive ? '…' : ''}
+                                  </span>
+                                </div>
+                              )
+                            })}
+                          </div>
+                        )}
+
+                        <p key={aiAnimMsgIdx} className="ai-fade-msg text-white/60 text-xs">
+                          {AI_ANIM_MSGS[aiAnimMsgIdx]}
+                        </p>
+                      </div>
+                    )
+                  })() : aiModalState === 'done' ? (
+                    <div className="ai-gradient-bg px-6 py-12 flex flex-col items-center gap-4 text-center border-t border-violet-100">
+                      <div className="w-16 h-16 rounded-full bg-white/20 border-4 border-white/60 flex items-center justify-center text-2xl text-white">✓</div>
+                      <div>
+                        <p className="text-white font-bold text-lg">Done!</p>
+                        <p className="text-white/80 text-sm mt-1">{aiScenarioCount} scenarios added to the planner</p>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="px-5 pb-5 pt-3 border-t border-violet-100 space-y-4">
+                      <textarea
+                        rows={4}
+                        value={step5AISettings.prompt}
+                        onChange={(e) => setStep5AISettings(prev => ({ ...prev, prompt: String(e.target.value || '') }))}
+                        className="w-full px-4 py-3 text-sm border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-violet-400 resize-none text-slate-700 placeholder:text-slate-300"
+                        placeholder="e.g. Protect margin but keep 12-ML volume growing; avoid deep discounting on 18-ML above slab 2."
+                        autoFocus
+                      />
+                      <div className="flex items-center justify-between gap-4">
+                        <div className="flex flex-col gap-1">
+                          <label className="text-[11px] font-medium text-slate-400 uppercase tracking-wide">Scenarios to generate</label>
+                          <input
+                            type="number"
+                            min="1"
+                            max="10000"
+                            value={step5AISettings.scenario_count}
+                            onChange={(e) => setStep5AISettings(prev => ({ ...prev, scenario_count: Math.min(10000, Math.max(1, Number(e.target.value || 5))) }))}
+                            className="w-28 px-3 py-2 text-sm border border-slate-200 rounded-lg text-center font-semibold focus:outline-none focus:ring-2 focus:ring-violet-400"
+                          />
+                        </div>
+                        <div className="flex items-center gap-2">
+                          {aiScenarioCount > 0 && (
+                            <button
+                              type="button"
+                              onClick={handleDeleteAIScenarios}
+                              className="px-3 py-2 rounded-xl border border-slate-200 text-slate-500 text-sm hover:bg-slate-50 transition-colors"
+                            >
+                              Clear ({aiScenarioCount})
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            onClick={handleGenerateAIScenarios}
+                            className="px-5 py-2 rounded-xl bg-violet-600 hover:bg-violet-700 text-white text-sm font-bold transition-colors flex items-center gap-1.5"
+                          >
+                            <span>✦</span> Generate
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  )
+                )}
+              </div>
+            )}
+
             {!modelingResult?.success && (
               <div className="bg-white rounded-lg shadow-md p-8">
                 <h3 className="text-xl font-semibold text-body mb-2">Step 5 Requires Step 3 Output</h3>
@@ -3337,6 +3434,120 @@ const RFMAnalysis = () => {
         )}
 
       </div>
+
+      {/* AI Scenario Generator Modal (legacy - kept for sidebar open trigger) */}
+      {showAIModal && false && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center">
+          <style>{`
+            @keyframes aiGradient { 0%,100% { background-position:0% 50% } 50% { background-position:100% 50% } }
+            @keyframes aiFadeUp { from { opacity:0; transform:translateY(10px) } to { opacity:1; transform:translateY(0) } }
+            @keyframes aiPulseRing { 0%,100% { transform:scale(1); opacity:.6 } 50% { transform:scale(1.18); opacity:1 } }
+            @keyframes aiFloat { 0%,100% { transform:translateY(0) } 50% { transform:translateY(-6px) } }
+            .ai-gradient-bg { background:linear-gradient(135deg,#667eea,#764ba2,#4facfe,#a855f7); background-size:300% 300%; animation:aiGradient 4s ease infinite; }
+            .ai-fade-msg { animation:aiFadeUp .5s ease forwards; }
+            .ai-pulse-ring { animation:aiPulseRing 1.6s ease-in-out infinite; }
+            .ai-float { animation:aiFloat 3s ease-in-out infinite; }
+          `}</style>
+          <div
+            className="absolute inset-0 bg-black/60 backdrop-blur-sm"
+            onClick={() => { if (!isStep5AIBusy) { setShowAIModal(false); setAiModalState('idle') } }}
+          />
+          <div className="relative z-10 w-full max-w-lg mx-4 rounded-2xl shadow-2xl overflow-hidden">
+
+            {aiModalState === 'busy' && (
+              <div className="ai-gradient-bg p-10 flex flex-col items-center gap-5 text-center min-h-[320px] justify-center">
+                <div className="relative ai-float">
+                  <div className="ai-pulse-ring w-20 h-20 rounded-full border-4 border-white/30 absolute inset-0" />
+                  <div className="w-20 h-20 rounded-full bg-white/20 flex items-center justify-center border-4 border-white/60">
+                    <span className="text-white font-black text-2xl">AI</span>
+                  </div>
+                </div>
+                <div>
+                  <p className="text-white font-bold text-lg">Creating Scenarios</p>
+                  <p key={aiAnimMsgIdx} className="ai-fade-msg text-white/80 text-sm mt-1.5">
+                    {AI_ANIM_MSGS[aiAnimMsgIdx]}
+                  </p>
+                </div>
+                <div className="w-full max-w-xs">
+                  <div className="h-1.5 bg-white/20 rounded-full overflow-hidden">
+                    <div
+                      className="h-full bg-white rounded-full transition-all duration-700"
+                      style={{ width: `${step5AIJob?.progressTotal > 0 ? Math.round(step5AIJob.progressCurrent / step5AIJob.progressTotal * 100) : 15}%` }}
+                    />
+                  </div>
+                  <p className="text-white/60 text-xs mt-1.5 text-center">
+                    {step5AIJob?.progressCurrent || 0} / {step5AIJob?.progressTotal || step5AISettings.scenario_count} scenarios
+                  </p>
+                </div>
+              </div>
+            )}
+
+            {aiModalState === 'done' && (
+              <div className="ai-gradient-bg p-10 flex flex-col items-center gap-4 text-center min-h-[280px] justify-center">
+                <div className="w-16 h-16 rounded-full bg-white/20 border-4 border-white/60 flex items-center justify-center text-3xl">✓</div>
+                <div>
+                  <p className="text-white font-bold text-lg">Done!</p>
+                  <p className="text-white/80 text-sm mt-1">{aiScenarioCount} scenarios added to the planner</p>
+                </div>
+              </div>
+            )}
+
+            {aiModalState === 'idle' && (
+              <div className="bg-white">
+                <div className="px-6 pt-6 pb-4 border-b border-slate-100 flex items-start justify-between gap-4">
+                  <div>
+                    <h3 className="text-base font-bold text-slate-800">AI Scenario Generator</h3>
+                    <p className="text-xs text-slate-400 mt-0.5">Describe your goal — AI builds the discount scenarios</p>
+                  </div>
+                  <button onClick={() => setShowAIModal(false)} className="text-slate-400 hover:text-slate-600 text-xl leading-none mt-0.5">×</button>
+                </div>
+                <div className="px-6 py-5 space-y-4">
+                  <textarea
+                    rows={5}
+                    value={step5AISettings.prompt}
+                    onChange={(e) => setStep5AISettings(prev => ({ ...prev, prompt: String(e.target.value || '') }))}
+                    className="w-full px-4 py-3 text-sm border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-violet-400 resize-none text-slate-700 placeholder:text-slate-300"
+                    placeholder="e.g. Protect margin but keep 12-ML volume growing; avoid deep discounting on 18-ML above slab 2."
+                    autoFocus
+                  />
+                  <div className="flex items-center gap-2 text-sm text-slate-600">
+                    <span>Generate</span>
+                    <input
+                      type="number"
+                      min="1"
+                      max="20"
+                      value={step5AISettings.scenario_count}
+                      onChange={(e) => setStep5AISettings(prev => ({ ...prev, scenario_count: Math.min(20, Math.max(1, Number(e.target.value || 5))) }))}
+                      className="w-14 px-2 py-1 text-sm border border-slate-200 rounded-lg text-center font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-violet-400"
+                    />
+                    <span>scenarios</span>
+                  </div>
+                </div>
+                <div className="px-6 pb-6 flex gap-3">
+                  <button
+                    type="button"
+                    onClick={() => { handleGenerateAIScenarios() }}
+                    disabled={!modelingResult?.success}
+                    className="flex-1 py-2.5 rounded-xl bg-violet-600 hover:bg-violet-700 active:bg-violet-800 text-white text-sm font-bold disabled:opacity-40 transition-colors"
+                  >
+                    ✦ Generate Scenarios
+                  </button>
+                  {aiScenarioCount > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => { handleDeleteAIScenarios(); setShowAIModal(false) }}
+                      className="px-4 py-2.5 rounded-xl border border-slate-200 text-slate-500 text-sm font-medium hover:bg-slate-50 transition-colors whitespace-nowrap"
+                    >
+                      Clear ({aiScenarioCount})
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
+
+          </div>
+        </div>
+      )}
     </Layout>
   )
 }

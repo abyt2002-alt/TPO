@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { AlertCircle, Loader2, Play, X } from 'lucide-react'
 import {
+  Area,
   Bar,
   LabelList,
   CartesianGrid,
@@ -255,61 +256,130 @@ const ModelingROI = ({
     [slabData, ridgePredictorCount]
   )
 
+  const modelMape = useMemo(() => {
+    const pts = slabData?.predicted_vs_actual || []
+    const valid = pts.filter(p => Number(p.actual_quantity) > 0)
+    if (!valid.length) return null
+    const mape = valid.reduce((sum, p) => {
+      return sum + Math.abs(Number(p.actual_quantity) - Number(p.predicted_quantity)) / Number(p.actual_quantity)
+    }, 0) / valid.length * 100
+    return mape
+  }, [slabData])
+
   const renderModelContent = () => {
     if (!slabData) return null
+    const r2 = Number(slabData?.model_coefficients?.stage2_r2 || 0)
+    const adjR2 = ridgeAdjustedR2
+    const mape = modelMape
+
+    const r2Color = r2 >= 0.85 ? '#16a34a' : r2 >= 0.65 ? '#d97706' : '#dc2626'
+    const r2Bg   = r2 >= 0.85 ? '#f0fdf4' : r2 >= 0.65 ? '#fffbeb' : '#fef2f2'
+    const mapeColor = mape == null ? '#64748b' : mape <= 10 ? '#16a34a' : mape <= 20 ? '#d97706' : '#dc2626'
+    const mapeBg   = mape == null ? '#f8fafc' : mape <= 10 ? '#f0fdf4' : mape <= 20 ? '#fffbeb' : '#fef2f2'
+
+    const CoefRow = ({ label, value, hint }) => {
+      const v = Number(value || 0)
+      const isPos = v > 0
+      const isZero = Math.abs(v) < 0.01
+      return (
+        <div className="flex items-center justify-between py-2 border-b border-slate-100 last:border-0">
+          <div>
+            <span className="text-sm text-body font-medium">{label}</span>
+            {hint && <span className="block text-xs text-muted">{hint}</span>}
+          </div>
+          <div className="flex items-center gap-2">
+            {!isZero && (
+              <span className={`text-xs font-semibold px-1.5 py-0.5 rounded ${isPos ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-600'}`}>
+                {isPos ? '▲' : '▼'}
+              </span>
+            )}
+            <span className="text-sm font-bold text-body tabular-nums">{Number(value || 0).toLocaleString(undefined, { maximumFractionDigits: 1 })}</span>
+          </div>
+        </div>
+      )
+    }
+
     return (
-      <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1.55fr)_360px] gap-5">
-        <div className="bg-white rounded-lg shadow-md p-5">
-          <h4 className="text-lg font-semibold text-body mb-4">Actual vs Predicted - {slabSizeKey} {slabData.slab}</h4>
-          <div className="rounded-lg border border-slate-200 bg-gradient-to-br from-sky-50 via-white to-teal-50 p-3">
-            <div style={{ width: '100%', height: 420 }}>
-              <ResponsiveContainer>
-                <LineChart data={slabData.predicted_vs_actual || []}>
-                  <CartesianGrid strokeDasharray="4 4" stroke="#cfd8e3" />
-                  <XAxis dataKey="period" tickFormatter={formatMonth} minTickGap={28} />
-                  <YAxis />
-                  <Tooltip labelFormatter={formatDate} formatter={(value) => [fmt(value), '']} />
-                  <Legend />
-                  <Line type="monotone" dataKey="actual_quantity" name="Actual" stroke="#111827" strokeWidth={3} dot={false} />
-                  <Line type="monotone" dataKey="predicted_quantity" name="Predicted" stroke="#059669" strokeWidth={3} dot={false} />
-                </LineChart>
-              </ResponsiveContainer>
+      <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1.6fr)_340px] gap-5">
+        {/* ── Chart ── */}
+        <div className="bg-white rounded-xl border border-slate-200 p-5" style={{ boxShadow: '0 1px 8px 0 rgba(30,64,175,0.07)' }}>
+          <div className="flex items-start justify-between mb-1">
+            <div>
+              <h4 className="text-base font-semibold text-body">Actual vs Predicted</h4>
+              <p className="text-xs text-muted mt-0.5">{slabSizeKey} · {slabData.slab} · monthly quantity</p>
             </div>
+            <div className="flex gap-2">
+              <span className="text-xs px-2 py-1 rounded-full bg-blue-50 text-blue-700 font-medium">● Actual</span>
+              <span className="text-xs px-2 py-1 rounded-full bg-orange-50 text-orange-600 font-medium">-- Predicted</span>
+            </div>
+          </div>
+          <div style={{ width: '100%', height: 380 }} className="mt-3">
+            <ResponsiveContainer>
+              <ComposedChart data={slabData.predicted_vs_actual || []} margin={{ top: 8, right: 16, left: 8, bottom: 4 }}>
+                <defs>
+                  <linearGradient id="actualGrad" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="#2563eb" stopOpacity={0.15} />
+                    <stop offset="95%" stopColor="#2563eb" stopOpacity={0.01} />
+                  </linearGradient>
+                  <linearGradient id="predictedGrad" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="#f97316" stopOpacity={0.10} />
+                    <stop offset="95%" stopColor="#f97316" stopOpacity={0.01} />
+                  </linearGradient>
+                </defs>
+                <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" vertical={false} />
+                <XAxis dataKey="period" tickFormatter={formatMonth} minTickGap={28} tick={{ fontSize: 11, fill: '#94a3b8' }} axisLine={false} tickLine={false} />
+                <YAxis tickFormatter={(v) => `${(v / 1000).toFixed(0)}K`} tick={{ fontSize: 11, fill: '#94a3b8' }} axisLine={false} tickLine={false} width={48} />
+                <Tooltip
+                  labelFormatter={formatDate}
+                  formatter={(value, name) => [`${Number(value).toLocaleString()}`, name]}
+                  contentStyle={{ borderRadius: 10, border: '1px solid #e2e8f0', fontSize: 12, boxShadow: '0 4px 12px rgba(0,0,0,0.08)' }}
+                />
+                <Area type="monotone" dataKey="actual_quantity" stroke="none" fill="url(#actualGrad)" legendType="none" />
+                <Area type="monotone" dataKey="predicted_quantity" stroke="none" fill="url(#predictedGrad)" legendType="none" />
+                <Line type="monotone" dataKey="actual_quantity" name="Actual" stroke="#2563eb" strokeWidth={2.5} dot={{ r: 3, fill: '#2563eb', strokeWidth: 0 }} activeDot={{ r: 5, strokeWidth: 0 }} legendType="none" />
+                <Line type="monotone" dataKey="predicted_quantity" name="Predicted" stroke="#f97316" strokeWidth={2} strokeDasharray="5 3" dot={{ r: 3, fill: '#f97316', strokeWidth: 0 }} activeDot={{ r: 5, strokeWidth: 0 }} legendType="none" />
+              </ComposedChart>
+            </ResponsiveContainer>
           </div>
         </div>
 
-        <div className="bg-white rounded-lg shadow-md p-5">
-          <h4 className="text-lg font-semibold text-body mb-4">Model Details</h4>
-          <div className="grid grid-cols-2 gap-3 mb-4">
-            <div className="bg-accent-light rounded-md p-3">
-              <p className="text-muted">R2</p>
-              <p className="font-bold text-body">{fmt(slabData?.model_coefficients?.stage2_r2)}</p>
-            </div>
-            <div className="bg-accent-light rounded-md p-3">
-              <p className="text-muted">Adjusted R2</p>
-              <p className="font-bold text-body">{ridgeAdjustedR2 == null ? 'NA' : fmt(ridgeAdjustedR2)}</p>
+        {/* ── Right panel ── */}
+        <div className="space-y-4">
+          {/* Fit metrics */}
+          <div className="bg-white rounded-xl border border-slate-200 p-4" style={{ boxShadow: '0 1px 6px rgba(0,0,0,0.05)' }}>
+            <p className="text-xs font-semibold text-muted uppercase tracking-wide mb-3">Fit Quality</p>
+            <div className="grid grid-cols-3 gap-2">
+              <div className="rounded-lg p-3 text-center" style={{ background: r2Bg }}>
+                <p className="text-xs text-muted mb-1">R²</p>
+                <p className="text-lg font-bold" style={{ color: r2Color }}>{r2.toFixed(2)}</p>
+              </div>
+              <div className="rounded-lg p-3 text-center" style={{ background: adjR2 != null && adjR2 >= 0.65 ? '#f0fdf4' : '#f8fafc' }}>
+                <p className="text-xs text-muted mb-1">Adj R²</p>
+                <p className="text-lg font-bold text-body">{adjR2 == null ? '—' : adjR2.toFixed(2)}</p>
+              </div>
+              <div className="rounded-lg p-3 text-center" style={{ background: mapeBg }}>
+                <p className="text-xs text-muted mb-1">MAPE</p>
+                <p className="text-lg font-bold" style={{ color: mapeColor }}>{mape == null ? '—' : `${mape.toFixed(1)}%`}</p>
+              </div>
             </div>
           </div>
-          <div className="space-y-2">
-            <div className="bg-accent-light rounded-md p-3">
-              <p className="text-muted">Intercept</p>
-              <p className="font-bold text-body">{fmt(slabData?.model_coefficients?.stage2_intercept)}</p>
-            </div>
-            <div className="bg-accent-light rounded-md p-3">
-              <p className="text-muted">Residual Store</p>
-              <p className="font-bold text-body">{fmt(slabData?.model_coefficients?.coef_residual_store)}</p>
-            </div>
-            <div className="bg-accent-light rounded-md p-3">
-              <p className="text-muted">Base Discount</p>
-              <p className="font-bold text-body">{fmt(slabData?.model_coefficients?.coef_structural_discount)}</p>
-            </div>
-            <div className="bg-accent-light rounded-md p-3">
-              <p className="text-muted">Lag Discount</p>
-              <p className="font-bold text-body">{fmt(slabData?.model_coefficients?.coef_lag1_structural_discount)}</p>
-            </div>
-            <div className="bg-accent-light rounded-md p-3">
-              <p className="text-muted">Other Slabs</p>
-              <p className="font-bold text-body">{fmt(slabData?.model_coefficients?.coef_other_slabs_weighted_base_discount_pct)}</p>
+
+          {/* Coefficients */}
+          <div className="bg-white rounded-xl border border-slate-200 p-4" style={{ boxShadow: '0 1px 6px rgba(0,0,0,0.05)' }}>
+            <p className="text-xs font-semibold text-muted uppercase tracking-wide mb-3">Stage 2 Coefficients</p>
+            <CoefRow label="Intercept" value={slabData?.model_coefficients?.stage2_intercept} />
+            <CoefRow label="Residual Store" value={slabData?.model_coefficients?.coef_residual_store} hint="outlet count signal" />
+            <CoefRow label="Base Discount" value={slabData?.model_coefficients?.coef_structural_discount} hint="structural level effect" />
+            <CoefRow label="Lag Discount" value={slabData?.model_coefficients?.coef_lag1_structural_discount} hint="prior month base" />
+            <CoefRow label="Other Slabs" value={slabData?.model_coefficients?.coef_other_slabs_weighted_base_discount_pct} hint="cross-slab weighted base" />
+          </div>
+
+          {/* Regularisation */}
+          <div className="bg-slate-50 rounded-xl border border-slate-200 p-3">
+            <p className="text-xs font-semibold text-muted uppercase tracking-wide mb-2">Regularisation</p>
+            <div className="flex items-center justify-between">
+              <span className="text-sm text-body">L2 Penalty</span>
+              <span className="text-sm font-bold text-body">{fmt(slabData?.model_coefficients?.l2_penalty)}</span>
             </div>
           </div>
         </div>
@@ -407,11 +477,11 @@ const ModelingROI = ({
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                     <div className="bg-accent-light rounded-md p-3">
                       <p className="text-muted">Subcategory Topline ROI</p>
-                      <p className="font-bold text-body">{fmt(overallCombinedRoiSummary.structural_roi_1mo)}x</p>
+                      <p className="font-bold text-body">{fmt(overallCombinedRoiSummary.structural_roi_1mo)}</p>
                     </div>
                     <div className="bg-accent-light rounded-md p-3">
                       <p className="text-muted">Subcategory Gross Margin ROI</p>
-                      <p className="font-bold text-body">{fmt(overallCombinedRoiSummary.structural_profit_roi_1mo)}x</p>
+                      <p className="font-bold text-body">{fmt(overallCombinedRoiSummary.structural_profit_roi_1mo)}</p>
                     </div>
                   </div>
                 </div>
@@ -444,11 +514,11 @@ const ModelingROI = ({
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                       <div className="bg-accent-light rounded-md p-3">
                         <p className="text-muted">{activeSize || slabSizeKey} Topline ROI</p>
-                        <p className="font-bold text-body">{fmt(selectedSizeCombinedRoiSummary.structural_roi_1mo)}x</p>
+                        <p className="font-bold text-body">{fmt(selectedSizeCombinedRoiSummary.structural_roi_1mo)}</p>
                       </div>
                       <div className="bg-accent-light rounded-md p-3">
                         <p className="text-muted">{activeSize || slabSizeKey} Gross Margin ROI</p>
-                        <p className="font-bold text-body">{fmt(selectedSizeCombinedRoiSummary.structural_profit_roi_1mo)}x</p>
+                        <p className="font-bold text-body">{fmt(selectedSizeCombinedRoiSummary.structural_profit_roi_1mo)}</p>
                       </div>
                     </div>
                   )}
@@ -540,11 +610,11 @@ const ModelingROI = ({
               <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-sm mb-4">
                 <div className="bg-accent-light rounded-md p-3">
                   <p className="text-muted">Topline ROI (Sum Num / Sum Den)</p>
-                  <p className="font-bold text-body">{fmt(slabData?.summary?.structural_roi_1mo)}x</p>
+                  <p className="font-bold text-body">{fmt(slabData?.summary?.structural_roi_1mo)}</p>
                 </div>
                 <div className="bg-accent-light rounded-md p-3">
                   <p className="text-muted">Gross Margin ROI (Sum Num / Sum Den)</p>
-                  <p className="font-bold text-body">{fmt(slabData?.summary?.structural_profit_roi_1mo)}x</p>
+                  <p className="font-bold text-body">{fmt(slabData?.summary?.structural_profit_roi_1mo)}</p>
                 </div>
                 <div className="bg-accent-light rounded-md p-3">
                   <p className="text-muted">Instances of discount depth increase</p>

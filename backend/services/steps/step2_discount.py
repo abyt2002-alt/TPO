@@ -87,29 +87,53 @@ class Step2DiscountMixin:
         missing = []
         if 'Quantity' not in work.columns:
             missing.append('Quantity')
-        if colmap.get("scheme_col") is None:
-            missing.append('Scheme_Discount')
-        if colmap.get("qps_col") is None:
-            missing.append('Staggered_qps')
-        if colmap.get("dsp_col") is None:
-            missing.append('Basic_Rate_Per_PC_without_GST (or Basic_Rate_Per_PC)')
+        if 'Total_Scheme_Pct' not in work.columns:
+            # fallback: need ₹ columns to derive %
+            if colmap.get("scheme_col") is None:
+                missing.append('Scheme_Discount')
+            if colmap.get("qps_col") is None:
+                missing.append('Staggered_qps')
+            if colmap.get("dsp_col") is None:
+                missing.append('Basic_Rate_Per_PC_without_GST (or Basic_Rate_Per_PC)')
         if missing:
             return work, missing
 
         qty = pd.to_numeric(work['Quantity'], errors='coerce').fillna(0.0)
-        scheme = pd.to_numeric(work[colmap["scheme_col"]], errors='coerce').fillna(0.0)
-        qps = pd.to_numeric(work[colmap["qps_col"]], errors='coerce').fillna(0.0)
-        dsp = pd.to_numeric(work[colmap["dsp_col"]], errors='coerce').fillna(0.0)
+        work['Quantity'] = qty
+
+        if 'Total_Scheme_Pct' in work.columns:
+            # Primary path: discount % already computed in step 2 — weight by quantity
+            pct = pd.to_numeric(work['Total_Scheme_Pct'], errors='coerce').fillna(0.0)
+            work['_step2_weighted_disc'] = pct * qty   # numerator: pct × qty
+            work['_step2_qty_denom'] = qty             # denominator: qty
+            # keep _step2_scheme_amount for ₹ summary table (uses Scheme_Discount + Staggered_qps if available)
+            if colmap.get("scheme_col") and colmap.get("qps_col"):
+                scheme = pd.to_numeric(work[colmap["scheme_col"]], errors='coerce').fillna(0.0)
+                qps = pd.to_numeric(work[colmap["qps_col"]], errors='coerce').fillna(0.0)
+                work['_step2_scheme_amount'] = scheme + qps
+            else:
+                work['_step2_scheme_amount'] = (pct / 100.0) * qty  # approximate ₹ if not available
+            dsp_col = colmap.get("dsp_col")
+            dsp = pd.to_numeric(work[dsp_col], errors='coerce').fillna(1.0) if dsp_col else pd.Series(1.0, index=work.index)
+            work['_step2_dsp_sales'] = qty * dsp
+        else:
+            # Fallback path: derive from ₹ discount amounts and DSP
+            scheme = pd.to_numeric(work[colmap["scheme_col"]], errors='coerce').fillna(0.0)
+            qps = pd.to_numeric(work[colmap["qps_col"]], errors='coerce').fillna(0.0)
+            dsp = pd.to_numeric(work[colmap["dsp_col"]], errors='coerce').fillna(0.0)
+            work['_step2_scheme_amount'] = scheme + qps
+            work['_step2_dsp_sales'] = qty * dsp
+            work['_step2_weighted_disc'] = work['_step2_scheme_amount']
+            work['_step2_qty_denom'] = work['_step2_dsp_sales']
+
         clp_col = colmap.get("clp_col")
+        dsp_col = colmap.get("dsp_col")
+        dsp = pd.to_numeric(work[dsp_col], errors='coerce').fillna(0.0) if dsp_col else pd.Series(0.0, index=work.index)
         if clp_col is not None:
             clp = pd.to_numeric(work[clp_col], errors='coerce').fillna(0.0)
             clp = clp.where(clp > 0, dsp)
         else:
             clp = dsp
-
-        work['Quantity'] = qty
-        work['_step2_scheme_amount'] = scheme + qps
-        work['_step2_dsp_sales'] = qty * dsp
         work['_step2_clp_sales'] = qty * clp
         return work, []
 
@@ -160,14 +184,17 @@ class Step2DiscountMixin:
                 AOQ=('Quantity', 'mean'),
                 Sales_Value=('_step2_dsp_sales', 'sum'),
                 Total_Discount=('_step2_scheme_amount', 'sum'),
+                _weighted_disc=('_step2_weighted_disc', 'sum'),
+                _qty_denom=('_step2_qty_denom', 'sum'),
             )
         )
         slab_summary['AOV'] = (
             slab_summary['Sales_Value'] / slab_summary['Invoices'].replace(0, np.nan)
         ).replace([np.inf, -np.inf], np.nan)
         slab_summary['AOQ'] = pd.to_numeric(slab_summary['AOQ'], errors='coerce')
+        # Discount_Pct = Σ(Total_Scheme_Pct × Qty) / Σ(Qty) — quantity-weighted average
         slab_summary['Discount_Pct'] = (
-            slab_summary['Total_Discount'] / slab_summary['Sales_Value'].replace(0, np.nan) * 100.0
+            slab_summary['_weighted_disc'] / slab_summary['_qty_denom'].replace(0, np.nan)
         ).replace([np.inf, -np.inf], np.nan)
 
         slab_criteria = (
@@ -615,6 +642,8 @@ class Step2DiscountMixin:
                     quantity=('Quantity', 'sum'),
                     total_discount=('_step2_scheme_amount', 'sum'),
                     sales_value=('_step2_dsp_sales', 'sum'),
+                    _weighted_disc=('_step2_weighted_disc', 'sum'),
+                    _qty_denom=('_step2_qty_denom', 'sum'),
                 )
                 .sort_values('Period')
             )
@@ -626,12 +655,15 @@ class Step2DiscountMixin:
                     quantity=('Quantity', 'sum'),
                     total_discount=('_step2_scheme_amount', 'sum'),
                     sales_value=('_step2_dsp_sales', 'sum'),
+                    _weighted_disc=('_step2_weighted_disc', 'sum'),
+                    _qty_denom=('_step2_qty_denom', 'sum'),
                 )
                 .sort_values('Period')
             )
 
+        # actual_discount_pct = Σ(Total_Scheme_Pct × Qty) / Σ(Qty)  — quantity-weighted average
         daily['actual_discount_pct'] = (
-            (daily['total_discount'] / daily['sales_value']) * 100.0
+            daily['_weighted_disc'] / daily['_qty_denom'].replace(0, np.nan)
         ).replace([np.inf, -np.inf], 0.0).fillna(0.0)
 
         slab_mode = self._normalize_step2_slab_definition_mode(getattr(request, 'slab_definition_mode', 'data'))
@@ -645,12 +677,14 @@ class Step2DiscountMixin:
                     quantity=('quantity', 'sum'),
                     total_discount=('total_discount', 'sum'),
                     sales_value=('sales_value', 'sum'),
+                    _weighted_disc=('_weighted_disc', 'sum'),
+                    _qty_denom=('_qty_denom', 'sum'),
                 )
                 .rename(columns={'OutputPeriod': 'Period'})
                 .sort_values('Period')
             )
             monthly['actual_discount_pct'] = (
-                (monthly['total_discount'] / monthly['sales_value']) * 100.0
+                monthly['_weighted_disc'] / monthly['_qty_denom'].replace(0, np.nan)
             ).replace([np.inf, -np.inf], 0.0).fillna(0.0)
 
             base_monthly, _ = self._estimate_base_discount_monthly_blocks(
@@ -692,12 +726,14 @@ class Step2DiscountMixin:
                         total_discount=('total_discount', 'sum'),
                         sales_value=('sales_value', 'sum'),
                         base_discount_pct=('base_discount_pct', 'first'),
+                        _weighted_disc=('_weighted_disc', 'sum'),
+                        _qty_denom=('_qty_denom', 'sum'),
                     )
                     .rename(columns={'OutputPeriod': 'Period'})
                     .sort_values('Period')
                 )
                 aggregated['actual_discount_pct'] = (
-                    (aggregated['total_discount'] / aggregated['sales_value']) * 100.0
+                    aggregated['_weighted_disc'] / aggregated['_qty_denom'].replace(0, np.nan)
                 ).replace([np.inf, -np.inf], 0.0).fillna(0.0)
 
         aggregated['tactical_discount_pct'] = (

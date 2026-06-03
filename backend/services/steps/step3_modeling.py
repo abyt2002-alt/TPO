@@ -90,8 +90,19 @@ class Step3ModelingMixin:
         store_col = 'Store_ID' if 'Store_ID' in work.columns else 'Outlet_ID'
         work['Date'] = pd.to_datetime(work['Date'], errors='coerce')
         work = work.dropna(subset=['Date'])
+        if 'MRP' in work.columns:
+            work['MRP'] = pd.to_numeric(work['MRP'], errors='coerce')
+            work = work[work['MRP'].notna() & (work['MRP'] <= 25.0)].copy()
         if work.empty:
             return pd.DataFrame()
+
+        work['_step2_quantity_num'] = pd.to_numeric(work.get('Quantity', 0.0), errors='coerce').fillna(0.0)
+        if 'MRP' in work.columns:
+            work['_step2_weighted_mrp'] = work['MRP'] * work['_step2_quantity_num']
+            work['_step2_mrp_qty_denom'] = work['_step2_quantity_num'].where(work['MRP'].notna(), 0.0)
+        else:
+            work['_step2_weighted_mrp'] = 0.0
+            work['_step2_mrp_qty_denom'] = 0.0
 
         work['Period_D'] = work['Date'].dt.floor('D')
         daily = (
@@ -101,12 +112,17 @@ class Step3ModelingMixin:
                 quantity=('Quantity', 'sum'),
                 total_discount=('_step2_scheme_amount', 'sum'),
                 sales_value=('_step2_dsp_sales', 'sum'),
+                _weighted_disc=('_step2_weighted_disc', 'sum'),
+                _qty_denom=('_step2_qty_denom', 'sum'),
+                _weighted_mrp=('_step2_weighted_mrp', 'sum'),
+                _mrp_qty_denom=('_step2_mrp_qty_denom', 'sum'),
             )
             .rename(columns={'Period_D': 'Period'})
             .sort_values('Period')
         )
+        # actual_discount_pct = Σ(Total_Scheme_Pct × Qty) / Σ(Qty) — consistent with Step 2
         daily['actual_discount_pct'] = (
-            (daily['total_discount'] / daily['sales_value']) * 100.0
+            daily['_weighted_disc'] / daily['_qty_denom'].replace(0, np.nan)
         ).replace([np.inf, -np.inf], 0.0).fillna(0.0)
         slab_mode = self._normalize_step2_slab_definition_mode(getattr(request, 'slab_definition_mode', 'data'))
         if slab_mode == 'define':
@@ -117,11 +133,15 @@ class Step3ModelingMixin:
                     Period=('Period', 'min'),
                     total_discount=('total_discount', 'sum'),
                     sales_value=('sales_value', 'sum'),
+                    _weighted_disc=('_weighted_disc', 'sum'),
+                    _qty_denom=('_qty_denom', 'sum'),
+                    _weighted_mrp=('_weighted_mrp', 'sum'),
+                    _mrp_qty_denom=('_mrp_qty_denom', 'sum'),
                 )
                 .sort_values('Period')
             )
             monthly_actual['actual_discount_pct'] = (
-                (monthly_actual['total_discount'] / monthly_actual['sales_value']) * 100.0
+                monthly_actual['_weighted_disc'] / monthly_actual['_qty_denom'].replace(0, np.nan)
             ).replace([np.inf, -np.inf], 0.0).fillna(0.0)
             base_monthly, _ = self._estimate_base_discount_monthly_blocks(
                 monthly_actual['Period'],
@@ -159,13 +179,17 @@ class Step3ModelingMixin:
                 quantity=('Quantity', 'sum'),
                 total_discount=('_step2_scheme_amount', 'sum'),
                 sales_value=('_step2_dsp_sales', 'sum'),
+                _weighted_disc=('_step2_weighted_disc', 'sum'),
+                _qty_denom=('_step2_qty_denom', 'sum'),
+                _weighted_mrp=('_step2_weighted_mrp', 'sum'),
+                _mrp_qty_denom=('_step2_mrp_qty_denom', 'sum'),
             )
         )
         monthly['Period'] = monthly['Month_Key'].dt.to_timestamp()
         monthly = monthly.merge(monthly_base, on='Month_Key', how='left')
         monthly['base_discount_pct'] = monthly['base_discount_pct'].ffill().bfill().fillna(0.0)
         monthly['actual_discount_pct'] = (
-            (monthly['total_discount'] / monthly['sales_value']) * 100.0
+            monthly['_weighted_disc'] / monthly['_qty_denom'].replace(0, np.nan)
         ).replace([np.inf, -np.inf], 0.0).fillna(0.0)
         monthly['tactical_discount_pct'] = (
             monthly['actual_discount_pct'] - monthly['base_discount_pct']
@@ -174,6 +198,24 @@ class Step3ModelingMixin:
         monthly['base_price'] = (
             monthly['sales_value'] / monthly['quantity'].replace(0, np.nan)
         ).replace([np.inf, -np.inf], np.nan).fillna(0.0)
+        monthly['weighted_mrp'] = (
+            monthly['_weighted_mrp'] / monthly['_mrp_qty_denom'].replace(0, np.nan)
+        ).replace([np.inf, -np.inf], np.nan)
+        monthly['weighted_mrp'] = monthly['weighted_mrp'].ffill().bfill().fillna(0.0)
+        mrp_anchor = (
+            float(monthly.loc[monthly['weighted_mrp'] > 0, 'weighted_mrp'].mean())
+            if (monthly['weighted_mrp'] > 0).any()
+            else 0.0
+        )
+        if mrp_anchor > 0:
+            monthly['mrp_index_pct'] = ((monthly['weighted_mrp'] / mrp_anchor) - 1.0) * 100.0
+        else:
+            monthly['mrp_index_pct'] = 0.0
+        monthly['mrp_index_pct'] = (
+            pd.to_numeric(monthly['mrp_index_pct'], errors='coerce')
+            .replace([np.inf, -np.inf], 0.0)
+            .fillna(0.0)
+        )
 
         return monthly.sort_values('Period').reset_index(drop=True)
 
@@ -327,6 +369,15 @@ class Step3ModelingMixin:
         total_incremental_profit = 0.0
         cogs_per_unit = max(float(cogs_per_unit), 0.0)
 
+        # Extract base and lag coefficients for steady-state ROI lift computation.
+        # Steady-state lift = (coef_base + coef_lag) × step_up — deducts the
+        # trade-loading hangover that the lag term captures.
+        _feature_order = list(getattr(stage2_model, 'feature_order_', None) or [])
+        _coefs_raw = getattr(stage2_model, 'coef_', None)
+        _coefs = list(_coefs_raw) if _coefs_raw is not None else []
+        _coef_base = float(_coefs[_feature_order.index('base_discount_pct')]) if 'base_discount_pct' in _feature_order else 0.0
+        _coef_lag  = float(_coefs[_feature_order.index('lag1_base_discount_pct')]) if 'lag1_base_discount_pct' in _feature_order else 0.0
+
         for i in range(1, len(regimes)):
             prev_base = float(regimes.loc[i - 1, 'base_discount_pct'])
             curr_base = float(regimes.loc[i, 'base_discount_pct'])
@@ -345,19 +396,33 @@ class Step3ModelingMixin:
             base_price = hold_df['base_price'].to_numpy(dtype=float)
             actual_qty = hold_df['quantity'].to_numpy(dtype=float)
             actual_discount = hold_df['actual_discount_pct'].to_numpy(dtype=float)
+            hold_mrp_index = (
+                pd.to_numeric(hold_df.get('mrp_index_pct', pd.Series(np.zeros(n_rows))), errors='coerce')
+                .replace([np.inf, -np.inf], 0.0)
+                .fillna(0.0)
+                .to_numpy(dtype=float)
+            )
 
             prev_struct = np.full(n_rows, prev_base, dtype=float)
-            curr_struct = np.full(n_rows, curr_base, dtype=float)
             lag1_prev = np.full(n_rows, prev_base, dtype=float)
-            lag1_curr = np.full(n_rows, curr_base, dtype=float)
-            lag1_curr[0] = prev_base
             zeros = np.zeros(n_rows, dtype=float)
 
-            # Structural ROI episodes: tactical term is forced to zero in both worlds.
-            qty_prev = self._predict_stage2_quantity(stage2_model, residual_anchor, prev_struct, zeros, lag1_prev)
-            qty_curr = self._predict_stage2_quantity(stage2_model, residual_anchor, curr_struct, zeros, lag1_curr)
+            # Baseline: predicted quantity if base had stayed at prev_base.
+            qty_prev = self._predict_stage2_quantity(
+                stage2_model,
+                residual_anchor,
+                prev_struct,
+                zeros,
+                lag1_prev,
+                extra_feature_values={'mrp_index_pct': hold_mrp_index},
+            )
             qty_prev = np.maximum(qty_prev, 0.0)
-            qty_curr = np.maximum(qty_curr, 0.0)
+
+            # Steady-state lift: (coef_base + coef_lag) × step_up per month.
+            # Using steady-state rather than first-month prediction removes the
+            # trade-loading bump (forward buying) that the lag term captures.
+            delta_qty_steady = float(_coef_base + _coef_lag) * step_up
+            qty_curr = np.maximum(qty_prev + delta_qty_steady, 0.0)
 
             baseline_price = base_price * (1 - prev_base / 100.0)
             # Keep same as Streamlit structural ROI implementation.
@@ -579,7 +644,9 @@ class Step3ModelingMixin:
         baseline_revenue = qty_base * baseline_price
         spend = monthly['base_price'].to_numpy(dtype=float) * (tactical / 100.0) * qty_pred
         incremental_revenue = predicted_revenue - baseline_revenue
-        roi = np.where(spend > 0, incremental_revenue / spend, np.nan)
+        roi = np.full(len(spend), np.nan)
+        _spend_mask = spend > 0
+        roi[_spend_mask] = incremental_revenue[_spend_mask] / spend[_spend_mask]
 
         result_df = monthly.copy()
         result_df['predicted_quantity'] = qty_pred
@@ -646,6 +713,12 @@ class Step3ModelingMixin:
         base = monthly['base_discount_pct'].to_numpy(dtype=float)
         lag1 = monthly['lag1_base_discount_pct'].to_numpy(dtype=float)
         other = monthly['other_slabs_weighted_base_discount_pct'].to_numpy(dtype=float)
+        mrp_index = (
+            pd.to_numeric(monthly.get('mrp_index_pct', pd.Series(np.zeros(len(monthly)))), errors='coerce')
+            .replace([np.inf, -np.inf], 0.0)
+            .fillna(0.0)
+            .to_numpy(dtype=float)
+        )
 
         stage1 = LinearRegression()
         stage1.fit(x_discount.reshape(-1, 1), y_store)
@@ -666,6 +739,12 @@ class Step3ModelingMixin:
         x_cols.append(other)
         non_positive_indices.append(len(feature_order) - 1)
 
+        use_mrp_index = bool((np.nanmax(mrp_index) - np.nanmin(mrp_index)) > 0.1)
+        if use_mrp_index:
+            feature_order.append('mrp_index_pct')
+            x_cols.append(mrp_index)
+            non_positive_indices.append(len(feature_order) - 1)
+
         X2 = np.column_stack(x_cols)
         l2_floor = 0.1
         l2_penalty = max(float(l2_penalty), l2_floor)
@@ -676,6 +755,7 @@ class Step3ModelingMixin:
                 non_negative_indices=non_negative_indices,
                 non_positive_indices=non_positive_indices,
                 maxiter=4000,
+                constrain_intercept_non_negative=True,
             )
             model.fit(X2, y_qty)
             model.feature_order_ = feature_order
@@ -707,6 +787,7 @@ class Step3ModelingMixin:
                     non_negative_indices=non_negative_indices,
                     non_positive_indices=non_positive_indices,
                     maxiter=4000,
+                    constrain_intercept_non_negative=True,
                 )
                 try:
                     model.fit(X_train, y_train)
@@ -772,7 +853,10 @@ class Step3ModelingMixin:
             base,
             np.zeros_like(base),
             lag1,
-            extra_feature_values={'other_slabs_weighted_base_discount_pct': other},
+            extra_feature_values={
+                'other_slabs_weighted_base_discount_pct': other,
+                'mrp_index_pct': mrp_index,
+            },
         )
         qty_base_ols = self._predict_stage2_quantity(
             stage2_ols,
@@ -780,7 +864,10 @@ class Step3ModelingMixin:
             base,
             np.zeros_like(base),
             lag1,
-            extra_feature_values={'other_slabs_weighted_base_discount_pct': other},
+            extra_feature_values={
+                'other_slabs_weighted_base_discount_pct': other,
+                'mrp_index_pct': mrp_index,
+            },
         )
 
         zeros = np.zeros_like(base, dtype=float)
@@ -790,7 +877,10 @@ class Step3ModelingMixin:
             zeros,
             zeros,
             zeros,
-            extra_feature_values={'other_slabs_weighted_base_discount_pct': zeros},
+            extra_feature_values={
+                'other_slabs_weighted_base_discount_pct': zeros,
+                'mrp_index_pct': mrp_index,
+            },
         )
         qty_no_discount_ols = self._predict_stage2_quantity(
             stage2_ols,
@@ -798,7 +888,10 @@ class Step3ModelingMixin:
             zeros,
             zeros,
             zeros,
-            extra_feature_values={'other_slabs_weighted_base_discount_pct': zeros},
+            extra_feature_values={
+                'other_slabs_weighted_base_discount_pct': zeros,
+                'mrp_index_pct': mrp_index,
+            },
         )
         qty_no_discount = np.maximum(qty_no_discount, 0.0)
 
@@ -810,7 +903,9 @@ class Step3ModelingMixin:
             monthly['tactical_discount_pct'].to_numpy(dtype=float) / 100.0
         ) * qty_pred
         incremental_revenue = predicted_revenue - baseline_revenue
-        roi = np.where(spend > 0, incremental_revenue / spend, np.nan)
+        roi = np.full(len(spend), np.nan)
+        _spend_mask = spend > 0
+        roi[_spend_mask] = incremental_revenue[_spend_mask] / spend[_spend_mask]
 
         result_df = monthly.copy()
         result_df['predicted_quantity'] = qty_pred
@@ -826,16 +921,33 @@ class Step3ModelingMixin:
         result_df['roi_1mo'] = roi
         result_df['residual_store'] = residual_store
 
+        def _coef_for(model, name: str) -> float:
+            order = list(getattr(model, 'feature_order_', []) or [])
+            coefs_raw = getattr(model, 'coef_', None)
+            coefs = list(coefs_raw) if coefs_raw is not None else []
+            if name not in order:
+                return 0.0
+            idx = order.index(name)
+            return float(coefs[idx]) if idx < len(coefs) else 0.0
+
+        weighted_mrp_series = pd.to_numeric(monthly.get('weighted_mrp', pd.Series(dtype=float)), errors='coerce')
+        weighted_mrp_clean = weighted_mrp_series.replace([np.inf, -np.inf], np.nan).dropna()
+
         coefficients = {
             'stage1_intercept': float(stage1.intercept_),
             'stage1_coef_discount': float(stage1.coef_[0]),
             'stage1_r2': float(stage1.score(x_discount.reshape(-1, 1), y_store)) if len(y_store) > 1 else 0.0,
             'stage2_intercept': float(stage2.intercept_),
-            'coef_residual_store': float(stage2.coef_[0]),
-            'coef_structural_discount': float(stage2.coef_[1]),
+            'coef_residual_store': _coef_for(stage2, 'residual_store'),
+            'coef_structural_discount': _coef_for(stage2, 'base_discount_pct'),
             'coef_tactical_discount': 0.0,
-            'coef_lag1_structural_discount': float(stage2.coef_[2]) if include_lag_discount and len(stage2.coef_) >= 3 else 0.0,
-            'coef_other_slabs_weighted_base_discount_pct': float(stage2.coef_[-1]),
+            'coef_lag1_structural_discount': _coef_for(stage2, 'lag1_base_discount_pct'),
+            'coef_other_slabs_weighted_base_discount_pct': _coef_for(stage2, 'other_slabs_weighted_base_discount_pct'),
+            'coef_mrp_index_pct': _coef_for(stage2, 'mrp_index_pct'),
+            'uses_mrp_index_pct': 1.0 if use_mrp_index else 0.0,
+            'avg_weighted_mrp': float(weighted_mrp_clean.mean()) if not weighted_mrp_clean.empty else 0.0,
+            'min_weighted_mrp': float(weighted_mrp_clean.min()) if not weighted_mrp_clean.empty else 0.0,
+            'max_weighted_mrp': float(weighted_mrp_clean.max()) if not weighted_mrp_clean.empty else 0.0,
             'include_lag_discount': 1.0 if include_lag_discount else 0.0,
             'l2_penalty': float(l2_used),
             'l2_penalty_input': float(l2_penalty),
@@ -851,11 +963,12 @@ class Step3ModelingMixin:
             'stage2_fit_success': 1.0 if bool(getattr(stage2, 'success_', True)) else 0.0,
             'stage2_r2': float(r2_stage2),
             'stage2_ols_intercept': float(stage2_ols.intercept_),
-            'stage2_ols_coef_residual_store': float(stage2_ols.coef_[0]),
-            'stage2_ols_coef_structural_discount': float(stage2_ols.coef_[1]),
+            'stage2_ols_coef_residual_store': _coef_for(stage2_ols, 'residual_store'),
+            'stage2_ols_coef_structural_discount': _coef_for(stage2_ols, 'base_discount_pct'),
             'stage2_ols_coef_tactical_discount': 0.0,
-            'stage2_ols_coef_lag1_structural_discount': float(stage2_ols.coef_[2]) if include_lag_discount and len(stage2_ols.coef_) >= 3 else 0.0,
-            'stage2_ols_coef_other_slabs_weighted_base_discount_pct': float(stage2_ols.coef_[-1]),
+            'stage2_ols_coef_lag1_structural_discount': _coef_for(stage2_ols, 'lag1_base_discount_pct'),
+            'stage2_ols_coef_other_slabs_weighted_base_discount_pct': _coef_for(stage2_ols, 'other_slabs_weighted_base_discount_pct'),
+            'stage2_ols_coef_mrp_index_pct': _coef_for(stage2_ols, 'mrp_index_pct'),
             'stage2_ols_r2': float(r2_ols),
         }
         return {
@@ -976,6 +1089,9 @@ class Step3ModelingMixin:
                     cogs_per_unit = self._resolve_modeling_cogs_for_size(request, size_key, default_cogs)
                     coefficients['cogs_per_unit'] = float(cogs_per_unit)
 
+                    _beta_base = float(coefficients.get('coef_structural_discount', 0.0))
+                    _beta_lag = float(coefficients.get('coef_lag1_structural_discount', 0.0))
+                    _beta_other = float(coefficients.get('coef_other_slabs_weighted_base_discount_pct', 0.0))
                     predicted_vs_actual = [
                         ModelingPoint(
                             period=row['Period'].to_pydatetime() if hasattr(row['Period'], 'to_pydatetime') else row['Period'],
@@ -988,6 +1104,10 @@ class Step3ModelingMixin:
                             roi_1mo=float(row['roi_1mo']) if pd.notna(row['roi_1mo']) else None,
                             spend=float(row['spend']) if pd.notna(row['spend']) else None,
                             incremental_revenue=float(row['incremental_revenue']) if pd.notna(row['incremental_revenue']) else None,
+                            non_discount_baseline_qty=float(row['non_discount_baseline_quantity']) if pd.notna(row.get('non_discount_baseline_quantity', np.nan)) else None,
+                            own_discount_qty=float(_beta_base * row['base_discount_pct']),
+                            lag_discount_qty=float(_beta_lag * row.get('lag1_base_discount_pct', 0.0)),
+                            cross_slab_qty=float(_beta_other * row.get('other_slabs_weighted_base_discount_pct', 0.0)),
                         )
                         for _, row in model_df.iterrows()
                     ]

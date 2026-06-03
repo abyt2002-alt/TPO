@@ -32,7 +32,7 @@ from models.rfm_models import (
     PlannerRequest, PlannerResponse, PlannerMonthPoint,
     PlannerScenarioComparisonResponse, PlannerScenarioComparisonRow,
     CrossSizePlannerRequest, CrossSizePlannerResponse, CrossSizePlannerSizeResult, CrossSizePlannerSlabState,
-    BaselineForecastRequest, BaselineForecastResponse, BaselineForecastPoint,
+    BaselineForecastRequest, BaselineForecastResponse, BaselineForecastPoint, BaselineForecastSlabPoint,
     EDARequest, EDAResponse, EDAProductOption, EDAProductContribution,
     EDAContributionRow, EDAOptionsResponse
 )
@@ -80,6 +80,7 @@ class Step5BaselineForecastMixin:
             summary_source = scope.get('df_scope_all_slabs', df_scope)
             forecast_months = int(getattr(request, 'forecast_months', 3) or 3)
             size_histories: Dict[str, pd.DataFrame] = {}
+            all_slab_history_parts: List[dict] = []
 
             for size_key in ['12-ML', '18-ML']:
                 size_df = df_scope[
@@ -98,6 +99,7 @@ class Step5BaselineForecastMixin:
 
                 size_monthly_parts: List[pd.DataFrame] = []
                 size_discount_parts: List[pd.DataFrame] = []
+                slab_history_parts: List[dict] = []
                 for slab in slab_list:
                     slab_df = size_df[size_df['Slab'].astype(str) == str(slab)].copy()
                     if slab_df.empty:
@@ -117,7 +119,7 @@ class Step5BaselineForecastMixin:
                         monthly,
                         include_lag_discount=bool(getattr(request, 'include_lag_discount', True)),
                         l2_penalty=float(getattr(request, 'l2_penalty', 0.1)),
-                        optimize_l2_penalty=bool(getattr(request, 'optimize_l2_penalty', True)),
+                        optimize_l2_penalty=False,
                     )
                     if modeled is None:
                         continue
@@ -144,6 +146,40 @@ class Step5BaselineForecastMixin:
                             'discount_component_qty': slab_discount_component,
                         })
                     )
+                    slab_baseline_series = pd.to_numeric(model_df['non_discount_baseline_quantity'], errors='coerce').fillna(0.0)
+                    own_disc_series = beta_base * pd.to_numeric(model_df.get('base_discount_pct', 0.0), errors='coerce').fillna(0.0)
+                    lag_disc_series = beta_lag * pd.to_numeric(model_df.get('lag1_base_discount_pct', 0.0), errors='coerce').fillna(0.0)
+                    cross_slab_series = beta_other * pd.to_numeric(model_df.get('other_slabs_weighted_base_discount_pct', 0.0), errors='coerce').fillna(0.0)
+                    if 'predicted_quantity' in model_df.columns:
+                        _total_col = model_df['predicted_quantity']
+                    elif 'quantity' in model_df.columns:
+                        _total_col = model_df['quantity']
+                    else:
+                        _total_col = slab_baseline_series + own_disc_series + lag_disc_series + cross_slab_series
+                    predicted_qty = pd.to_numeric(_total_col, errors='coerce').fillna(0.0)
+                    for period_val, base_val, own_val, lag_val, cross_val, total_val in zip(
+                        model_df['Period'],
+                        slab_baseline_series,
+                        own_disc_series,
+                        lag_disc_series,
+                        cross_slab_series,
+                        predicted_qty,
+                    ):
+                        base_clamped = float(max(base_val, 0.0))
+                        total_clamped = float(max(total_val, 0.0))
+                        if total_clamped == 0.0:
+                            total_clamped = float(max(base_clamped + own_val + lag_val + cross_val, 0.0))
+                        slab_history_parts.append({
+                            'size': size_key,
+                            'slab': str(slab),
+                            'period': pd.to_datetime(period_val).strftime('%Y-%m'),
+                            'baseline_quantity': base_clamped,
+                            'own_discount_qty': float(own_val),
+                            'lag_discount_qty': float(lag_val),
+                            'cross_slab_qty': float(cross_val),
+                            'total_quantity': total_clamped,
+                            'is_forecast': False,
+                        })
 
                 if not size_monthly_parts:
                     continue
@@ -171,6 +207,7 @@ class Step5BaselineForecastMixin:
                     size_history_full.get('discount_component_qty', 0.0), errors='coerce'
                 ).fillna(0.0)
                 size_histories[size_key] = size_history_full
+                all_slab_history_parts.extend(slab_history_parts)
 
             if not size_histories:
                 return BaselineForecastResponse(success=False, message="No valid slab baselines available for forecast", points=[])
@@ -250,6 +287,8 @@ class Step5BaselineForecastMixin:
                 ))
 
             next_row = forecast_df.iloc[0] if not forecast_df.empty else None
+            slab_points_out = [BaselineForecastSlabPoint(**p) for p in all_slab_history_parts]
+
             return BaselineForecastResponse(
                 success=True,
                 message="Baseline forecast completed successfully",
@@ -258,6 +297,7 @@ class Step5BaselineForecastMixin:
                 next_month_18_ml=float(next_row.get('baseline_18-ML', 0.0)) if next_row is not None else 0.0,
                 next_month_total=(float(next_row.get('baseline_12-ML', 0.0)) + float(next_row.get('baseline_18-ML', 0.0))) if next_row is not None else 0.0,
                 points=points,
+                slab_points=slab_points_out,
             )
         except Exception as e:
             return BaselineForecastResponse(

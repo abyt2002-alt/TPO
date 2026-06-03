@@ -2520,7 +2520,8 @@ class Step4CrossSizePlannerMixin:
                         np.array([0.0], dtype=float),
                         np.array([float(state.get('lag1_base_discount_pct', 0.0))], dtype=float),
                         extra_feature_values={
-                            'other_slabs_weighted_base_discount_pct': np.array([other_disc], dtype=float)
+                            'other_slabs_weighted_base_discount_pct': np.array([other_disc], dtype=float),
+                            'mrp_index_pct': np.array([float(state.get('mrp_index_pct', 0.0))], dtype=float),
                         },
                     )[0]
                 )
@@ -2790,13 +2791,18 @@ class Step4CrossSizePlannerMixin:
                     ).fillna(0.0).to_numpy(dtype=float)
                     residual_forecast = self._forecast_unbounded_series(residual_hist.tolist(), forecast_months)
                     zeros_forecast = np.zeros(int(forecast_months), dtype=float)
+                    latest_mrp_index = float(last_row.get('mrp_index_pct', 0.0)) if pd.notna(last_row.get('mrp_index_pct', np.nan)) else 0.0
+                    mrp_index_forecast = np.full(int(forecast_months), latest_mrp_index, dtype=float)
                     baseline_forecast = self._predict_stage2_quantity(
                         stage2_model,
                         residual_forecast,
                         zeros_forecast,
                         zeros_forecast,
                         zeros_forecast,
-                        extra_feature_values={'other_slabs_weighted_base_discount_pct': zeros_forecast},
+                        extra_feature_values={
+                            'other_slabs_weighted_base_discount_pct': zeros_forecast,
+                            'mrp_index_pct': mrp_index_forecast,
+                        },
                     )
                     baseline_forecast = np.clip(np.asarray(baseline_forecast, dtype=float), 0.0, None)
 
@@ -2811,6 +2817,8 @@ class Step4CrossSizePlannerMixin:
                             base_price=float(base_price_for_slab),
                             clp_price=float(clp_price_for_slab),
                             cogs_per_unit=float(cogs_for_slab),
+                            weighted_mrp=float(last_row.get('weighted_mrp', 0.0)) if pd.notna(last_row.get('weighted_mrp', np.nan)) else 0.0,
+                            mrp_index_pct=float(latest_mrp_index),
                             stage2_intercept=float(coeff.get('stage2_intercept', 0.0)),
                             coef_residual_store=float(coeff.get('coef_residual_store', 0.0)),
                             coef_base_discount_pct=float(coeff.get('coef_structural_discount', 0.0)),
@@ -2818,6 +2826,7 @@ class Step4CrossSizePlannerMixin:
                             coef_other_slabs_weighted_base_discount_pct=float(
                                 coeff.get('coef_other_slabs_weighted_base_discount_pct', 0.0)
                             ),
+                            coef_mrp_index_pct=float(coeff.get('coef_mrp_index_pct', 0.0)),
                         )
                     )
                     slab_state[str(slab)] = {
@@ -2827,6 +2836,7 @@ class Step4CrossSizePlannerMixin:
                             'coef_other_slabs_weighted_base_discount_pct': float(
                                 coeff.get('coef_other_slabs_weighted_base_discount_pct', 0.0)
                             ),
+                            'coef_mrp_index_pct': float(coeff.get('coef_mrp_index_pct', 0.0)),
                         },
                         'default_discount_pct': float(default_discount),
                         'default_discount_series': [float(v) for v in default_discount_series],
@@ -2835,6 +2845,8 @@ class Step4CrossSizePlannerMixin:
                         'base_price': float(base_price_for_slab),
                         'clp_price': float(clp_price_for_slab),
                         'cogs_per_unit': float(cogs_for_slab),
+                        'weighted_mrp': float(last_row.get('weighted_mrp', 0.0)) if pd.notna(last_row.get('weighted_mrp', np.nan)) else 0.0,
+                        'mrp_index_pct': float(latest_mrp_index),
                     }
 
                 if not slab_rows:
@@ -2919,8 +2931,12 @@ class Step4CrossSizePlannerMixin:
             cross_fit = self._fit_cross_size_pct_change_model(df_scope)
             e12_from_18 = float(cross_fit.get('cross_elasticity_12_from_18', 0.0)) if cross_fit else 0.0
             e18_from_12 = float(cross_fit.get('cross_elasticity_18_from_12', 0.0)) if cross_fit else 0.0
-            cross_r2_12 = float(cross_fit.get('r2_12_model', 0.0)) if cross_fit else 0.0
-            cross_r2_18 = float(cross_fit.get('r2_18_model', 0.0)) if cross_fit else 0.0
+            cross_r2_12 = float(cross_fit.get('r2_12', cross_fit.get('r2_12_model', 0.0))) if cross_fit else 0.0
+            cross_r2_18 = float(cross_fit.get('r2_18', cross_fit.get('r2_18_model', 0.0))) if cross_fit else 0.0
+            cross_conf_12 = min(max(cross_r2_12, 0.0), 1.0) if np.isfinite(cross_r2_12) else 0.0
+            cross_conf_18 = min(max(cross_r2_18, 0.0), 1.0) if np.isfinite(cross_r2_18) else 0.0
+            effective_e12_from_18 = e12_from_18 * cross_conf_12
+            effective_e18_from_12 = e18_from_12 * cross_conf_18
 
             monthly_results: List[Dict[str, Any]] = []
             for month_idx, period_key in enumerate(periods):
@@ -3041,53 +3057,72 @@ class Step4CrossSizePlannerMixin:
                 reference_mode=str(getattr(request, 'reference_mode', 'ly_same_3m') or 'ly_same_3m'),
             )
 
-            baseline_qty_12_3m = float(sum(row.get('sizes', {}).get('12-ML', {}).get('baseline_total_qty', 0.0) for row in monthly_results))
-            baseline_qty_18_3m = float(sum(row.get('sizes', {}).get('18-ML', {}).get('baseline_total_qty', 0.0) for row in monthly_results))
-            precross_qty_12_3m = float(sum(row.get('sizes', {}).get('12-ML', {}).get('pre_cross_total_qty', 0.0) for row in monthly_results))
-            precross_qty_18_3m = float(sum(row.get('sizes', {}).get('18-ML', {}).get('pre_cross_total_qty', 0.0) for row in monthly_results))
+            def _latest_actual_qty_for_size(size_key: str) -> float:
+                monthly_qty = self._build_cross_size_monthly_quantity(df_scope, size_key)
+                if monthly_qty.empty or not periods:
+                    return 0.0
+                first_forecast_period = pd.Period(str(periods[0]), freq='M').to_timestamp(how='start')
+                monthly_qty = monthly_qty[pd.to_datetime(monthly_qty['Period'], errors='coerce') < first_forecast_period].copy()
+                if monthly_qty.empty:
+                    return 0.0
+                latest_qty = pd.to_numeric(pd.Series([monthly_qty.iloc[-1].get('quantity', 0.0)]), errors='coerce').fillna(0.0).iloc[0]
+                return float(latest_qty)
 
-            ref_qty_12_3m = float(reference_3m.get('12-ML', {}).get('reference_qty', 0.0))
-            ref_qty_18_3m = float(reference_3m.get('18-ML', {}).get('reference_qty', 0.0))
+            prev_final_by_size = {
+                '12-ML': _latest_actual_qty_for_size('12-ML'),
+                '18-ML': _latest_actual_qty_for_size('18-ML'),
+            }
 
-            own12_3m = ((precross_qty_12_3m - ref_qty_12_3m) / ref_qty_12_3m * 100.0) if ref_qty_12_3m > 0 else 0.0
-            own18_3m = ((precross_qty_18_3m - ref_qty_18_3m) / ref_qty_18_3m * 100.0) if ref_qty_18_3m > 0 else 0.0
+            # Month-wise cross adjustment:
+            # first month compares to latest actual; next months compare to prior adjusted forecast.
+            for row in monthly_results:
+                sizes_payload = row.get('sizes', {})
+                pre12_m = float(sizes_payload.get('12-ML', {}).get('pre_cross_total_qty', 0.0))
+                pre18_m = float(sizes_payload.get('18-ML', {}).get('pre_cross_total_qty', 0.0))
+                base12_m = float(prev_final_by_size.get('12-ML', 0.0))
+                base18_m = float(prev_final_by_size.get('18-ML', 0.0))
 
-            # Step 4 planner is additive-only: no cross-pack volume readjustment applied.
-            overall12_3m = own12_3m
-            overall18_3m = own18_3m
-            final_qty_12_3m = max(precross_qty_12_3m, 0.0)
-            final_qty_18_3m = max(precross_qty_18_3m, 0.0)
+                own12_m = ((pre12_m - base12_m) / base12_m * 100.0) if base12_m > 0 else 0.0
+                own18_m = ((pre18_m - base18_m) / base18_m * 100.0) if base18_m > 0 else 0.0
+                overall12_m = own12_m + (effective_e12_from_18 * own18_m)
+                overall18_m = own18_m + (effective_e18_from_12 * own12_m)
+                final12_m = max(base12_m * (1.0 + (overall12_m / 100.0)), 0.0) if base12_m > 0 else max(pre12_m, 0.0)
+                final18_m = max(base18_m * (1.0 + (overall18_m / 100.0)), 0.0) if base18_m > 0 else max(pre18_m, 0.0)
 
-            target_size_totals = {'12-ML': float(final_qty_12_3m), '18-ML': float(final_qty_18_3m)}
-
-            # Redistribute final 3M size totals back to slab-month using scenario slab-month shares.
-            for size_key in ['12-ML', '18-ML']:
-                cells: List[Dict[str, Any]] = []
-                sum_pre_cross = 0.0
-                sum_baseline = 0.0
-                for row in monthly_results:
-                    size_payload = row.get('sizes', {}).get(size_key, {})
-                    for slab_row in size_payload.get('slabs', []):
+                for size_key, target_total in {'12-ML': final12_m, '18-ML': final18_m}.items():
+                    size_payload = sizes_payload.get(size_key, {})
+                    slabs_for_month = size_payload.get('slabs', []) or []
+                    if not slabs_for_month:
+                        continue
+                    sum_pre_cross = sum(max(float(slab.get('pre_cross_qty', 0.0)), 0.0) for slab in slabs_for_month)
+                    sum_baseline = sum(max(float(slab.get('non_discount_baseline_qty', 0.0)), 0.0) for slab in slabs_for_month)
+                    n_slabs = len(slabs_for_month)
+                    for slab_row in slabs_for_month:
                         pre_v = max(float(slab_row.get('pre_cross_qty', 0.0)), 0.0)
                         base_v = max(float(slab_row.get('non_discount_baseline_qty', 0.0)), 0.0)
-                        sum_pre_cross += pre_v
-                        sum_baseline += base_v
-                        cells.append({'row': row, 'size_payload': size_payload, 'slab_row': slab_row, 'pre': pre_v, 'base': base_v})
+                        if sum_pre_cross > 0:
+                            share = pre_v / sum_pre_cross
+                        elif sum_baseline > 0:
+                            share = base_v / sum_baseline
+                        else:
+                            share = 1.0 / float(max(n_slabs, 1))
+                        slab_row['final_qty'] = float(max(float(target_total) * share, 0.0))
+                    size_payload['final_total_qty'] = float(sum(max(float(s.get('final_qty', 0.0)), 0.0) for s in slabs_for_month))
 
-                n_cells = len(cells)
-                target_total = float(target_size_totals.get(size_key, 0.0))
-                if n_cells <= 0:
-                    continue
-
-                if sum_pre_cross > 0:
-                    shares = [c['pre'] / sum_pre_cross for c in cells]
-                elif sum_baseline > 0:
-                    shares = [c['base'] / sum_baseline for c in cells]
-                else:
-                    shares = [1.0 / float(n_cells)] * n_cells
-
-                for idx, c in enumerate(cells):
-                    c['slab_row']['final_qty'] = float(max(target_total * shares[idx], 0.0))
+                row['impact'] = {
+                    'prev12_qty': float(base12_m),
+                    'prev18_qty': float(base18_m),
+                    'pre12_qty': float(pre12_m),
+                    'pre18_qty': float(pre18_m),
+                    'final12_qty': float(final12_m),
+                    'final18_qty': float(final18_m),
+                    'own12_pct': float(own12_m),
+                    'own18_pct': float(own18_m),
+                    'overall12_pct': float(overall12_m),
+                    'overall18_pct': float(overall18_m),
+                }
+                prev_final_by_size['12-ML'] = float(final12_m)
+                prev_final_by_size['18-ML'] = float(final18_m)
 
             # Recompute month totals and size summaries from redistributed final slab-month qty.
             summary_acc = {
@@ -3225,16 +3260,11 @@ class Step4CrossSizePlannerMixin:
                     summary_acc[size_key]['scenario_investment_positive'] += scenario_investment_positive_total
 
                 row['impact'] = {
-                    'prev12_qty': float(row.get('sizes', {}).get('12-ML', {}).get('baseline_total_qty', 0.0)),
-                    'prev18_qty': float(row.get('sizes', {}).get('18-ML', {}).get('baseline_total_qty', 0.0)),
+                    **(row.get('impact') or {}),
                     'pre12_qty': float(row.get('sizes', {}).get('12-ML', {}).get('pre_cross_total_qty', 0.0)),
                     'pre18_qty': float(row.get('sizes', {}).get('18-ML', {}).get('pre_cross_total_qty', 0.0)),
                     'final12_qty': float(row.get('sizes', {}).get('12-ML', {}).get('final_total_qty', 0.0)),
                     'final18_qty': float(row.get('sizes', {}).get('18-ML', {}).get('final_total_qty', 0.0)),
-                    'own12_pct': float(own12_3m),
-                    'own18_pct': float(own18_3m),
-                    'overall12_pct': float(overall12_3m),
-                    'overall18_pct': float(overall18_3m),
                 }
 
             summary_3m: Dict[str, Dict[str, float]] = {}
@@ -3455,4 +3485,3 @@ class Step4CrossSizePlannerMixin:
                 size_results=[],
                 impact_summary={},
             )
-

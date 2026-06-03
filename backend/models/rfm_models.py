@@ -298,6 +298,10 @@ class ModelingPoint(BaseModel):
     spend: Optional[float] = None
     incremental_revenue: Optional[float] = None
     incremental_profit: Optional[float] = None
+    non_discount_baseline_qty: Optional[float] = None
+    own_discount_qty: Optional[float] = None
+    lag_discount_qty: Optional[float] = None
+    cross_slab_qty: Optional[float] = None
 
 
 class ModelingSlabResult(BaseModel):
@@ -430,11 +434,14 @@ class CrossSizePlannerSlabState(BaseModel):
     base_price: float = 0.0
     clp_price: float = 0.0
     cogs_per_unit: float = 0.0
+    weighted_mrp: float = 0.0
+    mrp_index_pct: float = 0.0
     stage2_intercept: float
     coef_residual_store: float
     coef_base_discount_pct: float
     coef_lag1_base_discount_pct: float
     coef_other_slabs_weighted_base_discount_pct: float
+    coef_mrp_index_pct: float = 0.0
 
 
 class CrossSizePlannerSizeResult(BaseModel):
@@ -524,6 +531,18 @@ class BaselineForecastPoint(BaseModel):
     is_forecast: bool = False
 
 
+class BaselineForecastSlabPoint(BaseModel):
+    size: str
+    slab: str
+    period: str
+    baseline_quantity: float = 0.0
+    own_discount_qty: float = 0.0
+    lag_discount_qty: float = 0.0
+    cross_slab_qty: float = 0.0
+    total_quantity: float = 0.0
+    is_forecast: bool = False
+
+
 class BaselineForecastResponse(BaseModel):
     success: bool
     message: str
@@ -532,6 +551,7 @@ class BaselineForecastResponse(BaseModel):
     next_month_18_ml: float = 0.0
     next_month_total: float = 0.0
     points: List[BaselineForecastPoint] = []
+    slab_points: List[BaselineForecastSlabPoint] = []
 
 
 class EDARequest(BaseModel):
