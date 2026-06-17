@@ -1626,13 +1626,16 @@ class Step4CrossSizePlannerMixin:
             revenue_gross = float(size_part['Sales_Gross_Num'].sum())
             investment = float(size_part['Discount_Num'].sum())
             cogs = float(pair_state.get(size_key, {}).get('cogs_per_unit', 0.0))
-            profit = float(revenue_net - (qty * cogs))
+            profit_before_investment = float(revenue_net - (qty * cogs))
+            profit = float(profit_before_investment - investment)
             out[size_key] = {
                 'reference_qty': qty,
                 'reference_revenue': revenue_gross,
                 'reference_revenue_gross': revenue_gross,
                 'reference_revenue_net': revenue_net,
                 'reference_profit': profit,
+                'reference_profit_before_investment': profit_before_investment,
+                'reference_profit_includes_investment': 1.0,
                 'reference_investment': investment,
                 'reference_available': 1.0,
             }
@@ -1642,6 +1645,7 @@ class Step4CrossSizePlannerMixin:
         total_revenue_gross = float(sum(out.get(size, {}).get('reference_revenue_gross', 0.0) for size in ['12-ML', '18-ML']))
         total_revenue_net = float(sum(out.get(size, {}).get('reference_revenue_net', 0.0) for size in ['12-ML', '18-ML']))
         total_profit = float(sum(out.get(size, {}).get('reference_profit', 0.0) for size in ['12-ML', '18-ML']))
+        total_profit_before_investment = float(sum(out.get(size, {}).get('reference_profit_before_investment', 0.0) for size in ['12-ML', '18-ML']))
         total_investment = float(sum(out.get(size, {}).get('reference_investment', 0.0) for size in ['12-ML', '18-ML']))
         total_available = 1.0 if any(out.get(size, {}).get('reference_available', 0.0) > 0 for size in ['12-ML', '18-ML']) else 0.0
         out['TOTAL'] = {
@@ -1650,6 +1654,8 @@ class Step4CrossSizePlannerMixin:
             'reference_revenue_gross': total_revenue_gross,
             'reference_revenue_net': total_revenue_net,
             'reference_profit': total_profit,
+            'reference_profit_before_investment': total_profit_before_investment,
+            'reference_profit_includes_investment': 1.0,
             'reference_investment': total_investment,
             'reference_available': total_available,
         }
@@ -2460,22 +2466,12 @@ class Step4CrossSizePlannerMixin:
         if merged.empty or len(merged) < 6:
             return None
 
-        merged['pct_change_12'] = (
-            merged['quantity_12'].pct_change().replace([np.inf, -np.inf], np.nan) * 100.0
-        )
-        merged['pct_change_18'] = (
-            merged['quantity_18'].pct_change().replace([np.inf, -np.inf], np.nan) * 100.0
-        )
-        merged = merged.dropna(subset=['pct_change_12', 'pct_change_18']).copy()
-        if merged.empty or len(merged) < 6:
-            return None
-
         mdl12 = LinearRegression()
         mdl18 = LinearRegression()
-        X12 = merged[['pct_change_18']].to_numpy(dtype=float)
-        y12 = merged['pct_change_12'].to_numpy(dtype=float)
-        X18 = merged[['pct_change_12']].to_numpy(dtype=float)
-        y18 = merged['pct_change_18'].to_numpy(dtype=float)
+        X12 = merged[['quantity_18']].to_numpy(dtype=float)
+        y12 = merged['quantity_12'].to_numpy(dtype=float)
+        X18 = merged[['quantity_12']].to_numpy(dtype=float)
+        y18 = merged['quantity_18'].to_numpy(dtype=float)
         mdl12.fit(X12, y12)
         mdl18.fit(X18, y18)
 
@@ -3089,26 +3085,41 @@ class Step4CrossSizePlannerMixin:
                 latest_qty = pd.to_numeric(pd.Series([monthly_qty.iloc[-1].get('quantity', 0.0)]), errors='coerce').fillna(0.0).iloc[0]
                 return float(latest_qty)
 
-            prev_final_by_size = {
-                '12-ML': _latest_actual_qty_for_size('12-ML'),
-                '18-ML': _latest_actual_qty_for_size('18-ML'),
-            }
+            # 3-month aggregate cross-pack adjustment (applied once, based on default vs scenario delta)
+            # Base = sum of default_world_qty across all months (model at default discounts)
+            # own% = pure discount-driven change → cross-pack only fires when discounts change
+            base12_1m = _latest_actual_qty_for_size('12-ML')
+            base18_1m = _latest_actual_qty_for_size('18-ML')
 
-            # Month-wise cross adjustment:
-            # first month compares to latest actual; next months compare to prior adjusted forecast.
+            base12_3m = sum(
+                max(float(slab.get('default_world_qty', 0.0)), 0.0)
+                for r in monthly_results
+                for slab in r.get('sizes', {}).get('12-ML', {}).get('slabs', [])
+            )
+            base18_3m = sum(
+                max(float(slab.get('default_world_qty', 0.0)), 0.0)
+                for r in monthly_results
+                for slab in r.get('sizes', {}).get('18-ML', {}).get('slabs', [])
+            )
+
+            total_pre12 = sum(float(r.get('sizes', {}).get('12-ML', {}).get('pre_cross_total_qty', 0.0)) for r in monthly_results)
+            total_pre18 = sum(float(r.get('sizes', {}).get('18-ML', {}).get('pre_cross_total_qty', 0.0)) for r in monthly_results)
+
+            own12 = ((total_pre12 - base12_3m) / base12_3m * 100.0) if base12_3m > 0 else 0.0
+            own18 = ((total_pre18 - base18_3m) / base18_3m * 100.0) if base18_3m > 0 else 0.0
+            overall12 = own12 + (effective_e12_from_18 * own18)
+            overall18 = own18 + (effective_e18_from_12 * own12)
+            final12_3m = max(base12_3m * (1.0 + overall12 / 100.0), 0.0) if base12_3m > 0 else max(total_pre12, 0.0)
+            final18_3m = max(base18_3m * (1.0 + overall18 / 100.0), 0.0) if base18_3m > 0 else max(total_pre18, 0.0)
+            scale12 = float(final12_3m / total_pre12) if total_pre12 > 0 else 1.0
+            scale18 = float(final18_3m / total_pre18) if total_pre18 > 0 else 1.0
+
             for row in monthly_results:
                 sizes_payload = row.get('sizes', {})
                 pre12_m = float(sizes_payload.get('12-ML', {}).get('pre_cross_total_qty', 0.0))
                 pre18_m = float(sizes_payload.get('18-ML', {}).get('pre_cross_total_qty', 0.0))
-                base12_m = float(prev_final_by_size.get('12-ML', 0.0))
-                base18_m = float(prev_final_by_size.get('18-ML', 0.0))
-
-                own12_m = ((pre12_m - base12_m) / base12_m * 100.0) if base12_m > 0 else 0.0
-                own18_m = ((pre18_m - base18_m) / base18_m * 100.0) if base18_m > 0 else 0.0
-                overall12_m = own12_m + (effective_e12_from_18 * own18_m)
-                overall18_m = own18_m + (effective_e18_from_12 * own12_m)
-                final12_m = max(base12_m * (1.0 + (overall12_m / 100.0)), 0.0) if base12_m > 0 else max(pre12_m, 0.0)
-                final18_m = max(base18_m * (1.0 + (overall18_m / 100.0)), 0.0) if base18_m > 0 else max(pre18_m, 0.0)
+                final12_m = max(pre12_m * scale12, 0.0)
+                final18_m = max(pre18_m * scale18, 0.0)
 
                 for size_key, target_total in {'12-ML': final12_m, '18-ML': final18_m}.items():
                     size_payload = sizes_payload.get(size_key, {})
@@ -3131,19 +3142,17 @@ class Step4CrossSizePlannerMixin:
                     size_payload['final_total_qty'] = float(sum(max(float(s.get('final_qty', 0.0)), 0.0) for s in slabs_for_month))
 
                 row['impact'] = {
-                    'prev12_qty': float(base12_m),
-                    'prev18_qty': float(base18_m),
+                    'prev12_qty': float(base12_1m if base12_1m > 0 else base12_3m / max(len(periods), 1)),
+                    'prev18_qty': float(base18_1m if base18_1m > 0 else base18_3m / max(len(periods), 1)),
                     'pre12_qty': float(pre12_m),
                     'pre18_qty': float(pre18_m),
                     'final12_qty': float(final12_m),
                     'final18_qty': float(final18_m),
-                    'own12_pct': float(own12_m),
-                    'own18_pct': float(own18_m),
-                    'overall12_pct': float(overall12_m),
-                    'overall18_pct': float(overall18_m),
+                    'own12_pct': float(own12),
+                    'own18_pct': float(own18),
+                    'overall12_pct': float(overall12),
+                    'overall18_pct': float(overall18),
                 }
-                prev_final_by_size['12-ML'] = float(final12_m)
-                prev_final_by_size['18-ML'] = float(final18_m)
 
             # Recompute month totals and size summaries from redistributed final slab-month qty.
             summary_acc = {
@@ -3218,11 +3227,11 @@ class Step4CrossSizePlannerMixin:
                         scenario_revenue_net = final_qty * clp_price
                         baseline_revenue = baseline_revenue_gross
                         scenario_revenue = scenario_revenue_gross
-                        baseline_profit = baseline_revenue_net - (baseline_qty * cogs_per_unit)
-                        scenario_profit = scenario_revenue_net - (final_qty * cogs_per_unit)
                         baseline_investment = baseline_qty * dsp_price * (default_discount / 100.0)
                         scenario_investment = final_qty * dsp_price * (scenario_discount / 100.0)
                         scenario_investment_positive = final_qty * dsp_price * (max(0.0, scenario_discount - default_discount) / 100.0)
+                        baseline_profit = baseline_revenue_net - baseline_investment - (baseline_qty * cogs_per_unit)
+                        scenario_profit = scenario_revenue_net - scenario_investment - (final_qty * cogs_per_unit)
 
                         slab_row['baseline_revenue'] = float(baseline_revenue)
                         slab_row['scenario_revenue'] = float(scenario_revenue)

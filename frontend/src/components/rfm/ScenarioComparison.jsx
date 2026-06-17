@@ -433,6 +433,12 @@ const readSummary = (row, sizeKey) => {
     block?.revenue ??
     block?.scenarioRevenue
   )
+  const revenueGrossAbs = Number(
+    block?.scenario_revenue_gross ??
+    block?.scenario_revenue ??
+    block?.revenue ??
+    block?.scenarioRevenue
+  )
   const profitAbs = Number(
     block?.scenario_profit ??
     block?.profit ??
@@ -447,6 +453,9 @@ const readSummary = (row, sizeKey) => {
     block?.reference_profit ??
     block?.ref_profit
   )
+  const referenceProfitAfterInvestment = Number(block?.reference_profit_includes_investment || 0) > 0
+    ? referenceProfitAbs
+    : referenceProfitAbs - (Number.isFinite(invRefAbs) ? invRefAbs : 0)
   const scenarioNetMargin = (
     Number.isFinite(revenueAbs) &&
     revenueAbs > 0 &&
@@ -455,8 +464,8 @@ const readSummary = (row, sizeKey) => {
   const referenceNetMargin = (
     Number.isFinite(referenceRevenueAbs) &&
     referenceRevenueAbs > 0 &&
-    Number.isFinite(referenceProfitAbs)
-  ) ? ((referenceProfitAbs / referenceRevenueAbs) * 100) : Number.NaN
+    Number.isFinite(referenceProfitAfterInvestment)
+  ) ? ((referenceProfitAfterInvestment / referenceRevenueAbs) * 100) : Number.NaN
   const netMarginDirect = Number(block?.net_margin_pct ?? block?.gross_margin_pct)
   const netMarginPct = (
     Number.isFinite(scenarioNetMargin) && Number.isFinite(referenceNetMargin)
@@ -469,9 +478,9 @@ const readSummary = (row, sizeKey) => {
     ))
   const ctsPct = (
     Number.isFinite(invScenarioAbs) &&
-    Number.isFinite(revenueAbs) &&
-    revenueAbs > 0
-  ) ? ((invScenarioAbs / revenueAbs) * 100) : Number.NaN
+    Number.isFinite(revenueGrossAbs) &&
+    revenueGrossAbs > 0
+  ) ? ((invScenarioAbs / revenueGrossAbs) * 100) : Number.NaN
   return {
     volume: toNum(block?.volume || 0),
     revenue: toNum(block?.revenue || 0),
@@ -997,39 +1006,41 @@ const ScenarioComparison = ({
       return { success: false, message: computed?.message || 'Scenario recomputation failed.' }
     }
     const summary = computed?.summary_3m || {}
-    const readMetric = (summaryBlock = {}) => ({
-      volume: Number(summaryBlock?.final_qty ?? summaryBlock?.scenario_qty_additive ?? 0) || 0,
-      revenue: Number(summaryBlock?.scenario_revenue ?? 0) || 0,
-      profit: Number(summaryBlock?.scenario_profit ?? 0) || 0,
-      volume_pct: Number(summaryBlock?.vs_reference_volume_pct ?? 0) || 0,
-      revenue_pct: Number(summaryBlock?.vs_reference_revenue_pct ?? 0) || 0,
-      gross_margin_pct: (
-        Number(summaryBlock?.scenario_revenue_net ?? summaryBlock?.scenario_revenue ?? 0) > 0 &&
-        Number(summaryBlock?.reference_revenue_net ?? summaryBlock?.reference_revenue ?? 0) > 0
-      )
-        ? (
-          ((Number(summaryBlock?.scenario_profit ?? 0) / Number(summaryBlock?.scenario_revenue_net ?? summaryBlock?.scenario_revenue ?? 0)) * 100) -
-          ((Number(summaryBlock?.reference_profit ?? 0) / Number(summaryBlock?.reference_revenue_net ?? summaryBlock?.reference_revenue ?? 0)) * 100)
-        )
-        : (Number(summaryBlock?.vs_reference_profit_pct ?? 0) || 0),
-      profit_pct: (
-        Number(summaryBlock?.scenario_revenue_net ?? summaryBlock?.scenario_revenue ?? 0) > 0 &&
-        Number(summaryBlock?.reference_revenue_net ?? summaryBlock?.reference_revenue ?? 0) > 0
-      )
-        ? (
-          ((Number(summaryBlock?.scenario_profit ?? 0) / Number(summaryBlock?.scenario_revenue_net ?? summaryBlock?.scenario_revenue ?? 0)) * 100) -
-          ((Number(summaryBlock?.reference_profit ?? 0) / Number(summaryBlock?.reference_revenue_net ?? summaryBlock?.reference_revenue ?? 0)) * 100)
-        )
-        : (Number(summaryBlock?.vs_reference_profit_pct ?? 0) || 0),
-      scenario_investment: Number(summaryBlock?.scenario_investment ?? 0) || 0,
-      reference_investment: Number(summaryBlock?.reference_investment ?? 0) || 0,
-      investment_pct: Number(
-        summaryBlock?.vs_reference_investment_pct ??
-        summaryBlock?.investment_delta_pct ??
-        summaryBlock?.investment_change_positive_vs_reference_pct ??
-        0
-      ) || 0,
-    })
+    const readMetric = (summaryBlock = {}) => {
+      const scenarioNet = Number(summaryBlock?.scenario_revenue_net ?? summaryBlock?.scenario_revenue ?? 0)
+      const scenarioGross = Number(summaryBlock?.scenario_revenue_gross ?? summaryBlock?.scenario_revenue ?? 0)
+      const scenarioProfit = Number(summaryBlock?.scenario_profit ?? 0)
+      const referenceNet = Number(summaryBlock?.reference_revenue_net ?? summaryBlock?.reference_revenue ?? 0)
+      const referenceProfitRaw = Number(summaryBlock?.reference_profit ?? 0)
+      const referenceInvestment = Number(summaryBlock?.reference_investment ?? 0)
+      const referenceProfit = Number(summaryBlock?.reference_profit_includes_investment || 0) > 0
+        ? referenceProfitRaw
+        : referenceProfitRaw - referenceInvestment
+      const scenarioMargin = scenarioNet > 0 ? (scenarioProfit / scenarioNet) * 100 : Number.NaN
+      const referenceMargin = referenceNet > 0 ? (referenceProfit / referenceNet) * 100 : Number.NaN
+      const marginDelta = Number.isFinite(scenarioMargin) && Number.isFinite(referenceMargin)
+        ? scenarioMargin - referenceMargin
+        : (Number(summaryBlock?.vs_reference_profit_pct ?? 0) || 0)
+      const scenarioInvestment = Number(summaryBlock?.scenario_investment ?? 0) || 0
+      return {
+        volume: Number(summaryBlock?.final_qty ?? summaryBlock?.scenario_qty_additive ?? 0) || 0,
+        revenue: Number(summaryBlock?.scenario_revenue ?? 0) || 0,
+        profit: scenarioProfit || 0,
+        volume_pct: Number(summaryBlock?.vs_reference_volume_pct ?? 0) || 0,
+        revenue_pct: Number(summaryBlock?.vs_reference_revenue_pct ?? 0) || 0,
+        gross_margin_pct: marginDelta,
+        profit_pct: marginDelta,
+        scenario_investment: scenarioInvestment,
+        reference_investment: referenceInvestment,
+        investment_pct: Number(
+          summaryBlock?.vs_reference_investment_pct ??
+          summaryBlock?.investment_delta_pct ??
+          summaryBlock?.investment_change_positive_vs_reference_pct ??
+          0
+        ) || 0,
+        cts_pct: scenarioGross > 0 ? (scenarioInvestment / scenarioGross) * 100 : 0,
+      }
+    }
     return {
       success: true,
       scenario: {
@@ -1467,7 +1478,7 @@ const ScenarioComparison = ({
                                 step="0.1"
                                 value={minDiscountFilterByField[fieldKey(periodKey, sizeKey, slabKey)] ?? ''}
                                 onChange={(e) => updateMinDiscountField(periodKey, sizeKey, slabKey, e.target.value)}
-                                className="w-16 px-1.5 py-1 text-xs border border-gray-300 rounded text-right"
+                                className="w-16 px-1.5 py-1 text-xs border border-gray-300 rounded text-right [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
                                 placeholder="min"
                               />
                             </td>
@@ -1479,7 +1490,7 @@ const ScenarioComparison = ({
                                 step="0.1"
                                 value={maxDiscountFilterByField[fieldKey(periodKey, sizeKey, slabKey)] ?? ''}
                                 onChange={(e) => updateMaxDiscountField(periodKey, sizeKey, slabKey, e.target.value)}
-                                className="w-16 px-1.5 py-1 text-xs border border-gray-300 rounded text-right"
+                                className="w-16 px-1.5 py-1 text-xs border border-gray-300 rounded text-right [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
                                 placeholder="max"
                               />
                             </td>
@@ -1528,85 +1539,39 @@ const ScenarioComparison = ({
           )}
 
           <div className="bg-white rounded-lg shadow-md p-4">
-            <h4 className="text-base font-semibold text-body mb-3">Scenario Filters (Volume / Revenue / Net Margin / Investment / CTS)</h4>
-            <div className="grid grid-cols-1 md:grid-cols-7 gap-3">
-              <div>
-                <label className="block text-xs font-medium text-muted mb-1">Min 12-ML Volume %</label>
-                <input
-                  type="number"
-                  step="0.1"
-                  value={min12VolumePct}
-                  onChange={(e) => setMin12VolumePct(e.target.value)}
-                  className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg"
-                  placeholder="e.g. 0"
-                />
+            <div className="flex items-center gap-2 mb-3">
+              <h4 className="text-sm font-semibold text-body">Scenario Filters</h4>
+              <div className="flex gap-1.5 flex-wrap">
+                {['Volume', 'Gross Revenue', 'Net Margin', 'Investment', 'CTS'].map((tag) => (
+                  <span key={tag} className="px-2 py-0.5 rounded-full bg-slate-100 text-[10px] font-medium text-slate-500">{tag}</span>
+                ))}
               </div>
-              <div>
-                <label className="block text-xs font-medium text-muted mb-1">Min 18-ML Volume %</label>
-                <input
-                  type="number"
-                  step="0.1"
-                  value={min18VolumePct}
-                  onChange={(e) => setMin18VolumePct(e.target.value)}
-                  className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg"
-                  placeholder="e.g. 0"
-                />
-              </div>
-              <div>
-                <label className="block text-xs font-medium text-muted mb-1">Min TOTAL Volume %</label>
-                <input
-                  type="number"
-                  step="0.1"
-                  value={minVolumePct}
-                  onChange={(e) => setMinVolumePct(e.target.value)}
-                  className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg"
-                  placeholder="e.g. 0"
-                />
-              </div>
-              <div>
-                <label className="block text-xs font-medium text-muted mb-1">Min Revenue % Increase</label>
-                <input
-                  type="number"
-                  step="0.1"
-                  value={minRevenuePct}
-                  onChange={(e) => setMinRevenuePct(e.target.value)}
-                  className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg"
-                  placeholder="e.g. 0"
-                />
-              </div>
-              <div>
-                <label className="block text-xs font-medium text-muted mb-1">Min Net Margin % Increase</label>
-                <input
-                  type="number"
-                  step="0.1"
-                  value={minProfitPct}
-                  onChange={(e) => setMinProfitPct(e.target.value)}
-                  className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg"
-                  placeholder="e.g. 0"
-                />
-              </div>
-              <div>
-                <label className="block text-xs font-medium text-muted mb-1">Max Investment % Increase</label>
-                <input
-                  type="number"
-                  step="0.1"
-                  value={maxInvestmentPct}
-                  onChange={(e) => setMaxInvestmentPct(e.target.value)}
-                  className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg"
-                  placeholder="e.g. 50"
-                />
-              </div>
-              <div>
-                <label className="block text-xs font-medium text-muted mb-1">Max CTS %</label>
-                <input
-                  type="number"
-                  step="0.1"
-                  value={maxCtsPct}
-                  onChange={(e) => setMaxCtsPct(e.target.value)}
-                  className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg"
-                  placeholder="e.g. 20"
-                />
-              </div>
+            </div>
+            <div className="grid grid-cols-2 sm:grid-cols-4 xl:grid-cols-7 gap-2">
+              {[
+                { label: '12-ML Vol %', sublabel: 'min', value: min12VolumePct, onChange: setMin12VolumePct, placeholder: '0' },
+                { label: '18-ML Vol %', sublabel: 'min', value: min18VolumePct, onChange: setMin18VolumePct, placeholder: '0' },
+                { label: 'Total Vol %', sublabel: 'min', value: minVolumePct, onChange: setMinVolumePct, placeholder: '0' },
+                { label: 'Gross Rev %', sublabel: 'min', value: minRevenuePct, onChange: setMinRevenuePct, placeholder: '0' },
+                { label: 'Net Margin %', sublabel: 'min', value: minProfitPct, onChange: setMinProfitPct, placeholder: '0' },
+                { label: 'Investment %', sublabel: 'max', value: maxInvestmentPct, onChange: setMaxInvestmentPct, placeholder: '50' },
+                { label: 'CTS %', sublabel: 'max', value: maxCtsPct, onChange: setMaxCtsPct, placeholder: '20' },
+              ].map(({ label, sublabel, value, onChange, placeholder }) => (
+                <div key={label} className="rounded-lg border border-slate-200 bg-slate-50 px-2.5 pt-2 pb-2">
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="text-[11px] font-semibold text-body leading-none">{label}</span>
+                    <span className={`text-[9px] font-medium uppercase tracking-wide px-1.5 py-0.5 rounded-full leading-none ${sublabel === 'min' ? 'bg-blue-100 text-blue-600' : 'bg-orange-100 text-orange-600'}`}>{sublabel}</span>
+                  </div>
+                  <input
+                    type="number"
+                    step="0.1"
+                    value={value}
+                    onChange={(e) => onChange(e.target.value)}
+                    className="w-full px-2 py-1.5 text-xs border border-slate-200 rounded-md bg-white focus:outline-none focus:ring-1 focus:ring-violet-300 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                    placeholder={placeholder}
+                  />
+                </div>
+              ))}
             </div>
           </div>
 

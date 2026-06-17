@@ -317,6 +317,42 @@ const normalizeModelingCogsBySize = (raw = {}) => {
   return out
 }
 
+const buildScenarioSummaryMetric = (summaryBlock = {}) => {
+  const scenarioNet = Number(summaryBlock?.scenario_revenue_net ?? summaryBlock?.scenario_revenue ?? 0)
+  const scenarioGross = Number(summaryBlock?.scenario_revenue_gross ?? summaryBlock?.scenario_revenue ?? 0)
+  const scenarioProfit = Number(summaryBlock?.scenario_profit ?? 0)
+  const scenarioInvestment = Number(summaryBlock?.scenario_investment ?? 0)
+  const referenceNet = Number(summaryBlock?.reference_revenue_net ?? summaryBlock?.reference_revenue ?? 0)
+  const referenceProfitRaw = Number(summaryBlock?.reference_profit ?? 0)
+  const referenceInvestment = Number(summaryBlock?.reference_investment ?? 0)
+  const referenceProfit = Number(summaryBlock?.reference_profit_includes_investment || 0) > 0
+    ? referenceProfitRaw
+    : referenceProfitRaw - referenceInvestment
+  const scenarioMargin = scenarioNet > 0 ? (scenarioProfit / scenarioNet) * 100 : Number.NaN
+  const referenceMargin = referenceNet > 0 ? (referenceProfit / referenceNet) * 100 : Number.NaN
+  const marginDelta = Number.isFinite(scenarioMargin) && Number.isFinite(referenceMargin)
+    ? scenarioMargin - referenceMargin
+    : Number(summaryBlock?.vs_reference_profit_pct ?? 0)
+  return {
+    volume: Number(summaryBlock?.final_qty ?? summaryBlock?.scenario_qty_additive ?? 0),
+    revenue: Number(summaryBlock?.scenario_revenue ?? 0),
+    profit: scenarioProfit,
+    volume_pct: Number(summaryBlock?.vs_reference_volume_pct ?? 0),
+    revenue_pct: Number(summaryBlock?.vs_reference_revenue_pct ?? 0),
+    gross_margin_pct: marginDelta,
+    profit_pct: marginDelta,
+    scenario_investment: scenarioInvestment,
+    reference_investment: referenceInvestment,
+    investment_pct: Number(
+      summaryBlock?.vs_reference_investment_pct ??
+      summaryBlock?.investment_delta_pct ??
+      summaryBlock?.investment_change_positive_vs_reference_pct ??
+      0
+    ),
+    cts_pct: scenarioGross > 0 ? (scenarioInvestment / scenarioGross) * 100 : 0,
+  }
+}
+
 const DEFAULT_STEP5_SCENARIO_BUILDER = {
   mode: 'fixed_historical_ladders_v2',
 }
@@ -818,39 +854,7 @@ const RFMAnalysis = () => {
       }
       const periods = normalizePlannerPeriodsFromData(defaultResponse)
 
-      const readMetric = (summaryBlock = {}) => ({
-        volume: Number(summaryBlock?.final_qty ?? summaryBlock?.scenario_qty_additive ?? 0),
-        revenue: Number(summaryBlock?.scenario_revenue ?? 0),
-        profit: Number(summaryBlock?.scenario_profit ?? 0),
-        volume_pct: Number(summaryBlock?.vs_reference_volume_pct ?? 0),
-        revenue_pct: Number(summaryBlock?.vs_reference_revenue_pct ?? 0),
-        gross_margin_pct: (
-          Number(summaryBlock?.scenario_revenue_net ?? summaryBlock?.scenario_revenue ?? 0) > 0 &&
-          Number(summaryBlock?.reference_revenue_net ?? summaryBlock?.reference_revenue ?? 0) > 0
-        )
-          ? (
-            ((Number(summaryBlock?.scenario_profit ?? 0) / Number(summaryBlock?.scenario_revenue_net ?? summaryBlock?.scenario_revenue ?? 0)) * 100) -
-            ((Number(summaryBlock?.reference_profit ?? 0) / Number(summaryBlock?.reference_revenue_net ?? summaryBlock?.reference_revenue ?? 0)) * 100)
-          )
-          : Number(summaryBlock?.vs_reference_profit_pct ?? 0),
-        profit_pct: (
-          Number(summaryBlock?.scenario_revenue_net ?? summaryBlock?.scenario_revenue ?? 0) > 0 &&
-          Number(summaryBlock?.reference_revenue_net ?? summaryBlock?.reference_revenue ?? 0) > 0
-        )
-          ? (
-            ((Number(summaryBlock?.scenario_profit ?? 0) / Number(summaryBlock?.scenario_revenue_net ?? summaryBlock?.scenario_revenue ?? 0)) * 100) -
-            ((Number(summaryBlock?.reference_profit ?? 0) / Number(summaryBlock?.reference_revenue_net ?? summaryBlock?.reference_revenue ?? 0)) * 100)
-          )
-          : Number(summaryBlock?.vs_reference_profit_pct ?? 0),
-        scenario_investment: Number(summaryBlock?.scenario_investment ?? 0),
-        reference_investment: Number(summaryBlock?.reference_investment ?? 0),
-        investment_pct: Number(
-          summaryBlock?.vs_reference_investment_pct ??
-          summaryBlock?.investment_delta_pct ??
-          summaryBlock?.investment_change_positive_vs_reference_pct ??
-          0
-        ),
-      })
+      const readMetric = buildScenarioSummaryMetric
 
       const historicalContext = buildStep5HistoricalDiscountContext(defaultResponse)
       const buildScenarioRow = ({ key, id, name, scenarioByPeriod }) => {
@@ -1627,7 +1631,17 @@ const RFMAnalysis = () => {
     }
 
     if (scenarioId === 'last_3m_exact') {
-      const source = shiftPeriodKey(firstPeriod, -(3 - Number(periodIdx || 0)))
+      // Use defaults_matrix so discounts match Step 4 planner grid exactly
+      const defaultsMatrix = context?.defaultsMatrix || {}
+      const idx = Number(periodIdx || 0)
+      const ladder = {}
+      slabOrder.forEach((slabKey) => {
+        const series = defaultsMatrix[sizeKey]?.[slabKey] || []
+        const val = series[idx]
+        if (Number.isFinite(val)) ladder[slabKey] = Number(val.toFixed(2))
+      })
+      if (Object.keys(ladder).length) return ladder
+      const source = shiftPeriodKey(firstPeriod, -(3 - idx))
       return readLadder(source) || readLadder(fallbackMonth) || fallbackLadder || {}
     }
 
@@ -1862,39 +1876,7 @@ const RFMAnalysis = () => {
     const periods = normalizePlannerPeriodsFromData(activePlannerBaseResult)
     if (!periods.length) return
 
-    const readMetric = (summaryBlock = {}) => ({
-      volume: Number(summaryBlock?.final_qty ?? summaryBlock?.scenario_qty_additive ?? 0),
-      revenue: Number(summaryBlock?.scenario_revenue ?? 0),
-      profit: Number(summaryBlock?.scenario_profit ?? 0),
-      volume_pct: Number(summaryBlock?.vs_reference_volume_pct ?? 0),
-      revenue_pct: Number(summaryBlock?.vs_reference_revenue_pct ?? 0),
-      gross_margin_pct: (
-        Number(summaryBlock?.scenario_revenue_net ?? summaryBlock?.scenario_revenue ?? 0) > 0 &&
-        Number(summaryBlock?.reference_revenue_net ?? summaryBlock?.reference_revenue ?? 0) > 0
-      )
-        ? (
-          ((Number(summaryBlock?.scenario_profit ?? 0) / Number(summaryBlock?.scenario_revenue_net ?? summaryBlock?.scenario_revenue ?? 0)) * 100) -
-          ((Number(summaryBlock?.reference_profit ?? 0) / Number(summaryBlock?.reference_revenue_net ?? summaryBlock?.reference_revenue ?? 0)) * 100)
-        )
-        : Number(summaryBlock?.vs_reference_profit_pct ?? 0),
-      profit_pct: (
-        Number(summaryBlock?.scenario_revenue_net ?? summaryBlock?.scenario_revenue ?? 0) > 0 &&
-        Number(summaryBlock?.reference_revenue_net ?? summaryBlock?.reference_revenue ?? 0) > 0
-      )
-        ? (
-          ((Number(summaryBlock?.scenario_profit ?? 0) / Number(summaryBlock?.scenario_revenue_net ?? summaryBlock?.scenario_revenue ?? 0)) * 100) -
-          ((Number(summaryBlock?.reference_profit ?? 0) / Number(summaryBlock?.reference_revenue_net ?? summaryBlock?.reference_revenue ?? 0)) * 100)
-        )
-        : Number(summaryBlock?.vs_reference_profit_pct ?? 0),
-      scenario_investment: Number(summaryBlock?.scenario_investment ?? 0),
-      reference_investment: Number(summaryBlock?.reference_investment ?? 0),
-      investment_pct: Number(
-        summaryBlock?.vs_reference_investment_pct ??
-        summaryBlock?.investment_delta_pct ??
-        summaryBlock?.investment_change_positive_vs_reference_pct ??
-        0
-      ),
-    })
+    const readMetric = buildScenarioSummaryMetric
 
     const recomputedRows = rows.map((row) => {
       try {

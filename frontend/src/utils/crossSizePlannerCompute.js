@@ -89,8 +89,6 @@ export const computeCrossSizePlannerData = ({ data, periods, scenarioDiscountsBy
     if (k) sizeResultByKey[k] = row
   })
 
-  const ref12Qty = Number(baseSummary?.['12-ML']?.reference_qty || 0)
-  const ref18Qty = Number(baseSummary?.['18-ML']?.reference_qty || 0)
   const e12From18 = Number(data?.cross_elasticity_12_from_18 || 0)
   const e18From12 = Number(data?.cross_elasticity_18_from_12 || 0)
   const effectiveE12From18 = e12From18 * crossConfidence(data?.cross_model_r2_12)
@@ -111,11 +109,13 @@ export const computeCrossSizePlannerData = ({ data, periods, scenarioDiscountsBy
       })
       const weightMap = buildWeightMapForSize(sizeResult, slabKeys)
       const scenarioMapThisMonth = {}
+      const defaultMapThisMonth = {}
       slabKeys.forEach((slabKey) => {
         const fallback = Number(sizeDefaults?.[slabKey]?.[monthIdx] || 0)
         scenarioMapThisMonth[slabKey] = Number(
           scenarioDiscountsByPeriod?.[periodKey]?.[sizeKey]?.[slabKey] ?? fallback
         )
+        defaultMapThisMonth[slabKey] = fallback
       })
 
       const slabs = slabKeys.map((slabKey) => {
@@ -130,7 +130,11 @@ export const computeCrossSizePlannerData = ({ data, periods, scenarioDiscountsBy
             ?? defaultDiscount
           )
           : Number(model?.default_discount_pct ?? defaultDiscount)
+        const defaultLagUsed = monthIdx > 0
+          ? Number(sizeDefaults?.[slabKey]?.[monthIdx - 1] ?? defaultDiscount)
+          : Number(model?.default_discount_pct ?? defaultDiscount)
         const otherWeighted = computeOtherWeightedDiscount(slabKey, scenarioMapThisMonth, weightMap)
+        const defaultOtherWeighted = computeOtherWeightedDiscount(slabKey, defaultMapThisMonth, weightMap)
         const coefBase = Number(model?.coef_base_discount_pct || 0)
         const coefLag = Number(model?.coef_lag1_base_discount_pct || 0)
         const coefOther = Number(model?.coef_other_slabs_weighted_base_discount_pct || 0)
@@ -138,21 +142,23 @@ export const computeCrossSizePlannerData = ({ data, periods, scenarioDiscountsBy
         const clpPrice = Number(model?.clp_price || basePrice)
         const cogsPerUnit = Number(model?.cogs_per_unit || 0)
         const nonDiscountBaseline = Number(baselineSlabMatrix?.[sizeKey]?.[slabKey]?.[monthIdx] || 0)
+        const discountComponentDefault = (coefBase * defaultDiscount) + (coefLag * defaultLagUsed) + (coefOther * defaultOtherWeighted)
         const discountComponentScenario = (coefBase * scenarioDiscount) + (coefLag * lagUsed) + (coefOther * otherWeighted)
+        const defaultWorldQty = Math.max(nonDiscountBaseline + discountComponentDefault, 0)
         const preCrossQty = Math.max(nonDiscountBaseline + discountComponentScenario, 0)
         return {
           slab: slabKey,
           default_discount_pct: defaultDiscount,
           scenario_discount_pct: scenarioDiscount,
-          default_lag_used_pct: defaultDiscount,
+          default_lag_used_pct: defaultLagUsed,
           lag_used_pct: lagUsed,
-          other_weighted_default_pct: otherWeighted,
+          other_weighted_default_pct: defaultOtherWeighted,
           other_weighted_scenario_pct: otherWeighted,
-          discount_component_default_qty: discountComponentScenario,
+          discount_component_default_qty: discountComponentDefault,
           discount_component_scenario_qty: discountComponentScenario,
           non_discount_baseline_qty: nonDiscountBaseline,
           baseline_qty: nonDiscountBaseline,
-          default_world_qty: preCrossQty,
+          default_world_qty: defaultWorldQty,
           pre_cross_qty: preCrossQty,
           final_qty: preCrossQty,
           base_price: basePrice,
@@ -173,11 +179,12 @@ export const computeCrossSizePlannerData = ({ data, periods, scenarioDiscountsBy
       })
 
       const baselineTotal = slabs.reduce((s, x) => s + Number(x?.non_discount_baseline_qty || 0), 0)
+      const defaultWorldTotal = slabs.reduce((s, x) => s + Number(x?.default_world_qty || 0), 0)
       const preTotal = slabs.reduce((s, x) => s + Number(x?.pre_cross_qty || 0), 0)
       sizes[sizeKey] = {
         size: sizeKey,
         baseline_total_qty: baselineTotal,
-        baseline_total_qty_default_world: preTotal,
+        baseline_total_qty_default_world: defaultWorldTotal,
         pre_cross_total_qty: preTotal,
         final_total_qty: preTotal,
         slabs,
@@ -201,20 +208,36 @@ export const computeCrossSizePlannerData = ({ data, periods, scenarioDiscountsBy
     }
   })
 
-  let prev12 = Number(data?.monthly_results?.[0]?.impact?.prev12_qty || 0)
-  let prev18 = Number(data?.monthly_results?.[0]?.impact?.prev18_qty || 0)
-  if (!(prev12 > 0) && ref12Qty > 0 && periods.length) prev12 = ref12Qty / periods.length
-  if (!(prev18 > 0) && ref18Qty > 0 && periods.length) prev18 = ref18Qty / periods.length
+  // 3-month aggregate cross-pack adjustment (applied once, based on default vs scenario delta)
+  // Base = sum of default_world_qty (model prediction at default discounts, no user changes)
+  // Scenario = sum of pre_cross_qty (model prediction at user's scenario discounts)
+  // own% measures pure discount-driven change → cross-pack only fires when discounts actually change
+  const base12_3m = monthlyResults.reduce((s, r) => {
+    const slabs = r?.sizes?.['12-ML']?.slabs || []
+    return s + slabs.reduce((ss, slab) => ss + Math.max(Number(slab?.default_world_qty || 0), 0), 0)
+  }, 0)
+  const base18_3m = monthlyResults.reduce((s, r) => {
+    const slabs = r?.sizes?.['18-ML']?.slabs || []
+    return s + slabs.reduce((ss, slab) => ss + Math.max(Number(slab?.default_world_qty || 0), 0), 0)
+  }, 0)
+
+  const totalPre12 = monthlyResults.reduce((s, r) => s + Number(r?.sizes?.['12-ML']?.pre_cross_total_qty || 0), 0)
+  const totalPre18 = monthlyResults.reduce((s, r) => s + Number(r?.sizes?.['18-ML']?.pre_cross_total_qty || 0), 0)
+
+  const own12 = base12_3m > 0 ? ((totalPre12 - base12_3m) / base12_3m) * 100 : 0
+  const own18 = base18_3m > 0 ? ((totalPre18 - base18_3m) / base18_3m) * 100 : 0
+  const adjusted12Pct = own12 + (effectiveE12From18 * own18)
+  const adjusted18Pct = own18 + (effectiveE18From12 * own12)
+  const final12_3m = base12_3m > 0 ? Math.max(base12_3m * (1 + adjusted12Pct / 100), 0) : Math.max(totalPre12, 0)
+  const final18_3m = base18_3m > 0 ? Math.max(base18_3m * (1 + adjusted18Pct / 100), 0) : Math.max(totalPre18, 0)
+  const scale12 = totalPre12 > 0 ? final12_3m / totalPre12 : 1
+  const scale18 = totalPre18 > 0 ? final18_3m / totalPre18 : 1
 
   monthlyResults.forEach((row) => {
     const pre12 = Number(row?.sizes?.['12-ML']?.pre_cross_total_qty || 0)
     const pre18 = Number(row?.sizes?.['18-ML']?.pre_cross_total_qty || 0)
-    const own12 = prev12 > 0 ? ((pre12 - prev12) / prev12) * 100 : 0
-    const own18 = prev18 > 0 ? ((pre18 - prev18) / prev18) * 100 : 0
-    const adjusted12Pct = own12 + (effectiveE12From18 * own18)
-    const adjusted18Pct = own18 + (effectiveE18From12 * own12)
-    const final12 = prev12 > 0 ? Math.max(prev12 * (1 + adjusted12Pct / 100), 0) : Math.max(pre12, 0)
-    const final18 = prev18 > 0 ? Math.max(prev18 * (1 + adjusted18Pct / 100), 0) : Math.max(pre18, 0)
+    const final12 = Math.max(pre12 * scale12, 0)
+    const final18 = Math.max(pre18 * scale18, 0)
 
     ;[
       ['12-ML', final12],
@@ -237,8 +260,8 @@ export const computeCrossSizePlannerData = ({ data, periods, scenarioDiscountsBy
     })
 
     row.impact = {
-      prev12_qty: prev12,
-      prev18_qty: prev18,
+      prev12_qty: Number(data?.monthly_results?.[0]?.impact?.prev12_qty || 0),
+      prev18_qty: Number(data?.monthly_results?.[0]?.impact?.prev18_qty || 0),
       pre12_qty: pre12,
       pre18_qty: pre18,
       final12_qty: final12,
@@ -248,8 +271,6 @@ export const computeCrossSizePlannerData = ({ data, periods, scenarioDiscountsBy
       overall12_pct: adjusted12Pct,
       overall18_pct: adjusted18Pct,
     }
-    prev12 = final12
-    prev18 = final18
   })
 
   const summary = {
@@ -317,10 +338,10 @@ export const computeCrossSizePlannerData = ({ data, periods, scenarioDiscountsBy
         const scenarioRevenueNet = finalQty * clpPrice
         const baselineRevenue = baselineRevenueGross
         const scenarioRevenue = scenarioRevenueGross
-        const baselineProfit = baselineRevenueNet - (baseQty * cogs)
-        const scenarioProfit = scenarioRevenueNet - (finalQty * cogs)
         const baselineInvestment = baseQty * dspPrice * (defaultDiscount / 100)
         const scenarioInvestment = finalQty * dspPrice * (scenarioDiscount / 100)
+        const baselineProfit = baselineRevenueNet - baselineInvestment - (baseQty * cogs)
+        const scenarioProfit = scenarioRevenueNet - scenarioInvestment - (finalQty * cogs)
         const scenarioInvestmentPositive = finalQty * dspPrice * (Math.max(0, scenarioDiscount - defaultDiscount) / 100)
         slab.baseline_revenue = baselineRevenue
         slab.scenario_revenue = scenarioRevenue
@@ -411,6 +432,7 @@ export const computeCrossSizePlannerData = ({ data, periods, scenarioDiscountsBy
       reference_revenue_net: refRevNet,
       reference_revenue: refRevGross,
       reference_profit: refProfit,
+      reference_profit_includes_investment: Number(baseSummary?.[sizeKey]?.reference_profit_includes_investment || 0),
       reference_investment: refInvestment,
       vs_reference_volume_pct: refQty > 0 ? ((s.final_qty - refQty) / refQty) * 100 : 0,
       vs_reference_revenue_pct: refRevGross > 0 ? ((s.scenario_revenue - refRevGross) / refRevGross) * 100 : 0,
@@ -481,6 +503,7 @@ export const computeCrossSizePlannerData = ({ data, periods, scenarioDiscountsBy
       reference_revenue_net: refTotalRevNet,
       reference_revenue: refTotalRevGross,
       reference_profit: refTotalProfit,
+      reference_profit_includes_investment: Number(baseSummary?.TOTAL?.reference_profit_includes_investment || 0),
       reference_investment: refTotalInvestment,
       vs_reference_volume_pct: refTotalQty > 0 ? ((totalFinalQty - refTotalQty) / refTotalQty) * 100 : 0,
       vs_reference_revenue_pct: refTotalRevGross > 0 ? ((totalScenarioRevenue - refTotalRevGross) / refTotalRevGross) * 100 : 0,
