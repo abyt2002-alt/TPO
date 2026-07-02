@@ -1,0 +1,1122 @@
+{
+  "source_file": "scheme utilisation flow/final_source_data/step2_deduped_sales_lines.parquet",
+  "demo_file": "scheme utilisation flow/final_source_data/demo_step2_deduped_sales_lines.parquet",
+  "sample_fraction": 0.2,
+  "seed": 20260702,
+  "slab_basis": "monthly Outlet_ID quantity by size; 12-ML thresholds [8,144], 18-ML thresholds [8,32,576,960]; slab0 excluded",
+  "source_rows": 1233197,
+  "eligible_rows_after_size_and_active_slab_filter": 1233183,
+  "demo_rows": 246691,
+  "source_unique_period_size_slab_bill_batch": 1186504,
+  "demo_unique_period_size_slab_bill_batch": 237364,
+  "demo_size_rows": {
+    "12-ML": 60399,
+    "18-ML": 186292
+  },
+  "demo_period_min": "2024-04",
+  "demo_period_max": "2026-05",
+  "demo_period_count": 26,
+  "demo_active_slab_counts": {
+    "12-ML|slab1": 55351,
+    "12-ML|slab2": 4736,
+    "18-ML|slab1": 163308,
+    "18-ML|slab2": 18122,
+    "18-ML|slab3": 1578,
+    "18-ML|slab4": 2187
+  },
+  "strata_count": 156,
+  "strata": [
+    {
+      "period": "2024-04",
+      "size": "12-ML",
+      "slab": "slab1",
+      "unique_bill_batch_source": 8669,
+      "unique_bill_batch_kept": 1734
+    },
+    {
+      "period": "2024-04",
+      "size": "12-ML",
+      "slab": "slab2",
+      "unique_bill_batch_source": 360,
+      "unique_bill_batch_kept": 72
+    },
+    {
+      "period": "2024-04",
+      "size": "18-ML",
+      "slab": "slab1",
+      "unique_bill_batch_source": 15187,
+      "unique_bill_batch_kept": 3038
+    },
+    {
+      "period": "2024-04",
+      "size": "18-ML",
+      "slab": "slab2",
+      "unique_bill_batch_source": 15358,
+      "unique_bill_batch_kept": 3072
+    },
+    {
+      "period": "2024-04",
+      "size": "18-ML",
+      "slab": "slab3",
+      "unique_bill_batch_source": 80,
+      "unique_bill_batch_kept": 16
+    },
+    {
+      "period": "2024-04",
+      "size": "18-ML",
+      "slab": "slab4",
+      "unique_bill_batch_source": 1017,
+      "unique_bill_batch_kept": 204
+    },
+    {
+      "period": "2024-05",
+      "size": "12-ML",
+      "slab": "slab1",
+      "unique_bill_batch_source": 9446,
+      "unique_bill_batch_kept": 1890
+    },
+    {
+      "period": "2024-05",
+      "size": "12-ML",
+      "slab": "slab2",
+      "unique_bill_batch_source": 616,
+      "unique_bill_batch_kept": 124
+    },
+    {
+      "period": "2024-05",
+      "size": "18-ML",
+      "slab": "slab1",
+      "unique_bill_batch_source": 17413,
+      "unique_bill_batch_kept": 3483
+    },
+    {
+      "period": "2024-05",
+      "size": "18-ML",
+      "slab": "slab2",
+      "unique_bill_batch_source": 19468,
+      "unique_bill_batch_kept": 3894
+    },
+    {
+      "period": "2024-05",
+      "size": "18-ML",
+      "slab": "slab3",
+      "unique_bill_batch_source": 104,
+      "unique_bill_batch_kept": 21
+    },
+    {
+      "period": "2024-05",
+      "size": "18-ML",
+      "slab": "slab4",
+      "unique_bill_batch_source": 1780,
+      "unique_bill_batch_kept": 356
+    },
+    {
+      "period": "2024-06",
+      "size": "12-ML",
+      "slab": "slab1",
+      "unique_bill_batch_source": 9123,
+      "unique_bill_batch_kept": 1825
+    },
+    {
+      "period": "2024-06",
+      "size": "12-ML",
+      "slab": "slab2",
+      "unique_bill_batch_source": 506,
+      "unique_bill_batch_kept": 102
+    },
+    {
+      "period": "2024-06",
+      "size": "18-ML",
+      "slab": "slab1",
+      "unique_bill_batch_source": 18018,
+      "unique_bill_batch_kept": 3604
+    },
+    {
+      "period": "2024-06",
+      "size": "18-ML",
+      "slab": "slab2",
+      "unique_bill_batch_source": 18716,
+      "unique_bill_batch_kept": 3744
+    },
+    {
+      "period": "2024-06",
+      "size": "18-ML",
+      "slab": "slab3",
+      "unique_bill_batch_source": 117,
+      "unique_bill_batch_kept": 24
+    },
+    {
+      "period": "2024-06",
+      "size": "18-ML",
+      "slab": "slab4",
+      "unique_bill_batch_source": 975,
+      "unique_bill_batch_kept": 195
+    },
+    {
+      "period": "2024-07",
+      "size": "12-ML",
+      "slab": "slab1",
+      "unique_bill_batch_source": 13280,
+      "unique_bill_batch_kept": 2656
+    },
+    {
+      "period": "2024-07",
+      "size": "12-ML",
+      "slab": "slab2",
+      "unique_bill_batch_source": 412,
+      "unique_bill_batch_kept": 83
+    },
+    {
+      "period": "2024-07",
+      "size": "18-ML",
+      "slab": "slab1",
+      "unique_bill_batch_source": 20973,
+      "unique_bill_batch_kept": 4195
+    },
+    {
+      "period": "2024-07",
+      "size": "18-ML",
+      "slab": "slab2",
+      "unique_bill_batch_source": 18850,
+      "unique_bill_batch_kept": 3770
+    },
+    {
+      "period": "2024-07",
+      "size": "18-ML",
+      "slab": "slab3",
+      "unique_bill_batch_source": 95,
+      "unique_bill_batch_kept": 19
+    },
+    {
+      "period": "2024-07",
+      "size": "18-ML",
+      "slab": "slab4",
+      "unique_bill_batch_source": 1448,
+      "unique_bill_batch_kept": 290
+    },
+    {
+      "period": "2024-08",
+      "size": "12-ML",
+      "slab": "slab1",
+      "unique_bill_batch_source": 12027,
+      "unique_bill_batch_kept": 2406
+    },
+    {
+      "period": "2024-08",
+      "size": "12-ML",
+      "slab": "slab2",
+      "unique_bill_batch_source": 659,
+      "unique_bill_batch_kept": 132
+    },
+    {
+      "period": "2024-08",
+      "size": "18-ML",
+      "slab": "slab1",
+      "unique_bill_batch_source": 18798,
+      "unique_bill_batch_kept": 3760
+    },
+    {
+      "period": "2024-08",
+      "size": "18-ML",
+      "slab": "slab2",
+      "unique_bill_batch_source": 19555,
+      "unique_bill_batch_kept": 3911
+    },
+    {
+      "period": "2024-08",
+      "size": "18-ML",
+      "slab": "slab3",
+      "unique_bill_batch_source": 114,
+      "unique_bill_batch_kept": 23
+    },
+    {
+      "period": "2024-08",
+      "size": "18-ML",
+      "slab": "slab4",
+      "unique_bill_batch_source": 959,
+      "unique_bill_batch_kept": 192
+    },
+    {
+      "period": "2024-09",
+      "size": "12-ML",
+      "slab": "slab1",
+      "unique_bill_batch_source": 9254,
+      "unique_bill_batch_kept": 1851
+    },
+    {
+      "period": "2024-09",
+      "size": "12-ML",
+      "slab": "slab2",
+      "unique_bill_batch_source": 631,
+      "unique_bill_batch_kept": 127
+    },
+    {
+      "period": "2024-09",
+      "size": "18-ML",
+      "slab": "slab1",
+      "unique_bill_batch_source": 17478,
+      "unique_bill_batch_kept": 3496
+    },
+    {
+      "period": "2024-09",
+      "size": "18-ML",
+      "slab": "slab2",
+      "unique_bill_batch_source": 19831,
+      "unique_bill_batch_kept": 3967
+    },
+    {
+      "period": "2024-09",
+      "size": "18-ML",
+      "slab": "slab3",
+      "unique_bill_batch_source": 117,
+      "unique_bill_batch_kept": 24
+    },
+    {
+      "period": "2024-09",
+      "size": "18-ML",
+      "slab": "slab4",
+      "unique_bill_batch_source": 1321,
+      "unique_bill_batch_kept": 265
+    },
+    {
+      "period": "2024-10",
+      "size": "12-ML",
+      "slab": "slab1",
+      "unique_bill_batch_source": 9168,
+      "unique_bill_batch_kept": 1834
+    },
+    {
+      "period": "2024-10",
+      "size": "12-ML",
+      "slab": "slab2",
+      "unique_bill_batch_source": 751,
+      "unique_bill_batch_kept": 151
+    },
+    {
+      "period": "2024-10",
+      "size": "18-ML",
+      "slab": "slab1",
+      "unique_bill_batch_source": 19943,
+      "unique_bill_batch_kept": 3989
+    },
+    {
+      "period": "2024-10",
+      "size": "18-ML",
+      "slab": "slab2",
+      "unique_bill_batch_source": 17107,
+      "unique_bill_batch_kept": 3422
+    },
+    {
+      "period": "2024-10",
+      "size": "18-ML",
+      "slab": "slab3",
+      "unique_bill_batch_source": 252,
+      "unique_bill_batch_kept": 51
+    },
+    {
+      "period": "2024-10",
+      "size": "18-ML",
+      "slab": "slab4",
+      "unique_bill_batch_source": 1300,
+      "unique_bill_batch_kept": 260
+    },
+    {
+      "period": "2024-11",
+      "size": "12-ML",
+      "slab": "slab1",
+      "unique_bill_batch_source": 7188,
+      "unique_bill_batch_kept": 1438
+    },
+    {
+      "period": "2024-11",
+      "size": "12-ML",
+      "slab": "slab2",
+      "unique_bill_batch_source": 566,
+      "unique_bill_batch_kept": 114
+    },
+    {
+      "period": "2024-11",
+      "size": "18-ML",
+      "slab": "slab1",
+      "unique_bill_batch_source": 19025,
+      "unique_bill_batch_kept": 3805
+    },
+    {
+      "period": "2024-11",
+      "size": "18-ML",
+      "slab": "slab2",
+      "unique_bill_batch_source": 15275,
+      "unique_bill_batch_kept": 3055
+    },
+    {
+      "period": "2024-11",
+      "size": "18-ML",
+      "slab": "slab3",
+      "unique_bill_batch_source": 125,
+      "unique_bill_batch_kept": 25
+    },
+    {
+      "period": "2024-11",
+      "size": "18-ML",
+      "slab": "slab4",
+      "unique_bill_batch_source": 1371,
+      "unique_bill_batch_kept": 275
+    },
+    {
+      "period": "2024-12",
+      "size": "12-ML",
+      "slab": "slab1",
+      "unique_bill_batch_source": 7928,
+      "unique_bill_batch_kept": 1586
+    },
+    {
+      "period": "2024-12",
+      "size": "12-ML",
+      "slab": "slab2",
+      "unique_bill_batch_source": 849,
+      "unique_bill_batch_kept": 170
+    },
+    {
+      "period": "2024-12",
+      "size": "18-ML",
+      "slab": "slab1",
+      "unique_bill_batch_source": 19515,
+      "unique_bill_batch_kept": 3903
+    },
+    {
+      "period": "2024-12",
+      "size": "18-ML",
+      "slab": "slab2",
+      "unique_bill_batch_source": 17975,
+      "unique_bill_batch_kept": 3595
+    },
+    {
+      "period": "2024-12",
+      "size": "18-ML",
+      "slab": "slab3",
+      "unique_bill_batch_source": 366,
+      "unique_bill_batch_kept": 74
+    },
+    {
+      "period": "2024-12",
+      "size": "18-ML",
+      "slab": "slab4",
+      "unique_bill_batch_source": 862,
+      "unique_bill_batch_kept": 173
+    },
+    {
+      "period": "2025-01",
+      "size": "12-ML",
+      "slab": "slab1",
+      "unique_bill_batch_source": 9106,
+      "unique_bill_batch_kept": 1822
+    },
+    {
+      "period": "2025-01",
+      "size": "12-ML",
+      "slab": "slab2",
+      "unique_bill_batch_source": 721,
+      "unique_bill_batch_kept": 145
+    },
+    {
+      "period": "2025-01",
+      "size": "18-ML",
+      "slab": "slab1",
+      "unique_bill_batch_source": 27536,
+      "unique_bill_batch_kept": 5508
+    },
+    {
+      "period": "2025-01",
+      "size": "18-ML",
+      "slab": "slab2",
+      "unique_bill_batch_source": 19114,
+      "unique_bill_batch_kept": 3823
+    },
+    {
+      "period": "2025-01",
+      "size": "18-ML",
+      "slab": "slab3",
+      "unique_bill_batch_source": 112,
+      "unique_bill_batch_kept": 23
+    },
+    {
+      "period": "2025-01",
+      "size": "18-ML",
+      "slab": "slab4",
+      "unique_bill_batch_source": 1491,
+      "unique_bill_batch_kept": 299
+    },
+    {
+      "period": "2025-02",
+      "size": "12-ML",
+      "slab": "slab1",
+      "unique_bill_batch_source": 8911,
+      "unique_bill_batch_kept": 1783
+    },
+    {
+      "period": "2025-02",
+      "size": "12-ML",
+      "slab": "slab2",
+      "unique_bill_batch_source": 873,
+      "unique_bill_batch_kept": 175
+    },
+    {
+      "period": "2025-02",
+      "size": "18-ML",
+      "slab": "slab1",
+      "unique_bill_batch_source": 24316,
+      "unique_bill_batch_kept": 4864
+    },
+    {
+      "period": "2025-02",
+      "size": "18-ML",
+      "slab": "slab2",
+      "unique_bill_batch_source": 16990,
+      "unique_bill_batch_kept": 3398
+    },
+    {
+      "period": "2025-02",
+      "size": "18-ML",
+      "slab": "slab3",
+      "unique_bill_batch_source": 444,
+      "unique_bill_batch_kept": 89
+    },
+    {
+      "period": "2025-02",
+      "size": "18-ML",
+      "slab": "slab4",
+      "unique_bill_batch_source": 872,
+      "unique_bill_batch_kept": 175
+    },
+    {
+      "period": "2025-03",
+      "size": "12-ML",
+      "slab": "slab1",
+      "unique_bill_batch_source": 9329,
+      "unique_bill_batch_kept": 1866
+    },
+    {
+      "period": "2025-03",
+      "size": "12-ML",
+      "slab": "slab2",
+      "unique_bill_batch_source": 1104,
+      "unique_bill_batch_kept": 221
+    },
+    {
+      "period": "2025-03",
+      "size": "18-ML",
+      "slab": "slab1",
+      "unique_bill_batch_source": 26041,
+      "unique_bill_batch_kept": 5209
+    },
+    {
+      "period": "2025-03",
+      "size": "18-ML",
+      "slab": "slab2",
+      "unique_bill_batch_source": 19531,
+      "unique_bill_batch_kept": 3907
+    },
+    {
+      "period": "2025-03",
+      "size": "18-ML",
+      "slab": "slab3",
+      "unique_bill_batch_source": 167,
+      "unique_bill_batch_kept": 34
+    },
+    {
+      "period": "2025-03",
+      "size": "18-ML",
+      "slab": "slab4",
+      "unique_bill_batch_source": 1970,
+      "unique_bill_batch_kept": 394
+    },
+    {
+      "period": "2025-04",
+      "size": "12-ML",
+      "slab": "slab1",
+      "unique_bill_batch_source": 8251,
+      "unique_bill_batch_kept": 1651
+    },
+    {
+      "period": "2025-04",
+      "size": "12-ML",
+      "slab": "slab2",
+      "unique_bill_batch_source": 2188,
+      "unique_bill_batch_kept": 438
+    },
+    {
+      "period": "2025-04",
+      "size": "18-ML",
+      "slab": "slab1",
+      "unique_bill_batch_source": 18974,
+      "unique_bill_batch_kept": 3795
+    },
+    {
+      "period": "2025-04",
+      "size": "18-ML",
+      "slab": "slab2",
+      "unique_bill_batch_source": 15692,
+      "unique_bill_batch_kept": 3139
+    },
+    {
+      "period": "2025-04",
+      "size": "18-ML",
+      "slab": "slab3",
+      "unique_bill_batch_source": 397,
+      "unique_bill_batch_kept": 80
+    },
+    {
+      "period": "2025-04",
+      "size": "18-ML",
+      "slab": "slab4",
+      "unique_bill_batch_source": 535,
+      "unique_bill_batch_kept": 107
+    },
+    {
+      "period": "2025-05",
+      "size": "12-ML",
+      "slab": "slab1",
+      "unique_bill_batch_source": 7002,
+      "unique_bill_batch_kept": 1401
+    },
+    {
+      "period": "2025-05",
+      "size": "12-ML",
+      "slab": "slab2",
+      "unique_bill_batch_source": 456,
+      "unique_bill_batch_kept": 92
+    },
+    {
+      "period": "2025-05",
+      "size": "18-ML",
+      "slab": "slab1",
+      "unique_bill_batch_source": 21002,
+      "unique_bill_batch_kept": 4201
+    },
+    {
+      "period": "2025-05",
+      "size": "18-ML",
+      "slab": "slab2",
+      "unique_bill_batch_source": 19135,
+      "unique_bill_batch_kept": 3827
+    },
+    {
+      "period": "2025-05",
+      "size": "18-ML",
+      "slab": "slab3",
+      "unique_bill_batch_source": 165,
+      "unique_bill_batch_kept": 33
+    },
+    {
+      "period": "2025-05",
+      "size": "18-ML",
+      "slab": "slab4",
+      "unique_bill_batch_source": 2454,
+      "unique_bill_batch_kept": 491
+    },
+    {
+      "period": "2025-06",
+      "size": "12-ML",
+      "slab": "slab1",
+      "unique_bill_batch_source": 7624,
+      "unique_bill_batch_kept": 1525
+    },
+    {
+      "period": "2025-06",
+      "size": "12-ML",
+      "slab": "slab2",
+      "unique_bill_batch_source": 750,
+      "unique_bill_batch_kept": 150
+    },
+    {
+      "period": "2025-06",
+      "size": "18-ML",
+      "slab": "slab1",
+      "unique_bill_batch_source": 21420,
+      "unique_bill_batch_kept": 4284
+    },
+    {
+      "period": "2025-06",
+      "size": "18-ML",
+      "slab": "slab2",
+      "unique_bill_batch_source": 14629,
+      "unique_bill_batch_kept": 2926
+    },
+    {
+      "period": "2025-06",
+      "size": "18-ML",
+      "slab": "slab3",
+      "unique_bill_batch_source": 418,
+      "unique_bill_batch_kept": 84
+    },
+    {
+      "period": "2025-06",
+      "size": "18-ML",
+      "slab": "slab4",
+      "unique_bill_batch_source": 577,
+      "unique_bill_batch_kept": 116
+    },
+    {
+      "period": "2025-07",
+      "size": "12-ML",
+      "slab": "slab1",
+      "unique_bill_batch_source": 10774,
+      "unique_bill_batch_kept": 2155
+    },
+    {
+      "period": "2025-07",
+      "size": "12-ML",
+      "slab": "slab2",
+      "unique_bill_batch_source": 1959,
+      "unique_bill_batch_kept": 392
+    },
+    {
+      "period": "2025-07",
+      "size": "18-ML",
+      "slab": "slab1",
+      "unique_bill_batch_source": 20772,
+      "unique_bill_batch_kept": 4155
+    },
+    {
+      "period": "2025-07",
+      "size": "18-ML",
+      "slab": "slab2",
+      "unique_bill_batch_source": 14321,
+      "unique_bill_batch_kept": 2865
+    },
+    {
+      "period": "2025-07",
+      "size": "18-ML",
+      "slab": "slab3",
+      "unique_bill_batch_source": 425,
+      "unique_bill_batch_kept": 85
+    },
+    {
+      "period": "2025-07",
+      "size": "18-ML",
+      "slab": "slab4",
+      "unique_bill_batch_source": 831,
+      "unique_bill_batch_kept": 167
+    },
+    {
+      "period": "2025-08",
+      "size": "12-ML",
+      "slab": "slab1",
+      "unique_bill_batch_source": 7370,
+      "unique_bill_batch_kept": 1474
+    },
+    {
+      "period": "2025-08",
+      "size": "12-ML",
+      "slab": "slab2",
+      "unique_bill_batch_source": 526,
+      "unique_bill_batch_kept": 106
+    },
+    {
+      "period": "2025-08",
+      "size": "18-ML",
+      "slab": "slab1",
+      "unique_bill_batch_source": 17002,
+      "unique_bill_batch_kept": 3401
+    },
+    {
+      "period": "2025-08",
+      "size": "18-ML",
+      "slab": "slab2",
+      "unique_bill_batch_source": 12990,
+      "unique_bill_batch_kept": 2598
+    },
+    {
+      "period": "2025-08",
+      "size": "18-ML",
+      "slab": "slab3",
+      "unique_bill_batch_source": 143,
+      "unique_bill_batch_kept": 29
+    },
+    {
+      "period": "2025-08",
+      "size": "18-ML",
+      "slab": "slab4",
+      "unique_bill_batch_source": 1105,
+      "unique_bill_batch_kept": 221
+    },
+    {
+      "period": "2025-09",
+      "size": "12-ML",
+      "slab": "slab1",
+      "unique_bill_batch_source": 9732,
+      "unique_bill_batch_kept": 1947
+    },
+    {
+      "period": "2025-09",
+      "size": "12-ML",
+      "slab": "slab2",
+      "unique_bill_batch_source": 2560,
+      "unique_bill_batch_kept": 512
+    },
+    {
+      "period": "2025-09",
+      "size": "18-ML",
+      "slab": "slab1",
+      "unique_bill_batch_source": 17234,
+      "unique_bill_batch_kept": 3447
+    },
+    {
+      "period": "2025-09",
+      "size": "18-ML",
+      "slab": "slab2",
+      "unique_bill_batch_source": 12402,
+      "unique_bill_batch_kept": 2481
+    },
+    {
+      "period": "2025-09",
+      "size": "18-ML",
+      "slab": "slab3",
+      "unique_bill_batch_source": 169,
+      "unique_bill_batch_kept": 34
+    },
+    {
+      "period": "2025-09",
+      "size": "18-ML",
+      "slab": "slab4",
+      "unique_bill_batch_source": 431,
+      "unique_bill_batch_kept": 87
+    },
+    {
+      "period": "2025-10",
+      "size": "12-ML",
+      "slab": "slab1",
+      "unique_bill_batch_source": 9528,
+      "unique_bill_batch_kept": 1906
+    },
+    {
+      "period": "2025-10",
+      "size": "12-ML",
+      "slab": "slab2",
+      "unique_bill_batch_source": 654,
+      "unique_bill_batch_kept": 131
+    },
+    {
+      "period": "2025-10",
+      "size": "18-ML",
+      "slab": "slab1",
+      "unique_bill_batch_source": 16208,
+      "unique_bill_batch_kept": 3242
+    },
+    {
+      "period": "2025-10",
+      "size": "18-ML",
+      "slab": "slab2",
+      "unique_bill_batch_source": 11474,
+      "unique_bill_batch_kept": 2295
+    },
+    {
+      "period": "2025-10",
+      "size": "18-ML",
+      "slab": "slab3",
+      "unique_bill_batch_source": 132,
+      "unique_bill_batch_kept": 27
+    },
+    {
+      "period": "2025-10",
+      "size": "18-ML",
+      "slab": "slab4",
+      "unique_bill_batch_source": 1273,
+      "unique_bill_batch_kept": 255
+    },
+    {
+      "period": "2025-11",
+      "size": "12-ML",
+      "slab": "slab1",
+      "unique_bill_batch_source": 11842,
+      "unique_bill_batch_kept": 2369
+    },
+    {
+      "period": "2025-11",
+      "size": "12-ML",
+      "slab": "slab2",
+      "unique_bill_batch_source": 2621,
+      "unique_bill_batch_kept": 525
+    },
+    {
+      "period": "2025-11",
+      "size": "18-ML",
+      "slab": "slab1",
+      "unique_bill_batch_source": 15194,
+      "unique_bill_batch_kept": 3039
+    },
+    {
+      "period": "2025-11",
+      "size": "18-ML",
+      "slab": "slab2",
+      "unique_bill_batch_source": 11038,
+      "unique_bill_batch_kept": 2208
+    },
+    {
+      "period": "2025-11",
+      "size": "18-ML",
+      "slab": "slab3",
+      "unique_bill_batch_source": 305,
+      "unique_bill_batch_kept": 61
+    },
+    {
+      "period": "2025-11",
+      "size": "18-ML",
+      "slab": "slab4",
+      "unique_bill_batch_source": 464,
+      "unique_bill_batch_kept": 93
+    },
+    {
+      "period": "2025-12",
+      "size": "12-ML",
+      "slab": "slab1",
+      "unique_bill_batch_source": 11912,
+      "unique_bill_batch_kept": 2383
+    },
+    {
+      "period": "2025-12",
+      "size": "12-ML",
+      "slab": "slab2",
+      "unique_bill_batch_source": 816,
+      "unique_bill_batch_kept": 164
+    },
+    {
+      "period": "2025-12",
+      "size": "18-ML",
+      "slab": "slab1",
+      "unique_bill_batch_source": 15945,
+      "unique_bill_batch_kept": 3189
+    },
+    {
+      "period": "2025-12",
+      "size": "18-ML",
+      "slab": "slab2",
+      "unique_bill_batch_source": 12780,
+      "unique_bill_batch_kept": 2556
+    },
+    {
+      "period": "2025-12",
+      "size": "18-ML",
+      "slab": "slab3",
+      "unique_bill_batch_source": 88,
+      "unique_bill_batch_kept": 18
+    },
+    {
+      "period": "2025-12",
+      "size": "18-ML",
+      "slab": "slab4",
+      "unique_bill_batch_source": 1624,
+      "unique_bill_batch_kept": 325
+    },
+    {
+      "period": "2026-01",
+      "size": "12-ML",
+      "slab": "slab1",
+      "unique_bill_batch_source": 12786,
+      "unique_bill_batch_kept": 2558
+    },
+    {
+      "period": "2026-01",
+      "size": "12-ML",
+      "slab": "slab2",
+      "unique_bill_batch_source": 3542,
+      "unique_bill_batch_kept": 709
+    },
+    {
+      "period": "2026-01",
+      "size": "18-ML",
+      "slab": "slab1",
+      "unique_bill_batch_source": 15822,
+      "unique_bill_batch_kept": 3165
+    },
+    {
+      "period": "2026-01",
+      "size": "18-ML",
+      "slab": "slab2",
+      "unique_bill_batch_source": 11430,
+      "unique_bill_batch_kept": 2286
+    },
+    {
+      "period": "2026-01",
+      "size": "18-ML",
+      "slab": "slab3",
+      "unique_bill_batch_source": 209,
+      "unique_bill_batch_kept": 42
+    },
+    {
+      "period": "2026-01",
+      "size": "18-ML",
+      "slab": "slab4",
+      "unique_bill_batch_source": 511,
+      "unique_bill_batch_kept": 103
+    },
+    {
+      "period": "2026-02",
+      "size": "12-ML",
+      "slab": "slab1",
+      "unique_bill_batch_source": 11692,
+      "unique_bill_batch_kept": 2339
+    },
+    {
+      "period": "2026-02",
+      "size": "12-ML",
+      "slab": "slab2",
+      "unique_bill_batch_source": 842,
+      "unique_bill_batch_kept": 169
+    },
+    {
+      "period": "2026-02",
+      "size": "18-ML",
+      "slab": "slab1",
+      "unique_bill_batch_source": 14514,
+      "unique_bill_batch_kept": 2903
+    },
+    {
+      "period": "2026-02",
+      "size": "18-ML",
+      "slab": "slab2",
+      "unique_bill_batch_source": 10991,
+      "unique_bill_batch_kept": 2199
+    },
+    {
+      "period": "2026-02",
+      "size": "18-ML",
+      "slab": "slab3",
+      "unique_bill_batch_source": 98,
+      "unique_bill_batch_kept": 20
+    },
+    {
+      "period": "2026-02",
+      "size": "18-ML",
+      "slab": "slab4",
+      "unique_bill_batch_source": 1527,
+      "unique_bill_batch_kept": 306
+    },
+    {
+      "period": "2026-03",
+      "size": "12-ML",
+      "slab": "slab1",
+      "unique_bill_batch_source": 13995,
+      "unique_bill_batch_kept": 2799
+    },
+    {
+      "period": "2026-03",
+      "size": "12-ML",
+      "slab": "slab2",
+      "unique_bill_batch_source": 1573,
+      "unique_bill_batch_kept": 315
+    },
+    {
+      "period": "2026-03",
+      "size": "18-ML",
+      "slab": "slab1",
+      "unique_bill_batch_source": 13504,
+      "unique_bill_batch_kept": 2701
+    },
+    {
+      "period": "2026-03",
+      "size": "18-ML",
+      "slab": "slab2",
+      "unique_bill_batch_source": 10830,
+      "unique_bill_batch_kept": 2166
+    },
+    {
+      "period": "2026-03",
+      "size": "18-ML",
+      "slab": "slab3",
+      "unique_bill_batch_source": 414,
+      "unique_bill_batch_kept": 83
+    },
+    {
+      "period": "2026-03",
+      "size": "18-ML",
+      "slab": "slab4",
+      "unique_bill_batch_source": 644,
+      "unique_bill_batch_kept": 129
+    },
+    {
+      "period": "2026-04",
+      "size": "12-ML",
+      "slab": "slab1",
+      "unique_bill_batch_source": 8861,
+      "unique_bill_batch_kept": 1773
+    },
+    {
+      "period": "2026-04",
+      "size": "12-ML",
+      "slab": "slab2",
+      "unique_bill_batch_source": 3021,
+      "unique_bill_batch_kept": 605
+    },
+    {
+      "period": "2026-04",
+      "size": "18-ML",
+      "slab": "slab1",
+      "unique_bill_batch_source": 9703,
+      "unique_bill_batch_kept": 1941
+    },
+    {
+      "period": "2026-04",
+      "size": "18-ML",
+      "slab": "slab2",
+      "unique_bill_batch_source": 8873,
+      "unique_bill_batch_kept": 1775
+    },
+    {
+      "period": "2026-04",
+      "size": "18-ML",
+      "slab": "slab3",
+      "unique_bill_batch_source": 353,
+      "unique_bill_batch_kept": 71
+    },
+    {
+      "period": "2026-04",
+      "size": "18-ML",
+      "slab": "slab4",
+      "unique_bill_batch_source": 636,
+      "unique_bill_batch_kept": 128
+    },
+    {
+      "period": "2026-05",
+      "size": "12-ML",
+      "slab": "slab1",
+      "unique_bill_batch_source": 12374,
+      "unique_bill_batch_kept": 2475
+    },
+    {
+      "period": "2026-05",
+      "size": "12-ML",
+      "slab": "slab2",
+      "unique_bill_batch_source": 889,
+      "unique_bill_batch_kept": 178
+    },
+    {
+      "period": "2026-05",
+      "size": "18-ML",
+      "slab": "slab1",
+      "unique_bill_batch_source": 9602,
+      "unique_bill_batch_kept": 1921
+    },
+    {
+      "period": "2026-05",
+      "size": "18-ML",
+      "slab": "slab2",
+      "unique_bill_batch_source": 8433,
+      "unique_bill_batch_kept": 1687
+    },
+    {
+      "period": "2026-05",
+      "size": "18-ML",
+      "slab": "slab3",
+      "unique_bill_batch_source": 152,
+      "unique_bill_batch_kept": 31
+    },
+    {
+      "period": "2026-05",
+      "size": "18-ML",
+      "slab": "slab4",
+      "unique_bill_batch_source": 1421,
+      "unique_bill_batch_kept": 285
+    }
+  ]
+}

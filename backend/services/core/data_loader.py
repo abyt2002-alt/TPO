@@ -178,7 +178,11 @@ class DataLoaderMixin:
                 print("Warning: Could not find DATA folder")
                 return None
             
-            parquet_files = sorted([f for f in os.listdir(folder_path) if f.endswith('.parquet')])
+            demo_file = folder_path / "demo_step2_deduped_sales_lines.parquet"
+            if demo_file.exists():
+                parquet_files = [demo_file.name]
+            else:
+                parquet_files = sorted([f for f in os.listdir(folder_path) if f.endswith('.parquet')])
             
             if not parquet_files:
                 print("Warning: No parquet files found")
