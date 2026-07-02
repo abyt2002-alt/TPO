@@ -1,0 +1,3 @@
+4:54:02 pm [vite] http proxy error: /api/rfm/segments
+Error: connect ECONNREFUSED 127.0.0.1:8000
+    at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1607:16)

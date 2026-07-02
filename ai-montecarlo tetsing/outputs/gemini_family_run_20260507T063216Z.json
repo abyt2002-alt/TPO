@@ -1,0 +1,332 @@
+{
+  "created_at": "2026-05-07T06:32:16.502Z",
+  "stage": "stage_1_gemini_family_creation",
+  "inputs": {
+    "userPrompt": "Aggressively grow total volume across both 12-ML and 18-ML using responsive discount ladders, while keeping the structure business-realistic.\n",
+    "goal": "maximize_revenue",
+    "scenarioCount": 5,
+    "discountConstraints": [
+      {
+        "period": "2026-04",
+        "size": "12-ML",
+        "slab": "slab3",
+        "min": 16,
+        "max": null
+      },
+      {
+        "period": "2026-05",
+        "size": "12-ML",
+        "slab": "slab3",
+        "min": null,
+        "max": 18
+      },
+      {
+        "period": "2026-06",
+        "size": "12-ML",
+        "slab": "slab3",
+        "min": null,
+        "max": 18
+      }
+    ],
+    "metricThresholds": {
+      "min_12_volume_pct": null,
+      "min_18_volume_pct": null,
+      "min_total_volume_pct": null,
+      "min_revenue_pct": null,
+      "min_gross_margin_pct": null,
+      "min_investment_pct": null,
+      "max_investment_pct": null,
+      "max_cts_pct": null
+    },
+    "context": {
+      "periods": [
+        "2026-04",
+        "2026-05",
+        "2026-06"
+      ],
+      "defaults_matrix": {
+        "12-ML": {
+          "slab0": [
+            10,
+            10,
+            10
+          ],
+          "slab1": [
+            12,
+            12,
+            12
+          ],
+          "slab2": [
+            15,
+            15,
+            15
+          ],
+          "slab3": [
+            18,
+            18,
+            18
+          ]
+        },
+        "18-ML": {
+          "slab0": [
+            8,
+            8,
+            8
+          ],
+          "slab1": [
+            10,
+            10,
+            10
+          ],
+          "slab2": [
+            13,
+            13,
+            13
+          ],
+          "slab3": [
+            16,
+            16,
+            16
+          ]
+        }
+      },
+      "planner_context": {
+        "cross_elasticity_12_from_18": -0.1,
+        "cross_elasticity_18_from_12": -0.15,
+        "cross_model_r2_12": 0.45,
+        "cross_model_r2_18": 0.42,
+        "model_build_notes": "There is a negative relationship between 12-ML and 18-ML. Planner volume is built slab-wise from beta*own_discount + beta*lag_discount + beta*other_slabs_weighted_discount, then slabs are summed to pack totals. Cross adjustment is applied on pack changes.",
+        "size_slab_coefficients": {
+          "12-ML": {
+            "slab0": {
+              "default_discount_pct": 10,
+              "anchor_qty": 12000,
+              "base_price": 20,
+              "cogs_per_unit": 6,
+              "coef_base_discount_pct": 90,
+              "coef_lag1_base_discount_pct": -18,
+              "coef_other_slabs_weighted_base_discount_pct": -8,
+              "coef_signal": 116
+            },
+            "slab1": {
+              "default_discount_pct": 12,
+              "anchor_qty": 18000,
+              "base_price": 20,
+              "cogs_per_unit": 6,
+              "coef_base_discount_pct": 115,
+              "coef_lag1_base_discount_pct": -22,
+              "coef_other_slabs_weighted_base_discount_pct": -10,
+              "coef_signal": 147
+            },
+            "slab2": {
+              "default_discount_pct": 15,
+              "anchor_qty": 15000,
+              "base_price": 20,
+              "cogs_per_unit": 6,
+              "coef_base_discount_pct": 105,
+              "coef_lag1_base_discount_pct": -20,
+              "coef_other_slabs_weighted_base_discount_pct": -12,
+              "coef_signal": 137
+            },
+            "slab3": {
+              "default_discount_pct": 18,
+              "anchor_qty": 9000,
+              "base_price": 20,
+              "cogs_per_unit": 6,
+              "coef_base_discount_pct": 70,
+              "coef_lag1_base_discount_pct": -15,
+              "coef_other_slabs_weighted_base_discount_pct": -9,
+              "coef_signal": 94
+            }
+          },
+          "18-ML": {
+            "slab0": {
+              "default_discount_pct": 8,
+              "anchor_qty": 9000,
+              "base_price": 28,
+              "cogs_per_unit": 8,
+              "coef_base_discount_pct": 65,
+              "coef_lag1_base_discount_pct": -14,
+              "coef_other_slabs_weighted_base_discount_pct": -7,
+              "coef_signal": 86
+            },
+            "slab1": {
+              "default_discount_pct": 10,
+              "anchor_qty": 13000,
+              "base_price": 28,
+              "cogs_per_unit": 8,
+              "coef_base_discount_pct": 82,
+              "coef_lag1_base_discount_pct": -17,
+              "coef_other_slabs_weighted_base_discount_pct": -8,
+              "coef_signal": 107
+            },
+            "slab2": {
+              "default_discount_pct": 13,
+              "anchor_qty": 11000,
+              "base_price": 28,
+              "cogs_per_unit": 8,
+              "coef_base_discount_pct": 78,
+              "coef_lag1_base_discount_pct": -16,
+              "coef_other_slabs_weighted_base_discount_pct": -9,
+              "coef_signal": 103
+            },
+            "slab3": {
+              "default_discount_pct": 16,
+              "anchor_qty": 7000,
+              "base_price": 28,
+              "cogs_per_unit": 8,
+              "coef_base_discount_pct": 55,
+              "coef_lag1_base_discount_pct": -12,
+              "coef_other_slabs_weighted_base_discount_pct": -7,
+              "coef_signal": 74
+            }
+          }
+        },
+        "pack_margin_profile": {
+          "12-ML": {
+            "weighted_avg_base_price": 20,
+            "weighted_avg_cogs_per_unit": 6,
+            "weighted_avg_unit_margin": 14
+          },
+          "18-ML": {
+            "weighted_avg_base_price": 28,
+            "weighted_avg_cogs_per_unit": 8,
+            "weighted_avg_unit_margin": 20
+          }
+        },
+        "ai_intent_usage_notes": [
+          "Read user prompt and map objective by pack before creating families.",
+          "For pack-specific growth asks, move that pack primarily; avoid accidental opposite-pack domination.",
+          "Use slab coefficients to prioritize slabs with stronger modeled response.",
+          "For margin/profit asks, use shallower ladders where margin profile is stronger unless prompt says otherwise."
+        ],
+        "hard_discount_constraints": []
+      }
+    },
+    "promptWithConstraints": "Aggressively grow total volume across both 12-ML and 18-ML using responsive discount ladders, while keeping the structure business-realistic.\n\nHard slab-month discount constraints:\n- 2026-04 12-ML slab3: >= 16\n- 2026-05 12-ML slab3: <= 18\n- 2026-06 12-ML slab3: <= 18\n\nGenerate scenarios that satisfy all constraints. If needed, prioritize valid scenarios over aggressive exploration."
+  },
+  "fullPrompt": "Return ONE JSON object only (no markdown, no code fences).\nYou are generating scenario families for discount ladders.\nCreate exactly 3 families with this schema:\n{\"families\":[{\"name\":\"Balanced realistic\",\"priority_weight\":0.4,\"base_min\":10,\"base_max\":17,\"gap_min\":1,\"gap_max\":3,\"month_pattern\":\"flat\",\"month_shift_strength\":2,\"size_bias_12\":0,\"size_bias_18\":0,\"volatility\":1,\"anchor_weights\":{\"latest_month\":0.4,\"last_3m_avg\":0.3,\"ly_same_3m\":0.2,\"stress_explore\":0.1}}]}\nUse planner_context deeply (do not ignore it):\n- size_slab_coefficients gives per-slab model coefficients.\n- pack_margin_profile gives relative pricing/margin context by pack.\n- cross elasticities indicate cross-pack relationship direction/strength.\nHow to interpret coefficients:\n- coef_base_discount_pct: own discount sensitivity for that slab (stronger absolute magnitude => stronger response).\n- coef_lag1_base_discount_pct: carryover/drag from prior month discount.\n- coef_other_slabs_weighted_base_discount_pct: coupling/cannibalization signal within same pack.\nPack-aware decision rules (must follow):\n- If user asks 12-ML growth, move 12-ML ladders up first; do not rely mainly on 18-ML changes.\n- If user asks 18-ML growth, move 18-ML ladders up first.\n- If user asks profit/margin increase, avoid deep discounting (especially in 18-ML unless explicitly asked).\n- Respect pack-specific constraints mentioned in prompt (e.g., keep 18-ML shallow).\n- If prompt is ambiguous, choose balanced families and explicitly hedge with one conservative and one growth family.\nHard constraints:\n- month_pattern must be one of: flat, up, down, wave, pulse.\n- base_min/base_max/gap_min/gap_max must define meaningful spread.\n- priority_weight and anchor_weights can be floats; they will be normalized.\n- focus on realistic business scenarios, but keep diversity across families.\nInput:\n{\"scenario_count\":5,\"goal\":\"maximize_revenue\",\"user_prompt\":\"Aggressively grow total volume across both 12-ML and 18-ML using responsive discount ladders, while keeping the structure business-realistic.\\n\\nHard slab-month discount constraints:\\n- 2026-04 12-ML slab3: >= 16\\n- 2026-05 12-ML slab3: <= 18\\n- 2026-06 12-ML slab3: <= 18\\n\\nGenerate scenarios that satisfy all constraints. If needed, prioritize valid scenarios over aggressive exploration.\",\"periods\":[\"2026-04\",\"2026-05\",\"2026-06\"],\"default_discounts_by_period\":{\"2026-04\":{\"12-ML\":{\"slab0\":10,\"slab1\":12,\"slab2\":15,\"slab3\":18},\"18-ML\":{\"slab0\":8,\"slab1\":10,\"slab2\":13,\"slab3\":16}},\"2026-05\":{\"12-ML\":{\"slab0\":10,\"slab1\":12,\"slab2\":15,\"slab3\":18},\"18-ML\":{\"slab0\":8,\"slab1\":10,\"slab2\":13,\"slab3\":16}},\"2026-06\":{\"12-ML\":{\"slab0\":10,\"slab1\":12,\"slab2\":15,\"slab3\":18},\"18-ML\":{\"slab0\":8,\"slab1\":10,\"slab2\":13,\"slab3\":16}}},\"slab_order\":{\"12-ML\":[\"slab0\",\"slab1\",\"slab2\",\"slab3\"],\"18-ML\":[\"slab0\",\"slab1\",\"slab2\",\"slab3\"]},\"planner_context\":{\"cross_elasticity_12_from_18\":-0.1,\"cross_elasticity_18_from_12\":-0.15,\"cross_model_r2_12\":0.45,\"cross_model_r2_18\":0.42,\"model_build_notes\":\"There is a negative relationship between 12-ML and 18-ML. Planner volume is built slab-wise from beta*own_discount + beta*lag_discount + beta*other_slabs_weighted_discount, then slabs are summed to pack totals. Cross adjustment is applied on pack changes.\",\"size_slab_coefficients\":{\"12-ML\":{\"slab0\":{\"default_discount_pct\":10,\"anchor_qty\":12000,\"base_price\":20,\"cogs_per_unit\":6,\"coef_base_discount_pct\":90,\"coef_lag1_base_discount_pct\":-18,\"coef_other_slabs_weighted_base_discount_pct\":-8,\"coef_signal\":116},\"slab1\":{\"default_discount_pct\":12,\"anchor_qty\":18000,\"base_price\":20,\"cogs_per_unit\":6,\"coef_base_discount_pct\":115,\"coef_lag1_base_discount_pct\":-22,\"coef_other_slabs_weighted_base_discount_pct\":-10,\"coef_signal\":147},\"slab2\":{\"default_discount_pct\":15,\"anchor_qty\":15000,\"base_price\":20,\"cogs_per_unit\":6,\"coef_base_discount_pct\":105,\"coef_lag1_base_discount_pct\":-20,\"coef_other_slabs_weighted_base_discount_pct\":-12,\"coef_signal\":137},\"slab3\":{\"default_discount_pct\":18,\"anchor_qty\":9000,\"base_price\":20,\"cogs_per_unit\":6,\"coef_base_discount_pct\":70,\"coef_lag1_base_discount_pct\":-15,\"coef_other_slabs_weighted_base_discount_pct\":-9,\"coef_signal\":94}},\"18-ML\":{\"slab0\":{\"default_discount_pct\":8,\"anchor_qty\":9000,\"base_price\":28,\"cogs_per_unit\":8,\"coef_base_discount_pct\":65,\"coef_lag1_base_discount_pct\":-14,\"coef_other_slabs_weighted_base_discount_pct\":-7,\"coef_signal\":86},\"slab1\":{\"default_discount_pct\":10,\"anchor_qty\":13000,\"base_price\":28,\"cogs_per_unit\":8,\"coef_base_discount_pct\":82,\"coef_lag1_base_discount_pct\":-17,\"coef_other_slabs_weighted_base_discount_pct\":-8,\"coef_signal\":107},\"slab2\":{\"default_discount_pct\":13,\"anchor_qty\":11000,\"base_price\":28,\"cogs_per_unit\":8,\"coef_base_discount_pct\":78,\"coef_lag1_base_discount_pct\":-16,\"coef_other_slabs_weighted_base_discount_pct\":-9,\"coef_signal\":103},\"slab3\":{\"default_discount_pct\":16,\"anchor_qty\":7000,\"base_price\":28,\"cogs_per_unit\":8,\"coef_base_discount_pct\":55,\"coef_lag1_base_discount_pct\":-12,\"coef_other_slabs_weighted_base_discount_pct\":-7,\"coef_signal\":74}}},\"pack_margin_profile\":{\"12-ML\":{\"weighted_avg_base_price\":20,\"weighted_avg_cogs_per_unit\":6,\"weighted_avg_unit_margin\":14},\"18-ML\":{\"weighted_avg_base_price\":28,\"weighted_avg_cogs_per_unit\":8,\"weighted_avg_unit_margin\":20}},\"ai_intent_usage_notes\":[\"Read user prompt and map objective by pack before creating families.\",\"For pack-specific growth asks, move that pack primarily; avoid accidental opposite-pack domination.\",\"Use slab coefficients to prioritize slabs with stronger modeled response.\",\"For margin/profit asks, use shallower ladders where margin profile is stronger unless prompt says otherwise.\"],\"hard_discount_constraints\":[{\"period\":\"2026-04\",\"size\":\"12-ML\",\"slab\":\"slab3\",\"min\":16,\"max\":null},{\"period\":\"2026-05\",\"size\":\"12-ML\",\"slab\":\"slab3\",\"min\":null,\"max\":18},{\"period\":\"2026-06\",\"size\":\"12-ML\",\"slab\":\"slab3\",\"min\":null,\"max\":18}]},\"intent_hints\":[\"If user asks 12-ML volume growth, prioritize stronger 12-ML discount moves (within constraints) before changing 18-ML.\",\"If user asks 18-ML volume growth, prioritize stronger 18-ML discount moves (within constraints).\"],\"intent_resolution_framework\":{\"step_1\":\"Infer pack target from prompt (12-ML, 18-ML, both).\",\"step_2\":\"Infer objective priority (volume, revenue, profit, balanced).\",\"step_3\":\"Use coefficient signs/magnitudes to set family direction by slab.\",\"step_4\":\"Use margin profile to avoid unnecessary deep discounting when objective is profit.\",\"step_5\":\"Generate diverse but business-realistic families aligned to inferred intent.\"},\"constraints\":[\"return EXACTLY 3 families\",\"all discounts are later repaired to integer [5,30]\",\"ladder is repaired monotonic later; still keep realistic family ranges\",\"avoid degenerate families (all ones / all flat tiny values)\"],\"schema\":{\"families\":[{\"name\":\"Balanced realistic\",\"priority_weight\":0.4,\"base_min\":10,\"base_max\":17,\"gap_min\":1,\"gap_max\":3,\"month_pattern\":\"flat\",\"month_shift_strength\":2,\"size_bias_12\":0,\"size_bias_18\":0,\"volatility\":1,\"anchor_weights\":{\"latest_month\":0.4,\"last_3m_avg\":0.3,\"ly_same_3m\":0.2,\"stress_explore\":0.1}}]}}",
+  "gemini": {
+    "requestBody": {
+      "contents": [
+        {
+          "role": "user",
+          "parts": [
+            {
+              "text": "Return ONE JSON object only (no markdown, no code fences).\nYou are generating scenario families for discount ladders.\nCreate exactly 3 families with this schema:\n{\"families\":[{\"name\":\"Balanced realistic\",\"priority_weight\":0.4,\"base_min\":10,\"base_max\":17,\"gap_min\":1,\"gap_max\":3,\"month_pattern\":\"flat\",\"month_shift_strength\":2,\"size_bias_12\":0,\"size_bias_18\":0,\"volatility\":1,\"anchor_weights\":{\"latest_month\":0.4,\"last_3m_avg\":0.3,\"ly_same_3m\":0.2,\"stress_explore\":0.1}}]}\nUse planner_context deeply (do not ignore it):\n- size_slab_coefficients gives per-slab model coefficients.\n- pack_margin_profile gives relative pricing/margin context by pack.\n- cross elasticities indicate cross-pack relationship direction/strength.\nHow to interpret coefficients:\n- coef_base_discount_pct: own discount sensitivity for that slab (stronger absolute magnitude => stronger response).\n- coef_lag1_base_discount_pct: carryover/drag from prior month discount.\n- coef_other_slabs_weighted_base_discount_pct: coupling/cannibalization signal within same pack.\nPack-aware decision rules (must follow):\n- If user asks 12-ML growth, move 12-ML ladders up first; do not rely mainly on 18-ML changes.\n- If user asks 18-ML growth, move 18-ML ladders up first.\n- If user asks profit/margin increase, avoid deep discounting (especially in 18-ML unless explicitly asked).\n- Respect pack-specific constraints mentioned in prompt (e.g., keep 18-ML shallow).\n- If prompt is ambiguous, choose balanced families and explicitly hedge with one conservative and one growth family.\nHard constraints:\n- month_pattern must be one of: flat, up, down, wave, pulse.\n- base_min/base_max/gap_min/gap_max must define meaningful spread.\n- priority_weight and anchor_weights can be floats; they will be normalized.\n- focus on realistic business scenarios, but keep diversity across families.\nInput:\n{\"scenario_count\":5,\"goal\":\"maximize_revenue\",\"user_prompt\":\"Aggressively grow total volume across both 12-ML and 18-ML using responsive discount ladders, while keeping the structure business-realistic.\\n\\nHard slab-month discount constraints:\\n- 2026-04 12-ML slab3: >= 16\\n- 2026-05 12-ML slab3: <= 18\\n- 2026-06 12-ML slab3: <= 18\\n\\nGenerate scenarios that satisfy all constraints. If needed, prioritize valid scenarios over aggressive exploration.\",\"periods\":[\"2026-04\",\"2026-05\",\"2026-06\"],\"default_discounts_by_period\":{\"2026-04\":{\"12-ML\":{\"slab0\":10,\"slab1\":12,\"slab2\":15,\"slab3\":18},\"18-ML\":{\"slab0\":8,\"slab1\":10,\"slab2\":13,\"slab3\":16}},\"2026-05\":{\"12-ML\":{\"slab0\":10,\"slab1\":12,\"slab2\":15,\"slab3\":18},\"18-ML\":{\"slab0\":8,\"slab1\":10,\"slab2\":13,\"slab3\":16}},\"2026-06\":{\"12-ML\":{\"slab0\":10,\"slab1\":12,\"slab2\":15,\"slab3\":18},\"18-ML\":{\"slab0\":8,\"slab1\":10,\"slab2\":13,\"slab3\":16}}},\"slab_order\":{\"12-ML\":[\"slab0\",\"slab1\",\"slab2\",\"slab3\"],\"18-ML\":[\"slab0\",\"slab1\",\"slab2\",\"slab3\"]},\"planner_context\":{\"cross_elasticity_12_from_18\":-0.1,\"cross_elasticity_18_from_12\":-0.15,\"cross_model_r2_12\":0.45,\"cross_model_r2_18\":0.42,\"model_build_notes\":\"There is a negative relationship between 12-ML and 18-ML. Planner volume is built slab-wise from beta*own_discount + beta*lag_discount + beta*other_slabs_weighted_discount, then slabs are summed to pack totals. Cross adjustment is applied on pack changes.\",\"size_slab_coefficients\":{\"12-ML\":{\"slab0\":{\"default_discount_pct\":10,\"anchor_qty\":12000,\"base_price\":20,\"cogs_per_unit\":6,\"coef_base_discount_pct\":90,\"coef_lag1_base_discount_pct\":-18,\"coef_other_slabs_weighted_base_discount_pct\":-8,\"coef_signal\":116},\"slab1\":{\"default_discount_pct\":12,\"anchor_qty\":18000,\"base_price\":20,\"cogs_per_unit\":6,\"coef_base_discount_pct\":115,\"coef_lag1_base_discount_pct\":-22,\"coef_other_slabs_weighted_base_discount_pct\":-10,\"coef_signal\":147},\"slab2\":{\"default_discount_pct\":15,\"anchor_qty\":15000,\"base_price\":20,\"cogs_per_unit\":6,\"coef_base_discount_pct\":105,\"coef_lag1_base_discount_pct\":-20,\"coef_other_slabs_weighted_base_discount_pct\":-12,\"coef_signal\":137},\"slab3\":{\"default_discount_pct\":18,\"anchor_qty\":9000,\"base_price\":20,\"cogs_per_unit\":6,\"coef_base_discount_pct\":70,\"coef_lag1_base_discount_pct\":-15,\"coef_other_slabs_weighted_base_discount_pct\":-9,\"coef_signal\":94}},\"18-ML\":{\"slab0\":{\"default_discount_pct\":8,\"anchor_qty\":9000,\"base_price\":28,\"cogs_per_unit\":8,\"coef_base_discount_pct\":65,\"coef_lag1_base_discount_pct\":-14,\"coef_other_slabs_weighted_base_discount_pct\":-7,\"coef_signal\":86},\"slab1\":{\"default_discount_pct\":10,\"anchor_qty\":13000,\"base_price\":28,\"cogs_per_unit\":8,\"coef_base_discount_pct\":82,\"coef_lag1_base_discount_pct\":-17,\"coef_other_slabs_weighted_base_discount_pct\":-8,\"coef_signal\":107},\"slab2\":{\"default_discount_pct\":13,\"anchor_qty\":11000,\"base_price\":28,\"cogs_per_unit\":8,\"coef_base_discount_pct\":78,\"coef_lag1_base_discount_pct\":-16,\"coef_other_slabs_weighted_base_discount_pct\":-9,\"coef_signal\":103},\"slab3\":{\"default_discount_pct\":16,\"anchor_qty\":7000,\"base_price\":28,\"cogs_per_unit\":8,\"coef_base_discount_pct\":55,\"coef_lag1_base_discount_pct\":-12,\"coef_other_slabs_weighted_base_discount_pct\":-7,\"coef_signal\":74}}},\"pack_margin_profile\":{\"12-ML\":{\"weighted_avg_base_price\":20,\"weighted_avg_cogs_per_unit\":6,\"weighted_avg_unit_margin\":14},\"18-ML\":{\"weighted_avg_base_price\":28,\"weighted_avg_cogs_per_unit\":8,\"weighted_avg_unit_margin\":20}},\"ai_intent_usage_notes\":[\"Read user prompt and map objective by pack before creating families.\",\"For pack-specific growth asks, move that pack primarily; avoid accidental opposite-pack domination.\",\"Use slab coefficients to prioritize slabs with stronger modeled response.\",\"For margin/profit asks, use shallower ladders where margin profile is stronger unless prompt says otherwise.\"],\"hard_discount_constraints\":[{\"period\":\"2026-04\",\"size\":\"12-ML\",\"slab\":\"slab3\",\"min\":16,\"max\":null},{\"period\":\"2026-05\",\"size\":\"12-ML\",\"slab\":\"slab3\",\"min\":null,\"max\":18},{\"period\":\"2026-06\",\"size\":\"12-ML\",\"slab\":\"slab3\",\"min\":null,\"max\":18}]},\"intent_hints\":[\"If user asks 12-ML volume growth, prioritize stronger 12-ML discount moves (within constraints) before changing 18-ML.\",\"If user asks 18-ML volume growth, prioritize stronger 18-ML discount moves (within constraints).\"],\"intent_resolution_framework\":{\"step_1\":\"Infer pack target from prompt (12-ML, 18-ML, both).\",\"step_2\":\"Infer objective priority (volume, revenue, profit, balanced).\",\"step_3\":\"Use coefficient signs/magnitudes to set family direction by slab.\",\"step_4\":\"Use margin profile to avoid unnecessary deep discounting when objective is profit.\",\"step_5\":\"Generate diverse but business-realistic families aligned to inferred intent.\"},\"constraints\":[\"return EXACTLY 3 families\",\"all discounts are later repaired to integer [5,30]\",\"ladder is repaired monotonic later; still keep realistic family ranges\",\"avoid degenerate families (all ones / all flat tiny values)\"],\"schema\":{\"families\":[{\"name\":\"Balanced realistic\",\"priority_weight\":0.4,\"base_min\":10,\"base_max\":17,\"gap_min\":1,\"gap_max\":3,\"month_pattern\":\"flat\",\"month_shift_strength\":2,\"size_bias_12\":0,\"size_bias_18\":0,\"volatility\":1,\"anchor_weights\":{\"latest_month\":0.4,\"last_3m_avg\":0.3,\"ly_same_3m\":0.2,\"stress_explore\":0.1}}]}}"
+            }
+          ]
+        }
+      ],
+      "generationConfig": {
+        "temperature": 0.35,
+        "topP": 0.9,
+        "maxOutputTokens": 9000,
+        "responseMimeType": "application/json"
+      }
+    },
+    "rawEnvelope": {
+      "candidates": [
+        {
+          "content": {
+            "parts": [
+              {
+                "text": "{\"families\":[\n  {\n    \"name\":\"Aggressive Volume Push\",\n    \"priority_weight\":0.4,\n    \"base_min\":12,\n    \"base_max\":22,\n    \"gap_min\":1,\n    \"gap_max\":4,\n    \"month_pattern\":\"up\",\n    \"month_shift_strength\":3,\n    \"size_bias_12\":0.1,\n    \"size_bias_18\":0,\n    \"volatility\":1.5,\n    \"anchor_weights\":{\"latest_month\":0.4,\"last_3m_avg\":0.2,\"ly_same_3m\":0.1,\"stress_explore\":0.3}\n  },\n  {\n    \"name\":\"Balanced Volume Expansion\",\n    \"priority_weight\":0.35,\n    \"base_min\":10,\n    \"base_max\":19,\n    \"gap_min\":1,\n    \"gap_max\":3,\n    \"month_pattern\":\"wave\",\n    \"month_shift_strength\":2,\n    \"size_bias_12\":0,\n    \"size_bias_18\":0,\n    \"volatility\":1,\n    \"anchor_weights\":{\"latest_month\":0.35,\"last_3m_avg\":0.35,\"ly_same_3m\":0.2,\"stress_explore\":0.1}\n  },\n  {\n    \"name\":\"Constraint-Aware Volume Explore\",\n    \"priority_weight\":0.25,\n    \"base_min\":11,\n    \"base_max\":20,\n    \"gap_min\":1,\n    \"gap_max\":4,\n    \"month_pattern\":\"pulse\",\n    \"month_shift_strength\":2.5,\n    \"size_bias_12\":0,\n    \"size_bias_18\":0.1,\n    \"volatility\":2,\n    \"anchor_weights\":{\"latest_month\":0.3,\"last_3m_avg\":0.2,\"ly_same_3m\":0.3,\"stress_explore\":0.2}\n  }\n]}"
+              }
+            ],
+            "role": "model"
+          },
+          "finishReason": "STOP",
+          "index": 0
+        }
+      ],
+      "usageMetadata": {
+        "promptTokenCount": 2402,
+        "candidatesTokenCount": 503,
+        "totalTokenCount": 6439,
+        "cachedContentTokenCount": 1974,
+        "promptTokensDetails": [
+          {
+            "modality": "TEXT",
+            "tokenCount": 2402
+          }
+        ],
+        "cacheTokensDetails": [
+          {
+            "modality": "TEXT",
+            "tokenCount": 1974
+          }
+        ],
+        "thoughtsTokenCount": 3534,
+        "serviceTier": "standard"
+      },
+      "modelVersion": "gemini-2.5-flash",
+      "responseId": "2TH8ae6GA_yBjuMPvMXeyAM"
+    }
+  },
+  "textParts": [
+    "{\"families\":[\n  {\n    \"name\":\"Aggressive Volume Push\",\n    \"priority_weight\":0.4,\n    \"base_min\":12,\n    \"base_max\":22,\n    \"gap_min\":1,\n    \"gap_max\":4,\n    \"month_pattern\":\"up\",\n    \"month_shift_strength\":3,\n    \"size_bias_12\":0.1,\n    \"size_bias_18\":0,\n    \"volatility\":1.5,\n    \"anchor_weights\":{\"latest_month\":0.4,\"last_3m_avg\":0.2,\"ly_same_3m\":0.1,\"stress_explore\":0.3}\n  },\n  {\n    \"name\":\"Balanced Volume Expansion\",\n    \"priority_weight\":0.35,\n    \"base_min\":10,\n    \"base_max\":19,\n    \"gap_min\":1,\n    \"gap_max\":3,\n    \"month_pattern\":\"wave\",\n    \"month_shift_strength\":2,\n    \"size_bias_12\":0,\n    \"size_bias_18\":0,\n    \"volatility\":1,\n    \"anchor_weights\":{\"latest_month\":0.35,\"last_3m_avg\":0.35,\"ly_same_3m\":0.2,\"stress_explore\":0.1}\n  },\n  {\n    \"name\":\"Constraint-Aware Volume Explore\",\n    \"priority_weight\":0.25,\n    \"base_min\":11,\n    \"base_max\":20,\n    \"gap_min\":1,\n    \"gap_max\":4,\n    \"month_pattern\":\"pulse\",\n    \"month_shift_strength\":2.5,\n    \"size_bias_12\":0,\n    \"size_bias_18\":0.1,\n    \"volatility\":2,\n    \"anchor_weights\":{\"latest_month\":0.3,\"last_3m_avg\":0.2,\"ly_same_3m\":0.3,\"stress_explore\":0.2}\n  }\n]}"
+  ],
+  "parsedFamilies": {
+    "families": [
+      {
+        "name": "Aggressive Volume Push",
+        "priority_weight": 0.4,
+        "base_min": 12,
+        "base_max": 22,
+        "gap_min": 1,
+        "gap_max": 4,
+        "month_pattern": "up",
+        "month_shift_strength": 3,
+        "size_bias_12": 0.1,
+        "size_bias_18": 0,
+        "volatility": 1.5,
+        "anchor_weights": {
+          "latest_month": 0.4,
+          "last_3m_avg": 0.2,
+          "ly_same_3m": 0.1,
+          "stress_explore": 0.3
+        }
+      },
+      {
+        "name": "Balanced Volume Expansion",
+        "priority_weight": 0.35,
+        "base_min": 10,
+        "base_max": 19,
+        "gap_min": 1,
+        "gap_max": 3,
+        "month_pattern": "wave",
+        "month_shift_strength": 2,
+        "size_bias_12": 0,
+        "size_bias_18": 0,
+        "volatility": 1,
+        "anchor_weights": {
+          "latest_month": 0.35,
+          "last_3m_avg": 0.35,
+          "ly_same_3m": 0.2,
+          "stress_explore": 0.1
+        }
+      },
+      {
+        "name": "Constraint-Aware Volume Explore",
+        "priority_weight": 0.25,
+        "base_min": 11,
+        "base_max": 20,
+        "gap_min": 1,
+        "gap_max": 4,
+        "month_pattern": "pulse",
+        "month_shift_strength": 2.5,
+        "size_bias_12": 0,
+        "size_bias_18": 0.1,
+        "volatility": 2,
+        "anchor_weights": {
+          "latest_month": 0.3,
+          "last_3m_avg": 0.2,
+          "ly_same_3m": 0.3,
+          "stress_explore": 0.2
+        }
+      }
+    ]
+  },
+  "elapsedSeconds": 20.795
+}

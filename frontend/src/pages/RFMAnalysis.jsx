@@ -2367,6 +2367,10 @@ const RFMAnalysis = () => {
     'Finalising and validating scenarios…',
   ]
   const AI_PHASES = ['Understanding', 'Modelling Context']
+  const showAIScenarioProgress = aiElapsed >= 60
+  const aiProgressCurrent = Number(step5AIJob?.progressCurrent || 0)
+  const aiProgressTotal = Number(step5AIJob?.progressTotal || step5AISettings.scenario_count || 0)
+  const aiProgressPct = aiProgressTotal > 0 ? Math.max(4, Math.min(100, Math.round((aiProgressCurrent / aiProgressTotal) * 100))) : 15
   useEffect(() => {
     if (!isStep5AIBusy) {
       setAiAnimMsgIdx(0)
@@ -3225,7 +3229,7 @@ const RFMAnalysis = () => {
                         )}
 
                         {/* Phase 1 — process log */}
-                        {aiPhase === 1 && (
+                        {aiPhase === 1 && !showAIScenarioProgress && (
                           <div className="w-full max-w-md space-y-1.5">
                             {CONTEXT_ITEMS.slice(windowStart, activeItemIdx + 1).map((item, i) => {
                               const globalIdx = windowStart + i
@@ -3249,8 +3253,22 @@ const RFMAnalysis = () => {
                           </div>
                         )}
 
+                        {showAIScenarioProgress && (
+                          <div className="ai-fade-msg w-full max-w-md rounded-2xl bg-white/15 border border-white/20 px-5 py-4 shadow-lg">
+                            <p className="text-white font-bold text-base">
+                              Generating scenarios {aiProgressCurrent} / {aiProgressTotal || step5AISettings.scenario_count}
+                            </p>
+                            <div className="mt-3 h-2 rounded-full bg-white/20 overflow-hidden">
+                              <div
+                                className="h-full rounded-full bg-white transition-all duration-700"
+                                style={{ width: `${aiProgressPct}%` }}
+                              />
+                            </div>
+                          </div>
+                        )}
+
                         <p key={aiAnimMsgIdx} className="ai-fade-msg text-white/60 text-xs">
-                          {AI_ANIM_MSGS[aiAnimMsgIdx]}
+                          {showAIScenarioProgress ? 'Finalising valid discount scenarios...' : AI_ANIM_MSGS[aiAnimMsgIdx]}
                         </p>
                       </div>
                     )
@@ -3447,18 +3465,22 @@ const RFMAnalysis = () => {
                 <div>
                   <p className="text-white font-bold text-lg">Creating Scenarios</p>
                   <p key={aiAnimMsgIdx} className="ai-fade-msg text-white/80 text-sm mt-1.5">
-                    {AI_ANIM_MSGS[aiAnimMsgIdx]}
+                    {showAIScenarioProgress
+                      ? `Generating scenarios ${aiProgressCurrent} / ${aiProgressTotal || step5AISettings.scenario_count}`
+                      : AI_ANIM_MSGS[aiAnimMsgIdx]}
                   </p>
                 </div>
                 <div className="w-full max-w-xs">
                   <div className="h-1.5 bg-white/20 rounded-full overflow-hidden">
                     <div
                       className="h-full bg-white rounded-full transition-all duration-700"
-                      style={{ width: `${step5AIJob?.progressTotal > 0 ? Math.round(step5AIJob.progressCurrent / step5AIJob.progressTotal * 100) : 15}%` }}
+                      style={{ width: `${showAIScenarioProgress ? aiProgressPct : 15}%` }}
                     />
                   </div>
                   <p className="text-white/60 text-xs mt-1.5 text-center">
-                    {step5AIJob?.progressCurrent || 0} / {step5AIJob?.progressTotal || step5AISettings.scenario_count} scenarios
+                    {showAIScenarioProgress
+                      ? `${aiProgressCurrent} / ${aiProgressTotal || step5AISettings.scenario_count} scenarios`
+                      : 'Preparing scenario generation'}
                   </p>
                 </div>
               </div>

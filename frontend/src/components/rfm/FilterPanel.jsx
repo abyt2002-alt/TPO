@@ -4,7 +4,22 @@ import { Filter, Play, ChevronDown, ChevronUp, Search, X } from 'lucide-react'
 const MultiSelectDropdown = ({ label, options, selectedValues, onChange, placeholder, disabled = false }) => {
   const [isOpen, setIsOpen] = useState(false)
   const [searchTerm, setSearchTerm] = useState('')
-  const toDisplayLabel = (rawValue) => String(rawValue || '')
+  const maskPrefix = {
+    Category: 'Category',
+    Subcategory: 'Subcategory',
+    Brand: 'Brand',
+  }[label]
+  const maskedLabelByValue = useMemo(() => {
+    if (!maskPrefix) return new Map()
+    const values = [...new Set([...(options || []), ...(selectedValues || [])].map((value) => String(value || '')))]
+      .filter(Boolean)
+    return new Map(values.map((value, idx) => [value, `${maskPrefix} ${idx + 1}`]))
+  }, [maskPrefix, options, selectedValues])
+  const toDisplayLabel = (rawValue) => {
+    const value = String(rawValue || '')
+    if (!maskPrefix) return value
+    return maskedLabelByValue.get(value) || maskPrefix
+  }
 
   const filteredOptions = useMemo(() => {
     if (!searchTerm) return options || []

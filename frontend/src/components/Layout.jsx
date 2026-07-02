@@ -1,5 +1,5 @@
 import { Link, useLocation } from 'react-router-dom'
-import { BarChart3, Menu, X, Settings, Percent, LineChart, CalendarDays, Upload } from 'lucide-react'
+import { BarChart3, Menu, X, Settings, Percent, LineChart, CalendarDays, Upload, ChevronLeft, ChevronRight, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen } from 'lucide-react'
 import { useState } from 'react'
 import logo from '../assets/logo.jpg'
 
@@ -7,6 +7,8 @@ const Layout = ({ children, rightSidebar }) => {
   const location = useLocation()
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false)
   const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false)
+  const [leftCollapsed, setLeftCollapsed] = useState(false)
+  const [rightCollapsed, setRightCollapsed] = useState(false)
   const stepParam = new URLSearchParams(location.search).get('step')
 
   const navigation = [
@@ -18,21 +20,11 @@ const Layout = ({ children, rightSidebar }) => {
   ]
 
   const isNavActive = (item) => {
-    if (item.step === '2') {
-      return location.pathname === '/rfm' && stepParam === '2'
-    }
-    if (item.step === '3') {
-      return location.pathname === '/rfm' && stepParam === '3'
-    }
-    if (item.step === '4') {
-      return location.pathname === '/rfm' && stepParam === '4'
-    }
-    if (item.step === '5') {
-      return location.pathname === '/rfm' && stepParam === '5'
-    }
-    if (item.step === '1') {
-      return location.pathname === '/rfm' && stepParam !== '2' && stepParam !== '3' && stepParam !== '4' && stepParam !== '5'
-    }
+    if (item.step === '2') return location.pathname === '/rfm' && stepParam === '2'
+    if (item.step === '3') return location.pathname === '/rfm' && stepParam === '3'
+    if (item.step === '4') return location.pathname === '/rfm' && stepParam === '4'
+    if (item.step === '5') return location.pathname === '/rfm' && stepParam === '5'
+    if (item.step === '1') return location.pathname === '/rfm' && !['2','3','4','5'].includes(stepParam)
     return location.pathname === item.href
   }
 
@@ -55,25 +47,44 @@ const Layout = ({ children, rightSidebar }) => {
               </Link>
             </div>
 
-            {/* Right: mobile buttons */}
-            <div className="flex items-center gap-2 w-40 justify-end lg:hidden">
+            {/* Right: collapse toggles (desktop) + mobile buttons */}
+            <div className="flex items-center gap-1 w-48 justify-end">
+              {/* Desktop collapse buttons */}
+              <button
+                onClick={() => setLeftCollapsed(v => !v)}
+                className="hidden lg:flex p-1.5 rounded-md text-muted hover:text-body hover:bg-gray-100 transition-colors"
+                title={leftCollapsed ? 'Expand left sidebar' : 'Collapse left sidebar'}
+              >
+                {leftCollapsed ? <PanelLeftOpen className="w-5 h-5" /> : <PanelLeftClose className="w-5 h-5" />}
+              </button>
               {rightSidebar && (
                 <button
-                  onClick={() => setIsMobileSidebarOpen(!isMobileSidebarOpen)}
-                  className="p-2 rounded-md text-muted hover:text-body hover:bg-accent-light"
+                  onClick={() => setRightCollapsed(v => !v)}
+                  className="hidden lg:flex p-1.5 rounded-md text-muted hover:text-body hover:bg-gray-100 transition-colors"
+                  title={rightCollapsed ? 'Expand right sidebar' : 'Collapse right sidebar'}
                 >
-                  <Settings className="w-6 h-6" />
+                  {rightCollapsed ? <PanelRightOpen className="w-5 h-5" /> : <PanelRightClose className="w-5 h-5" />}
                 </button>
               )}
-              <button
-                onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
-                className="p-2 rounded-md text-muted hover:text-body hover:bg-accent-light"
-              >
-                {isMobileMenuOpen ? <X className="w-6 h-6" /> : <Menu className="w-6 h-6" />}
-              </button>
+              {/* Mobile buttons */}
+              <div className="flex items-center gap-1 lg:hidden">
+                {rightSidebar && (
+                  <button
+                    onClick={() => setIsMobileSidebarOpen(!isMobileSidebarOpen)}
+                    className="p-2 rounded-md text-muted hover:text-body hover:bg-accent-light"
+                  >
+                    <Settings className="w-6 h-6" />
+                  </button>
+                )}
+                <button
+                  onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
+                  className="p-2 rounded-md text-muted hover:text-body hover:bg-accent-light"
+                >
+                  {isMobileMenuOpen ? <X className="w-6 h-6" /> : <Menu className="w-6 h-6" />}
+                </button>
+              </div>
             </div>
           </div>
-
         </div>
 
         {/* Mobile Navigation */}
@@ -104,32 +115,37 @@ const Layout = ({ children, rightSidebar }) => {
         )}
       </header>
 
-      {/* Main Layout - Fixed height with flex */}
+      {/* Main Layout */}
       <div className="flex-1 flex min-h-0">
-        {/* Left Sidebar - Navigation */}
-        <aside className="hidden lg:block lg:flex-shrink-0 w-64 bg-white border-r border-gray-200">
-          <div className="h-full overflow-y-auto">
-            <nav className="p-4 space-y-1">
-              {navigation.map((item) => {
-                const Icon = item.icon
-                const isActive = isNavActive(item)
-                return (
-                  <Link
-                    key={item.name}
-                    to={item.href}
-                    className={`flex items-center px-4 py-3 rounded-lg text-sm font-medium transition-colors ${
-                      isActive
-                        ? 'bg-white text-body border border-primary'
-                        : 'text-body border border-transparent hover:bg-white hover:border-gray-300'
-                    }`}
-                  >
-                    <Icon className="w-5 h-5 mr-3" />
-                    {item.name}
-                  </Link>
-                )
-              })}
-            </nav>
-          </div>
+        {/* Left Sidebar */}
+        <aside
+          className={`hidden lg:flex flex-col flex-shrink-0 bg-white border-r border-gray-200 transition-all duration-200 overflow-hidden ${
+            leftCollapsed ? 'w-14' : 'w-64'
+          }`}
+        >
+          <nav className="flex-1 overflow-y-auto p-2 space-y-1">
+            {navigation.map((item) => {
+              const Icon = item.icon
+              const isActive = isNavActive(item)
+              return (
+                <Link
+                  key={item.name}
+                  to={item.href}
+                  title={leftCollapsed ? item.name : undefined}
+                  className={`flex items-center rounded-lg text-sm font-medium transition-colors ${
+                    leftCollapsed ? 'px-2 py-3 justify-center' : 'px-4 py-3'
+                  } ${
+                    isActive
+                      ? 'bg-white text-body border border-primary'
+                      : 'text-body border border-transparent hover:bg-white hover:border-gray-300'
+                  }`}
+                >
+                  <Icon className={`w-5 h-5 flex-shrink-0 ${leftCollapsed ? '' : 'mr-3'}`} />
+                  {!leftCollapsed && <span>{item.name}</span>}
+                </Link>
+              )
+            })}
+          </nav>
         </aside>
 
         {/* Center Content */}
@@ -139,51 +155,40 @@ const Layout = ({ children, rightSidebar }) => {
           </div>
         </main>
 
-        {/* Right Sidebar - Settings/Filters */}
-        {rightSidebar && (
-          <>
-            {/* Desktop Right Sidebar */}
-            <aside className="hidden lg:block lg:flex-shrink-0 w-80 bg-white border-l border-gray-200">
-              <div className="h-full flex flex-col">
-                {/* Fixed Header */}
-                <div className="flex-shrink-0 flex items-center gap-2 p-4 border-b border-gray-200 bg-white">
+        {/* Right Sidebar - Desktop */}
+        {rightSidebar && !rightCollapsed && (
+          <aside className="hidden lg:flex flex-col flex-shrink-0 w-80 bg-white border-l border-gray-200 transition-all duration-200">
+            <div className="h-full flex flex-col">
+              <div className="flex-shrink-0 flex items-center gap-2 p-4 border-b border-gray-200 bg-white">
+                <Settings className="w-5 h-5 text-primary" />
+                <h2 className="text-lg font-semibold text-body">Settings</h2>
+              </div>
+              <div className="flex-1 overflow-y-auto p-4">
+                {rightSidebar}
+              </div>
+            </div>
+          </aside>
+        )}
+
+        {/* Mobile Right Sidebar */}
+        {rightSidebar && isMobileSidebarOpen && (
+          <div className="fixed inset-0 z-40 lg:hidden">
+            <div className="absolute inset-0 bg-body/50" onClick={() => setIsMobileSidebarOpen(false)} />
+            <div className="absolute right-0 top-0 bottom-0 w-full max-w-sm bg-white shadow-xl flex flex-col">
+              <div className="flex-shrink-0 flex items-center justify-between p-4 border-b border-gray-200">
+                <div className="flex items-center gap-2">
                   <Settings className="w-5 h-5 text-primary" />
                   <h2 className="text-lg font-semibold text-body">Settings</h2>
                 </div>
-                {/* Scrollable Content */}
-                <div className="flex-1 overflow-y-auto p-4">
-                  {rightSidebar}
-                </div>
+                <button onClick={() => setIsMobileSidebarOpen(false)} className="p-2 rounded-md text-muted hover:text-body hover:bg-accent-light">
+                  <X className="w-5 h-5" />
+                </button>
               </div>
-            </aside>
-
-            {/* Mobile Right Sidebar */}
-            {isMobileSidebarOpen && (
-              <div className="fixed inset-0 z-40 lg:hidden">
-                <div 
-                  className="absolute inset-0 bg-body/50"
-                  onClick={() => setIsMobileSidebarOpen(false)}
-                />
-                <div className="absolute right-0 top-0 bottom-0 w-full max-w-sm bg-white shadow-xl flex flex-col">
-                  <div className="flex-shrink-0 flex items-center justify-between p-4 border-b border-gray-200">
-                    <div className="flex items-center gap-2">
-                      <Settings className="w-5 h-5 text-primary" />
-                      <h2 className="text-lg font-semibold text-body">Settings</h2>
-                    </div>
-                    <button
-                      onClick={() => setIsMobileSidebarOpen(false)}
-                      className="p-2 rounded-md text-muted hover:text-body hover:bg-accent-light"
-                    >
-                      <X className="w-5 h-5" />
-                    </button>
-                  </div>
-                  <div className="flex-1 overflow-y-auto p-4">
-                    {rightSidebar}
-                  </div>
-                </div>
+              <div className="flex-1 overflow-y-auto p-4">
+                {rightSidebar}
               </div>
-            )}
-          </>
+            </div>
+          </div>
         )}
       </div>
     </div>

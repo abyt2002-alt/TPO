@@ -1,0 +1,28 @@
+{
+  "raw_rows_before_filters": 2176509,
+  "raw_rows_after_filters": 2169415,
+  "deduped_sale_lines": 1233197,
+  "raw_quantity_sum_after_filters": 84052490.0,
+  "deduped_quantity_sum": 43670731.0,
+  "quantity_overcount_factor": 1.924687,
+  "raw_scheme_row_distribution": {
+    "1": 298608,
+    "2": 932976,
+    "3": 1597,
+    "4": 16
+  },
+  "size_distribution": {
+    "12-ML": 301921,
+    "18-ML": 931276
+  },
+  "state_distribution": {
+    "MAH": 857451,
+    "UP": 375746
+  },
+  "stockiest_only": true,
+  "exclude_samt": true,
+  "keep_only_12_18": true,
+  "mrp_max_allowed": 25.0,
+  "rows_removed_mrp_above_25": 10,
+  "quantity_removed_mrp_above_25": 3648.0
+}
