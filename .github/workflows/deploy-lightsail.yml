@@ -1,0 +1,134 @@
+name: Deploy Lightsail
+
+# Push-to-main deployment is intentionally disabled.
+# origin/main has diverged from production branch Demolocal.
+# Do not add a push trigger until that difference is approved and a manual
+# deployment of the production revision has succeeded.
+
+on:
+  workflow_dispatch:
+    inputs:
+      git_sha:
+        description: Full 40-character commit SHA. Production is c1551d15845e391b9b5726dbf866e1fd11caf04d.
+        required: true
+        type: string
+      confirm:
+        description: Type DEPLOY to continue
+        required: true
+        type: string
+      approve_branch_difference:
+        description: Leave blank. Type APPROVE only after main is accepted as a replacement for branch Demolocal.
+        required: false
+        type: string
+        default: ""
+
+concurrency:
+  group: lightsail-qps
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: Require confirmation and production branch
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          test "$CONFIRM" = "DEPLOY"
+          test "$REF_NAME" = "Demolocal"
+
+      - name: Checkout workflow
+        uses: actions/checkout@v4
+        with:
+          path: workflow
+          persist-credentials: false
+
+      - name: Checkout application revision
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.git_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+          path: source
+
+      - name: Compare with production
+        env:
+          SOURCE_DIR: ${{ github.workspace }}/source
+          GIT_SHA: ${{ inputs.git_sha }}
+          APPROVE_BRANCH: ${{ inputs.approve_branch_difference }}
+        run: bash workflow/deploy/lightsail/check-revision.sh
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Check backend dependencies
+        run: |
+          set -euo pipefail
+          python -m venv "$RUNNER_TEMP/backend"
+          "$RUNNER_TEMP/backend/bin/pip" install --disable-pip-version-check -r workflow/deploy/lightsail/constraints-backend.txt
+          "$RUNNER_TEMP/backend/bin/pip" install --disable-pip-version-check -c workflow/deploy/lightsail/constraints-backend.txt -r source/backend/requirements.txt
+          "$RUNNER_TEMP/backend/bin/python" -m compileall -q source/backend
+
+      - name: Build frontend
+        run: |
+          set -euo pipefail
+          # Public hostname only. Secrets stay on the server and are linked before the real build.
+          printf 'VITE_API_URL=https://qps.quantmatrix.ai\n' > source/frontend/.env
+          printf 'VITE_API_URL=https://qps.quantmatrix.ai\n' > source/frontend/.env.production
+          npm ci --prefix source/frontend
+          npm run build --prefix source/frontend
+          test -f source/frontend/dist/index.html
+          rm -f source/frontend/.env source/frontend/.env.production
+
+  deploy:
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    environment: lightsail-production
+    env:
+      LIGHTSAIL_HOST: 16.4.90.16
+      EXPECTED_FINGERPRINT: "SHA256:mA7uPko9jxboPBXE5cQVWQHG7nXe6/pqzYZVovOyqos"
+    steps:
+      - name: Require production branch
+        env:
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          test "$REF_NAME" = "Demolocal"
+
+      - uses: actions/checkout@v4
+        with:
+          path: workflow
+          persist-credentials: false
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.git_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+          path: source
+
+      - name: Compare with production
+        env:
+          SOURCE_DIR: ${{ github.workspace }}/source
+          GIT_SHA: ${{ inputs.git_sha }}
+          APPROVE_BRANCH: ${{ inputs.approve_branch_difference }}
+        run: bash workflow/deploy/lightsail/check-revision.sh
+
+      - name: Pack and deploy
+        env:
+          LIGHTSAIL_SSH_KEY: ${{ secrets.LIGHTSAIL_SSH_KEY }}
+          LIGHTSAIL_HOST_FINGERPRINT: ${{ secrets.LIGHTSAIL_HOST_FINGERPRINT }}
+          GIT_SHA: ${{ inputs.git_sha }}
+        run: bash workflow/deploy/lightsail/gha-deploy.sh
