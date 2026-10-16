@@ -135,11 +135,19 @@ publish_dist() {
 
 require_loopback() {
   local port="$1"
-  ss -ltn | grep -q "127.0.0.1:${port}" || { echo "port ${port} is not listening"; return 1; }
-  if ss -ltn | grep -E "0\\.0\\.0\\.0:${port}([^0-9]|$)|\\[::\\]:${port}([^0-9]|$)|\\*:${port}([^0-9]|$)"; then
-    echo "port ${port} is exposed beyond loopback"
-    return 1
-  fi
+  local attempt
+  for attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30; do
+    if ss -ltn | grep -q "127.0.0.1:${port}"; then
+      if ss -ltn | grep -E "0\\.0\\.0\\.0:${port}([^0-9]|$)|\\[::\\]:${port}([^0-9]|$)|\\*:${port}([^0-9]|$)"; then
+        echo "port ${port} is exposed beyond loopback"
+        return 1
+      fi
+      return 0
+    fi
+    sleep 2
+  done
+  echo "port ${port} is not listening"
+  return 1
 }
 
 http_ok() {
@@ -244,7 +252,8 @@ ACTIVATED=1
 ln -sfn "${RELEASE}" "${CURRENT}"
 "${PM2}" delete qps-backend || true
 "${PM2}" start "${RELEASE}/runtime/ecosystem.config.js"
-sleep 5
+# QPS imports large Parquet datasets; allow extra warmup before health checks.
+sleep 20
 health_checks
 protected_unchanged
 "${PM2}" save
