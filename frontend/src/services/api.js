@@ -1,5 +1,6 @@
 import axios from 'axios'
 
+// CI marker: verify push-to-Demolocal Lightsail deploy (2026-10-16)
 const resolveDefaultApiBaseUrl = () => {
   if (import.meta.env.DEV) return ''
   if (typeof window === 'undefined') return ''
