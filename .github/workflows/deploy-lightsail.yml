@@ -95,7 +95,10 @@ jobs:
     needs: verify
     runs-on: ubuntu-latest
     timeout-minutes: 50
-    environment: lightsail-production
+    # Environment gate omitted: current collaborator lacks admin to create
+    # lightsail-production. Uses repository secrets LIGHTSAIL_SSH_KEY and
+    # LIGHTSAIL_HOST_FINGERPRINT. Re-add environment: lightsail-production
+    # when a repo admin can create it.
     env:
       LIGHTSAIL_HOST: 16.4.90.16
       EXPECTED_FINGERPRINT: "SHA256:mA7uPko9jxboPBXE5cQVWQHG7nXe6/pqzYZVovOyqos"
