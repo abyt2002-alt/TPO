@@ -247,6 +247,21 @@ npm run build
 - Axios - HTTP client
 - Lucide React - Icons
 
+## Production deployment (AWS Lightsail)
+
+Production is on Lightsail Account 2 at `https://qps.quantmatrix.ai` (host `16.4.90.16`).
+
+| Item | Value |
+|---|---|
+| Deploy branch | `Demolocal` (not `main` or `aws`) |
+| Workflow | `.github/workflows/deploy-lightsail.yml` |
+| Trigger | Push to `Demolocal` (app code). Workflow-only / markdown-only pushes are skipped. |
+| Manual | Actions → **Deploy Lightsail** → Run workflow |
+
+Server layout: `/opt/apps/qps-app/current` → immutable `releases/<sha>`. The live `backend/analysis_state.db`, env files, and `demo_data/` (24 Parquet files) are persistent paths symlinked into each release. The Git-tracked DB is never copied onto the live database.
+
+See also the platform guide in the demos repo: [`aws-demos/docs/AWS_DEPLOYMENT.md`](https://github.com/abyt2002-alt/aws-demos/blob/main/docs/AWS_DEPLOYMENT.md).
+
 ## License
 
 Proprietary - All rights reserved
